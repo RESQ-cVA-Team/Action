@@ -10,6 +10,7 @@ All existing code should prefer this module instead of ad-hoc YAML parsing.
 
 from __future__ import annotations
 
+import re
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
@@ -231,6 +232,120 @@ def _ci_get(d: Dict[str, Any], key: str) -> Any:
         if k.lower() == key.lower():
             return v
     return None
+
+
+def normalize_metric_text_key(value: str) -> str:
+    """Normalize free-text metric keys for lookup.
+
+    - Lowercases
+    - Strips leading/trailing whitespace
+    - Replaces punctuation and symbols with single spaces
+    - Collapses repeated whitespace
+    """
+
+    # Value is declared as str in the signature, so avoid redundant
+    # isinstance checks and operate on it directly for type checkers.
+    text = value.strip().lower()
+    if not text:
+        return ""
+    # Replace any non-alphanumeric character with a space to be tolerant to
+    # punctuation variants (hyphens, slashes, etc.).
+    cleaned = re.sub(r"[^0-9a-z]+", " ", text)
+    # Collapse multiple spaces
+    return " ".join(cleaned.split())
+
+
+@lru_cache(maxsize=1)
+def get_metric_text_lookup() -> Dict[str, Dict[str, Any]]:
+    """Return a normalized text lookup for metrics from MetricType.yml.
+
+    The returned mapping uses normalized text keys (see ``normalize_metric_text_key``)
+    built from both canonical codes and all synonyms. Each entry is a record of
+    the form::
+
+        {
+            "canonical": str,
+            "synonyms": List[str],
+            "descriptions": Dict[str, str],  # language -> description
+            "data_type": Optional[str],
+            "unit": Optional[str],
+        }
+
+    This is intended for conversational lookup where the user provides a KPI
+    or metric in natural language and we want to resolve it to the SSOT
+    definition and multilingual description.
+    """
+
+    items = _load_yaml("MetricType.yml")
+    lookup: Dict[str, Dict[str, Any]] = {}
+
+    for item in items:
+        canonical = item.get("canonical")
+        if not isinstance(canonical, str) or not canonical.strip():
+            continue
+        code = canonical.strip().upper()
+
+        syn_any: Any = item.get("synonyms") or []
+        synonyms: List[str] = []
+        if isinstance(syn_any, list):
+            syn_list: List[Any] = cast(List[Any], syn_any)
+            for s_any in syn_list:
+                if isinstance(s_any, str):
+                    s_val = s_any.strip()
+                    if s_val:
+                        synonyms.append(s_val)
+
+        desc_any: Any = item.get("descriptions")
+        descriptions: Dict[str, str] = {}
+        if isinstance(desc_any, dict):
+            desc_dict: Dict[Any, Any] = cast(Dict[Any, Any], desc_any)
+            for lang_any, text_any in desc_dict.items():
+                if not isinstance(lang_any, str) or not isinstance(text_any, str):
+                    continue
+                text_val = text_any.strip()
+                if not text_val:
+                    continue
+                lang_key = lang_any.strip()
+                if not lang_key:
+                    continue
+                descriptions[lang_key] = text_val
+
+        data_type_any = _ci_get(item, "data_type")
+        data_type: Optional[str]
+        if isinstance(data_type_any, (str, bytes)):
+            data_type = str(data_type_any).strip()
+        else:
+            data_type = None
+
+        unit: Optional[str] = None
+        # Support both "Numeric" and "numeric" blocks with a case-insensitive lookup.
+        numeric_any = _ci_get(item, "numeric")
+        if isinstance(numeric_any, dict):
+            numeric = cast(Dict[str, Any], numeric_any)
+            unit_any = _ci_get(numeric, "unit")
+            if isinstance(unit_any, (str, bytes)) and str(unit_any).strip():
+                unit = str(unit_any).strip()
+
+        record: Dict[str, Any] = {
+            "canonical": code,
+            "synonyms": synonyms,
+            "descriptions": descriptions,
+            "data_type": data_type,
+            "unit": unit,
+        }
+
+        # Register canonical and all synonyms under normalized text keys.
+        keys: List[str] = [canonical] + synonyms
+        for raw_key in keys:
+            norm = normalize_metric_text_key(raw_key)
+            if not norm:
+                continue
+            # Do not overwrite existing entries for the same normalized key;
+            # first definition wins to keep behavior deterministic.
+            if norm not in lookup:
+                lookup[norm] = record
+
+    return lookup
 
 
 def validate_metric_metadata_complete(logger: Optional[Any] = None) -> List[str]:
@@ -470,10 +585,12 @@ __all__ = [
     "create_enum",
     "get_canonical_values",
     "get_metric_metadata",
+    "get_metric_text_lookup",
     "validate_metric_metadata_complete",
     "get_metric_display_name",
     "get_enum_option_label",
     "get_canonical_display_name",
     "get_sex_label",
     "get_stroke_label",
+    "normalize_metric_text_key",
 ]
