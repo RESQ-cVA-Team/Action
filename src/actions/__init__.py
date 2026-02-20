@@ -1,7 +1,8 @@
-from .actions import ActionGenerateVisualization
+from .actions import ActionGenerateVisualization, ActionListHospitals
 from .cli.router import ActionCliRouter
 
 __all__ = [
     "ActionCliRouter",
     "ActionGenerateVisualization",
+    "ActionListHospitals",
 ]

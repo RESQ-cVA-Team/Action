@@ -10,6 +10,7 @@ from src.actions.long_action.long_action import LongAction
 from src.actions.long_action.long_action_context import LongActionContext
 from src.domain.langchain import schema as lang_schema
 from src.executors import plan_executor
+from src.executors.analytics_center.client import get_analytics_center_client
 from src.executors.langchain import pipeline as lang_pipeline
 from src.executors.simple_planner import HeuristicVisualizationPlanner
 from src.shared import ssot_loader
@@ -126,6 +127,46 @@ class ActionGenerateVisualization(LongAction):
             ctx.say(text="✅ Visualization generation complete.")
             ctx.done()
         return None
+
+
+class ActionListHospitals(Action):
+    """List hospitals/providers available for comparison."""
+
+    def name(self) -> str:
+        return "action_list_hospitals"
+
+    async def run(
+        self,
+        dispatcher: CollectingDispatcher,
+        tracker: Tracker,
+        domain: rasa_types.DomainDict,
+    ) -> List[Dict[Text, Any]]:
+        try:
+            session_token = tracker.sender_id
+            client = get_analytics_center_client()
+            providers = client.list_providers(session_token=session_token, limit=50, offset=0)
+            if not providers:
+                dispatcher.utter_message(text="I couldn't find any hospitals you can compare against.")
+                return []
+
+            names: List[str] = []
+            for provider in providers:
+                name = provider.get("nameEnglish") or provider.get("nameNative") or provider.get("shortName")
+                if isinstance(name, str) and name.strip():
+                    names.append(name.strip())
+
+            if not names:
+                dispatcher.utter_message(text="I couldn't find any hospitals you can compare against.")
+                return []
+
+            dispatcher.utter_message(json_message={"hospitals": names})
+            return []
+        except Exception as exc:
+            logger.exception("Error listing hospitals")
+            dispatcher.utter_message(text="❌ Error listing hospitals.")
+            if _ECHO_INTERNAL_ERRORS:
+                dispatcher.utter_message(text=f"Error listing hospitals: {str(exc)}")
+            return []
 
 
 class ActionExplainMetric(Action):
