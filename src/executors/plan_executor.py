@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from itertools import product
@@ -34,12 +35,15 @@ from src.domain.langchain.schema import (
 )
 from src.executors.graphql.client import GraphQLProxyClient
 from src.shared.ssot_loader import get_canonical_display_name, get_enum_option_label, get_metric_display_name, get_metric_metadata, get_sex_label, get_stroke_label
+from src.util import env as env_util
 from src.util.coalesce import coalesce
-from src.util.env import require_all_env
 
 logger = logging.getLogger(__name__)
+# Privacy/safety defaults:
+# - Avoid logging raw GraphQL queries by default.
+_LOG_GRAPHQL_QUERY = env_util.env_flag("EXECUTOR_LOG_GRAPHQL_QUERY", default=False)
 
-proxy_url, api_url = require_all_env("GRAPHQL_PROXY_URL", "GRAPHQL_API_URL")
+proxy_url, api_url = env_util.require_all_env("GRAPHQL_PROXY_URL", "GRAPHQL_API_URL")
 client = GraphQLProxyClient(proxy_url=proxy_url, graphql_url=api_url)
 
 
@@ -328,7 +332,23 @@ async def execute_plan_async(
     ) -> List[ChartSeries]:
         async with sem:
             query_str = req.to_graphql_string()
-            logger.info("[plan_executor] GraphQL query for chart (groupBy=%s, labels=%s):\n%s", group_by_field, " | ".join(label_parts), query_str)
+            q_hash = hashlib.sha256(query_str.encode("utf-8")).hexdigest()[:12]
+            if _LOG_GRAPHQL_QUERY:
+                logger.debug(
+                    "[plan_executor] GraphQL query for chart (groupBy=%s, labels=%s, hash=%s):\n%s",
+                    group_by_field,
+                    " | ".join(label_parts),
+                    q_hash,
+                    query_str,
+                )
+            else:
+                logger.info(
+                    "[plan_executor] GraphQL query for chart (groupBy=%s, labels=%s, hash=%s, len=%s)",
+                    group_by_field,
+                    " | ".join(label_parts),
+                    q_hash,
+                    len(query_str),
+                )
             resp = await asyncio.to_thread(client.query, query_str, session_token)
         series: List[ChartSeries] = []
         if resp is None:

@@ -13,10 +13,15 @@ from rasa_sdk import Action, Tracker  # type: ignore
 from rasa_sdk import types as rasa_types  # type: ignore
 from rasa_sdk.executor import CollectingDispatcher  # type: ignore
 
+from src.util import env as env_util
+
 from . import long_action_registry as registry
 from .long_action_context import LongActionContext
 
 _CALLBACK_TOKEN_ENV = "LONG_TASK_CALLBACK_TOKEN"
+# Privacy/safety defaults: do not log callback payloads or URLs.
+_LOG_CALLBACK_STATUS = env_util.env_flag("LONG_ACTION_LOG_CALLBACK_STATUS", default=False)
+_LOG_CALLBACK_ERRORS = env_util.env_flag("LONG_ACTION_LOG_CALLBACK_ERRORS", default=False)
 
 
 def _get_callback_config(tracker: Tracker) -> Optional[Tuple[str, str]]:
@@ -127,7 +132,7 @@ class LongAction(Action, ABC):
         }
 
         try:
-            requests.post(
+            resp = requests.post(
                 callback_url,
                 headers={
                     "Content-Type": "application/json",
@@ -136,10 +141,13 @@ class LongAction(Action, ABC):
                 data=json.dumps(payload, default=str),
                 timeout=10,
             )
+            if _LOG_CALLBACK_STATUS:
+                logger.debug("LongAction callback posted (status=%s)", getattr(resp, "status_code", None))
         except Exception:
             # Swallow errors from the callback endpoint; they should not
             # break the long-running job.
-            pass
+            if _LOG_CALLBACK_ERRORS:
+                logger.debug("LongAction callback post failed", exc_info=True)
 
     def _run_work(self, ctx: LongActionContext, job_id: str, callback_url: str, callback_token: str) -> None:
         try:

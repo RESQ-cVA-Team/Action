@@ -13,8 +13,16 @@ from src.executors import plan_executor
 from src.executors.langchain import pipeline as lang_pipeline
 from src.executors.simple_planner import HeuristicVisualizationPlanner
 from src.shared import ssot_loader
+from src.util import env as env_util
 
 logger = logging.getLogger(__name__)
+
+
+# Privacy/safety defaults:
+# - Do not log full user messages by default.
+# - Do not echo internal exception messages to end users by default.
+_LOG_USER_TEXT = env_util.env_flag("ACTIONS_LOG_USER_TEXT", default=False)
+_ECHO_INTERNAL_ERRORS = env_util.env_flag("ACTIONS_ECHO_INTERNAL_ERRORS", default=False)
 
 try:
     ssot_loader.validate_metric_metadata_complete(logger)
@@ -42,7 +50,13 @@ class ActionGenerateVisualization(LongAction):
         try:
             user_message = ctx.text
             session_token = ctx.sender_id
-            logger.info("Processing visualization request: '%s'", user_message)
+            if _LOG_USER_TEXT:
+                logger.info("Processing visualization request: '%s'", user_message)
+            else:
+                logger.info(
+                    "Processing visualization request (text_len=%s)",
+                    len(user_message or ""),
+                )
 
             latest_meta = ctx.metadata
 
@@ -104,10 +118,10 @@ class ActionGenerateVisualization(LongAction):
 
             ctx.say(json_message=json.loads(visualization.model_dump_json()))
         except Exception as e:
-            error_msg = f"Error generating visualization: {str(e)}"
-            logger.error(error_msg)
+            logger.exception("Error generating visualization")
             ctx.say(text="❌ Error generating visualization.")
-            ctx.say(text=error_msg)
+            if _ECHO_INTERNAL_ERRORS:
+                ctx.say(text=f"Error generating visualization: {str(e)}")
         finally:
             ctx.say(text="✅ Visualization generation complete.")
             ctx.done()
@@ -133,63 +147,70 @@ class ActionExplainMetric(Action):
         tracker: Tracker,
         domain: rasa_types.DomainDict,
     ) -> List[Dict[Text, Any]]:
-        language = self._resolve_language(tracker)
+        try:
+            language = self._resolve_language(tracker)
 
-        raw_kpi = self._extract_kpi(tracker)
-        if not raw_kpi:
-            dispatcher.utter_message(text="I couldn't find any metric in your request.")
-            return []
+            raw_kpi = self._extract_kpi(tracker)
+            if not raw_kpi:
+                dispatcher.utter_message(text="I couldn't find any metric in your request.")
+                return []
 
-        norm_key = ssot_loader.normalize_metric_text_key(raw_kpi)
-        if not norm_key:
-            dispatcher.utter_message(text="I couldn't understand the metric you asked about.")
-            return []
+            norm_key = ssot_loader.normalize_metric_text_key(raw_kpi)
+            if not norm_key:
+                dispatcher.utter_message(text="I couldn't understand the metric you asked about.")
+                return []
 
-        record = _METRIC_TEXT_LOOKUP.get(norm_key)
-        if not record:
-            suggestions = self._suggest_metrics(language, max_items=5)
-            if suggestions:
-                dispatcher.utter_message(text=("I don't recognise that metric. " + "Here are a few metrics I can describe: " + ", ".join(suggestions) + "."))
+            record = _METRIC_TEXT_LOOKUP.get(norm_key)
+            if not record:
+                suggestions = self._suggest_metrics(language, max_items=5)
+                if suggestions:
+                    dispatcher.utter_message(text=("I don't recognise that metric. " + "Here are a few metrics I can describe: " + ", ".join(suggestions) + "."))
+                else:
+                    dispatcher.utter_message(text="I don't recognise that metric.")
+                return []
+
+            canonical = cast(str, record.get("canonical") or "")
+            descriptions = cast(Dict[str, str], record.get("descriptions") or {})
+            data_type = cast(Optional[str], record.get("data_type"))
+            unit = cast(Optional[str], record.get("unit"))
+
+            description_text = self._pick_description(descriptions, language)
+            if not description_text:
+                # Fallback: use any available description if language-specific is missing.
+                for txt in descriptions.values():
+                    txt_val = txt.strip()
+                    if txt_val:
+                        description_text = txt_val
+                        break
+
+            if not canonical or not description_text:
+                dispatcher.utter_message(text="This is a known metric, but its description is not configured yet.")
+                return []
+
+            # Human-friendly display name from SSOT synonyms.
+            display_name = ssot_loader.get_metric_display_name(canonical)
+
+            header: str
+            if display_name and display_name != canonical:
+                header = f"{canonical} – {display_name}."
             else:
-                dispatcher.utter_message(text="I don't recognise that metric.")
+                header = f"{canonical}."
+
+            parts: List[str] = [header, description_text]
+            if data_type:
+                if unit:
+                    parts.append(f"Data type: {data_type} ({unit}).")
+                else:
+                    parts.append(f"Data type: {data_type}.")
+
+            dispatcher.utter_message(text=" ".join(parts))
             return []
-
-        canonical = cast(str, record.get("canonical") or "")
-        descriptions = cast(Dict[str, str], record.get("descriptions") or {})
-        data_type = cast(Optional[str], record.get("data_type"))
-        unit = cast(Optional[str], record.get("unit"))
-
-        description_text = self._pick_description(descriptions, language)
-        if not description_text:
-            # Fallback: use any available description if language-specific is missing.
-            for txt in descriptions.values():
-                txt_val = txt.strip()
-                if txt_val:
-                    description_text = txt_val
-                    break
-
-        if not canonical or not description_text:
-            dispatcher.utter_message(text="This is a known metric, but its description is not configured yet.")
+        except Exception as e:
+            logger.exception("Error explaining metric")
+            dispatcher.utter_message(text="❌ Error explaining metric.")
+            if _ECHO_INTERNAL_ERRORS:
+                dispatcher.utter_message(text=f"Error explaining metric: {str(e)}")
             return []
-
-        # Human-friendly display name from SSOT synonyms.
-        display_name = ssot_loader.get_metric_display_name(canonical)
-
-        header: str
-        if display_name and display_name != canonical:
-            header = f"{canonical} – {display_name}."
-        else:
-            header = f"{canonical}."
-
-        parts: List[str] = [header, description_text]
-        if data_type:
-            if unit:
-                parts.append(f"Data type: {data_type} ({unit}).")
-            else:
-                parts.append(f"Data type: {data_type}.")
-
-        dispatcher.utter_message(text=" ".join(parts))
-        return []
 
     @staticmethod
     def _resolve_language(tracker: Tracker) -> str:

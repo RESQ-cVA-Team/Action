@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, cast
@@ -16,6 +17,9 @@ from src.executors.graphql.client import GraphQLProxyClient
 from src.util import env as env_util
 
 from .. import command
+
+# Privacy/safety default: don't log raw query strings.
+_LOG_CLI_GRAPHQL_QUERY = env_util.env_flag("CLI_LOG_GRAPHQL_QUERY", default=False)
 
 
 @command("test_gql")
@@ -39,7 +43,11 @@ def test_graphql(dispatcher: Any, tracker: Any, domain: Any, args: List[str], op
         )
 
         query_str = gql_req.to_graphql_string()
-        logger.debug("GraphQL CLI test query: %s", query_str)
+        q_hash = hashlib.sha256(query_str.encode("utf-8")).hexdigest()[:12]
+        if _LOG_CLI_GRAPHQL_QUERY:
+            logger.debug("GraphQL CLI test query (hash=%s): %s", q_hash, query_str)
+        else:
+            logger.debug("GraphQL CLI test query prepared (hash=%s, len=%s)", q_hash, len(query_str))
 
         client = GraphQLProxyClient(proxy_url=proxy_url, graphql_url=graphql_url)
         result = client.query(query_str=query_str, session_token=session_token)

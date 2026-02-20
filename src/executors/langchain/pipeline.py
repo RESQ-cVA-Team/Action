@@ -1,7 +1,6 @@
 import logging
 from typing import Any, Callable, Dict, List, Literal, Optional, Type, TypedDict, Union, overload
 
-from langchain_core.runnables import RunnablePassthrough
 from langchain_openai import ChatOpenAI
 
 from langchain.prompts import ChatPromptTemplate
@@ -10,6 +9,12 @@ from src.executors.langchain.examples import get_few_shot_examples
 from src.util import env
 
 logger = logging.getLogger(__name__)
+# Privacy/safety defaults:
+# - Do not log prompts or chain-of-thought by default.
+# - Allow opting in for debugging via env flags.
+_LOG_PROMPTS = env.env_flag("PLANNER_LOG_PROMPTS", default=False)
+_LOG_REASONING = env.env_flag("PLANNER_LOG_REASONING", default=False)
+_ENABLE_COT = env.env_flag("PLANNER_ENABLE_COT", default=True)
 
 LLM_MODEL = env.require_all_env("LLM_MODEL")
 llm: Any = ChatOpenAI(model=LLM_MODEL, temperature=0)
@@ -97,19 +102,6 @@ structured_llm: Any = llm.with_structured_output(AnalysisPlan)
 cot_chain: Any = cot_prompt | llm
 plan_chain: Any = plan_prompt | structured_llm
 
-full_chain: Any = (
-    RunnablePassthrough.assign(
-        reasoning=lambda x: cot_chain.invoke(
-            {
-                "question": x["question"],
-                "entities": x["entities"],
-                "language": x.get("language", "auto"),
-            }
-        )
-    )
-    | plan_chain
-)
-
 
 class GeneratePlanDebug(TypedDict):
     """Typed structure for debug output of generate_analysis_plan."""
@@ -194,40 +186,54 @@ def generate_analysis_plan(
         "few_shots": FEW_SHOTS_TEXT,
         "language": language,
     }
-    logger.info(f"[Planner] input_dict: {input_dict}")
-    _chain: Any = full_chain
+    if _LOG_PROMPTS:
+        logger.debug("[Planner] input_dict: %s", input_dict)
+    logger.info("[Planner] generate_analysis_plan invoked (language=%s)", language)
+
     steps: List[Any] = []
     attempts: List[Any] = []
-    reasoning: Any = None
+
+    # Optional chain-of-thought step (kept out of logs by default).
+    reasoning: Any = ""
     cot_inputs: Dict[str, Any] = {
         "question": question,
         "entities": json.dumps(entities),
         "language": language,
     }
-    logger.info(f"[Planner] cot_inputs: {cot_inputs}")
-    try:
-        cot_prompt_rendered: str = cot_prompt.format_prompt(**cot_inputs).to_string()
-        logger.info(f"[Planner] cot_prompt_rendered: {cot_prompt_rendered}")
-        cot_response: Any = cot_chain.invoke(cot_inputs)
-        logger.info(f"[Planner] cot_response: {cot_response}")
-        steps.append(
-            {
-                "step": "chain_of_thought",
-                "prompt": cot_prompt_rendered,
-                "response": cot_response,
-            }
-        )
-        reasoning = cot_response
-    except Exception as cot_exc:
-        logger.error(f"[Planner] COT Exception: {cot_exc}")
-        steps.append(
-            {
-                "step": "chain_of_thought",
-                "prompt": cot_prompt.format_prompt(**cot_inputs).to_string(),
-                "response": f"ERROR: {cot_exc}",
-            }
-        )
-        reasoning = f"ERROR: {cot_exc}"
+
+    if _ENABLE_COT:
+        try:
+            cot_prompt_rendered: str = cot_prompt.format_prompt(**cot_inputs).to_string()
+            if _LOG_PROMPTS:
+                logger.debug("[Planner] cot_prompt_rendered: %s", cot_prompt_rendered)
+            cot_response: Any = cot_chain.invoke(cot_inputs)
+            # Prefer plain text content to avoid bloating prompts.
+            reasoning_text: str
+            try:
+                reasoning_text = str(getattr(cot_response, "content"))
+            except Exception:
+                reasoning_text = str(cot_response)
+            if _LOG_REASONING:
+                logger.debug("[Planner] cot_response(content): %s", reasoning_text)
+            steps.append(
+                {
+                    "step": "chain_of_thought",
+                    "prompt": cot_prompt_rendered if _LOG_PROMPTS else "(prompt logging disabled)",
+                    "response": reasoning_text if _LOG_REASONING else "(reasoning logging disabled)",
+                }
+            )
+            reasoning = reasoning_text
+        except Exception as cot_exc:
+            logger.warning("[Planner] COT step failed; continuing without it: %s", cot_exc)
+            steps.append(
+                {
+                    "step": "chain_of_thought",
+                    "prompt": "(prompt logging disabled)",
+                    "response": f"ERROR: {cot_exc}",
+                }
+            )
+            reasoning = ""
+
     plan_inputs: Dict[str, Any] = {
         "question": question,
         "entities": json.dumps(entities),
@@ -235,21 +241,29 @@ def generate_analysis_plan(
         "few_shots": FEW_SHOTS_TEXT,
         "language": language,
     }
-    logger.info(f"[Planner] plan_inputs: {plan_inputs}")
-    plan_prompt_rendered: str = plan_prompt.format_prompt(**plan_inputs).to_string()
-    logger.info(f"[Planner] plan_prompt_rendered: {plan_prompt_rendered}")
+
+    plan_prompt_rendered: str = ""
+    if _LOG_PROMPTS:
+        try:
+            plan_prompt_rendered = plan_prompt.format_prompt(**plan_inputs).to_string()
+            logger.debug("[Planner] plan_prompt_rendered: %s", plan_prompt_rendered)
+        except Exception:
+            plan_prompt_rendered = "(failed to render prompt for logging)"
     for attempt in range(max_retries + 1):
         if progress_cb is not None:
             dots = "." * (attempt + 1)
             progress_cb(f"Thinking about a plan.{dots}")
         try:
-            logger.info(f"[Planner] Attempt {attempt + 1}: invoking _chain with input_dict: {input_dict}")
-            result: Any = _chain.invoke(input_dict)
-            logger.info(f"[Planner] Attempt {attempt + 1}: result: {result}")
+            # Invoke only the plan chain here. (We already ran the optional COT step above.)
+            if _LOG_PROMPTS:
+                logger.debug("[Planner] Attempt %s: invoking plan_chain", attempt + 1)
+            result: Any = plan_chain.invoke(plan_inputs)
+            if _LOG_PROMPTS:
+                logger.debug("[Planner] Attempt %s: result: %s", attempt + 1, result)
             steps.append(
                 {
                     "step": f"plan_attempt_{attempt + 1}",
-                    "prompt": plan_prompt_rendered,
+                    "prompt": plan_prompt_rendered if _LOG_PROMPTS else "(prompt logging disabled)",
                     "response": result,
                 }
             )
@@ -274,11 +288,11 @@ def generate_analysis_plan(
                 progress_cb("Finished thinking about a plan.")
             return result
         except ValidationError as ve:
-            logger.error(f"[Planner] ValidationError: {ve}")
+            logger.warning("[Planner] ValidationError on attempt %s: %s", attempt + 1, ve)
             attempts.append(
                 {
                     "error": str(ve),
-                    "input": input_dict,
+                    "input": input_dict if _LOG_PROMPTS else "(input logging disabled)",
                     "output": ve.json() if hasattr(ve, "json") else str(ve),
                 }
             )
@@ -292,24 +306,68 @@ def generate_analysis_plan(
                     }
                 raise
             invalid_output: str = ve.json() if hasattr(ve, "json") else str(ve)
+            # Avoid inlining raw JSON with `{}` into template text.
             critique_prompt_obj: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ignore
                 [
-                    ("system", "The following output did not pass validation. Critique the output, explain what is wrong, and then return a corrected valid AnalysisPlan JSON. Only fix the error described."),
-                    ("user", f"Original user input: {input_dict}\n\nInvalid output: {invalid_output}\n\nValidation error: {str(ve)}"),
+                    (
+                        "system",
+                        "The following output did not pass validation. Critique the output, explain what is wrong, and then return a corrected valid AnalysisPlan JSON. Only fix the error described.",
+                    ),
+                    (
+                        "user",
+                        "Original user input: {user_input}\n\nInvalid output: {invalid_output}\n\nValidation error: {validation_error}",
+                    ),
                 ]
             )
-            critique_prompt_rendered: str = critique_prompt_obj.format_prompt().to_string()
-            logger.info(f"[Planner] critique_prompt_rendered: {critique_prompt_rendered}")
+
+            critique_inputs: Dict[str, Any] = {
+                "user_input": json.dumps(input_dict, ensure_ascii=False),
+                "invalid_output": invalid_output,
+                "validation_error": str(ve),
+            }
+            critique_prompt_rendered: str = ""
+            if _LOG_PROMPTS:
+                try:
+                    critique_prompt_rendered = critique_prompt_obj.format_prompt(**critique_inputs).to_string()
+                    logger.debug("[Planner] critique_prompt_rendered: %s", critique_prompt_rendered)
+                except Exception:
+                    critique_prompt_rendered = "(failed to render critique prompt for logging)"
+
             critique_chain: Any = critique_prompt_obj | llm.with_structured_output(AnalysisPlan)
-            critique_response: Any = critique_chain.invoke({})
-            logger.info(f"[Planner] critique_response: {critique_response}")
+            try:
+                critique_response: Any = critique_chain.invoke(critique_inputs)
+            except Exception as critique_exc:
+                logger.warning("[Planner] Correction step failed on attempt %s: %s", attempt + 1, critique_exc)
+                steps.append(
+                    {
+                        "step": f"correction_attempt_{attempt + 1}",
+                        "prompt": critique_prompt_rendered if _LOG_PROMPTS else "(prompt logging disabled)",
+                        "response": f"ERROR: {critique_exc}",
+                    }
+                )
+                continue
+
+            # Treat the critique response as the corrected result immediately.
             steps.append(
                 {
                     "step": f"correction_attempt_{attempt + 1}",
-                    "prompt": critique_prompt_rendered,
+                    "prompt": critique_prompt_rendered if _LOG_PROMPTS else "(prompt logging disabled)",
                     "response": critique_response,
                 }
             )
-            _chain = critique_chain
+            if debug:
+                debug_payload: GeneratePlanDebug = {
+                    "reasoning": reasoning,
+                    "steps": steps,
+                    "attempts": attempts,
+                    "final_output": critique_response if isinstance(critique_response, AnalysisPlan) else None,
+                }
+                if progress_cb is not None:
+                    progress_cb("Finished thinking about a plan.")
+                return debug_payload
+            assert isinstance(critique_response, AnalysisPlan), "Expected AnalysisPlan from critique structured output"
+            if progress_cb is not None:
+                progress_cb("Finished thinking about a plan.")
+            return critique_response
     # Should never reach here; all paths either return or raise inside the loop
     raise RuntimeError("generate_analysis_plan failed to produce a result")
