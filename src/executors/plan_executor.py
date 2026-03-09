@@ -33,7 +33,7 @@ from src.domain.langchain.schema import (
     GroupByStrokeType,
     GroupByTime,
 )
-from src.executors.graphql.client import GraphQLProxyClient
+from src.executors.graphql.client import GraphQLProxyClient, GraphQLProxyError
 from src.shared.ssot_loader import get_canonical_display_name, get_enum_option_label, get_metric_display_name, get_metric_metadata, get_sex_label, get_stroke_label
 from src.util import env as env_util
 from src.util.coalesce import coalesce
@@ -53,6 +53,13 @@ client = GraphQLProxyClient(
 
 
 METRIC_METADATA: Dict[str, Any] = get_metric_metadata()
+
+
+class VisualizationExecutionError(RuntimeError):
+    def __init__(self, user_message: str, reason: str = "unknown"):
+        super().__init__(user_message)
+        self.user_message = user_message
+        self.reason = reason
 
 
 def _get_metric_meta(metric_code: str) -> Dict[str, Any]:
@@ -270,6 +277,28 @@ async def execute_plan_async(
 
     sem = asyncio.Semaphore(max_concurrency)
 
+    def _to_execution_error(failure_reasons: List[str]) -> VisualizationExecutionError:
+        reason_set = set(failure_reasons)
+        if "timeout" in reason_set:
+            return VisualizationExecutionError(
+                user_message="The data service timed out while generating the visualization. Please try again.",
+                reason="timeout",
+            )
+        if "service_unavailable" in reason_set:
+            return VisualizationExecutionError(
+                user_message="The analytics service is temporarily unavailable. Please try again in a moment.",
+                reason="service_unavailable",
+            )
+        if "graphql_error" in reason_set:
+            return VisualizationExecutionError(
+                user_message="The analytics service returned an error while generating the visualization.",
+                reason="graphql_error",
+            )
+        return VisualizationExecutionError(
+            user_message="Could not fetch analytics data for this visualization. Please try again.",
+            reason="data_fetch_failed",
+        )
+
     def _to_gql_filter(node: Optional[S.FilterNode]) -> Optional[Any]:
         match node:
             case None:
@@ -334,6 +363,7 @@ async def execute_plan_async(
         label_parts: List[str],
         include_metric_alias: bool,
         group_by_field: Optional[str],
+        request_failures: List[str],
     ) -> List[ChartSeries]:
         async with sem:
             query_str = req.to_graphql_string()
@@ -354,19 +384,37 @@ async def execute_plan_async(
                     q_hash,
                     len(query_str),
                 )
-            resp = await asyncio.to_thread(client.query, query_str, user_sub)
+            try:
+                resp = await asyncio.to_thread(client.query, query_str, user_sub, None, True)
+            except GraphQLProxyError as exc:
+                if exc.kind == "timeout":
+                    request_failures.append("timeout")
+                elif exc.kind == "http_error" and exc.status_code in {429, 500, 502, 503, 504}:
+                    request_failures.append("service_unavailable")
+                else:
+                    request_failures.append("upstream_error")
+                logger.error(
+                    "[plan_executor] GraphQL request failed (groupBy=%s, labels=%s, kind=%s, status=%s)",
+                    group_by_field,
+                    " - ".join([p for p in label_parts if p]) or "(none)",
+                    exc.kind,
+                    exc.status_code,
+                )
+                return []
         series: List[ChartSeries] = []
         if resp is None:
-            logger.error(
-                "[test2] GraphQL returned None (likely proxy error). groupBy=%s labels=%s",
-                group_by_field,
-                " - ".join([p for p in label_parts if p]) or "(none)",
-            )
+            request_failures.append("upstream_error")
+            logger.error("[plan_executor] GraphQL returned empty response")
             return series
-        if getattr(resp, "errors", None):
-            logger.error("[test2] GraphQL errors: %s", resp.errors)
+        metrics_payload = None
         if (x := resp) and (x := x.data) and (x := x.get_metrics) and (x := x.metrics):
-            for metricName, metric in x.items():
+            metrics_payload = x
+        if getattr(resp, "errors", None):
+            request_failures.append("graphql_error")
+            error_count = len(resp.errors or [])
+            logger.error("[plan_executor] GraphQL errors returned (count=%s)", error_count)
+        if metrics_payload:
+            for metricName, metric in metrics_payload.items():
                 for kpi in metric.kpi_group:
                     if not kpi.kpi1.d1:
                         continue
@@ -418,6 +466,7 @@ async def execute_plan_async(
             server_dims = [None]
 
         for server_dim in server_dims:
+            request_failures: List[str] = []
             filter_dims: List[Dimension] = [d for d in dims if d is not server_dim]
 
             filter_categories: List[Sequence[Any]] = []
@@ -444,9 +493,10 @@ async def execute_plan_async(
                 label_parts: List[str],
                 include_metric_alias: bool,
                 group_by_field: Optional[str],
+                request_failures: List[str],
             ) -> List[ChartSeries]:
                 nonlocal completed_requests
-                result = await _run_one_request(req, label_parts, include_metric_alias, group_by_field)
+                result = await _run_one_request(req, label_parts, include_metric_alias, group_by_field, request_failures)
                 if progress_cb is not None:
                     completed_requests += 1
                     if total_requests > 0:
@@ -492,7 +542,7 @@ async def execute_plan_async(
                     groupBy=(GroupByType(server_dim.spec.field) if server_dim and isinstance(server_dim.spec, GroupByCanonicalField) else None),
                 )
 
-                tasks.append(asyncio.create_task(run_one(req, label_parts, include_metric_alias, gb_field)))
+                tasks.append(asyncio.create_task(run_one(req, label_parts, include_metric_alias, gb_field, request_failures)))
 
             all_series: List[ChartSeries] = []
             if tasks:
@@ -506,6 +556,8 @@ async def execute_plan_async(
                     planChart.title or "Chart",
                     "",
                 )
+                if request_failures:
+                    raise _to_execution_error(request_failures)
             metric_codes = [m.metric for m in planChart.metrics]
             metric_names: List[str] = []
             for code in metric_codes:

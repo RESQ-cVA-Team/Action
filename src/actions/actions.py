@@ -6,6 +6,7 @@ from rasa_sdk import Action, Tracker  # type: ignore
 from rasa_sdk import types as rasa_types  # type: ignore
 from rasa_sdk.executor import CollectingDispatcher  # type: ignore
 
+from src.actions.error_messages import friendly_hospital_error, friendly_metric_error, friendly_visualization_error
 from src.actions.long_action.long_action import LongAction
 from src.actions.long_action.long_action_context import LongActionContext
 from src.domain.langchain import schema as lang_schema
@@ -48,6 +49,7 @@ class ActionGenerateVisualization(LongAction):
         return "action_generate_visualization"
 
     async def work(self, ctx: LongActionContext) -> Any:
+        completed_successfully = False
         try:
             user_message = ctx.text
             user_sub = ctx.sender_id
@@ -118,13 +120,15 @@ class ActionGenerateVisualization(LongAction):
             )
 
             ctx.say(json_message=json.loads(visualization.model_dump_json()))
+            completed_successfully = True
         except Exception as e:
             logger.exception("Error generating visualization")
-            ctx.say(text="❌ Error generating visualization.")
+            ctx.say(text=f"❌ {friendly_visualization_error(e)}")
             if _ECHO_INTERNAL_ERRORS:
                 ctx.say(text=f"Error generating visualization: {str(e)}")
         finally:
-            ctx.say(text="✅ Visualization generation complete.")
+            if completed_successfully:
+                ctx.say(text="✅ Visualization generation complete.")
             ctx.done()
         return None
 
@@ -148,7 +152,7 @@ class ActionListHospitals(Action):
 
             raw_country = filters.get("country_code")
             if isinstance(raw_country, str) and raw_country.strip():
-                resolved_country = client.resolve_country_code(user_sub=user_sub, country_input=raw_country)
+                resolved_country = client.resolve_country_code(user_sub=user_sub, country_input=raw_country, raise_on_error=True)
                 if resolved_country:
                     filters["country_code"] = resolved_country
                 else:
@@ -163,6 +167,7 @@ class ActionListHospitals(Action):
                 sort=filters.get("sort"),
                 user=filters.get("user_id"),
                 group=filters.get("group_id"),
+                raise_on_error=True,
             )
             if not provider_page:
                 dispatcher.utter_message(text="I couldn't find any hospitals you can compare against.")
@@ -215,7 +220,7 @@ class ActionListHospitals(Action):
             return []
         except Exception as exc:
             logger.exception("Error listing hospitals")
-            dispatcher.utter_message(text="❌ Error listing hospitals.")
+            dispatcher.utter_message(text=f"❌ {friendly_hospital_error(exc)}")
             if _ECHO_INTERNAL_ERRORS:
                 dispatcher.utter_message(text=f"Error listing hospitals: {str(exc)}")
             return []
@@ -404,7 +409,7 @@ class ActionExplainMetric(Action):
             return []
         except Exception as e:
             logger.exception("Error explaining metric")
-            dispatcher.utter_message(text="❌ Error explaining metric.")
+            dispatcher.utter_message(text=f"❌ {friendly_metric_error(e)}")
             if _ECHO_INTERNAL_ERRORS:
                 dispatcher.utter_message(text=f"Error explaining metric: {str(e)}")
             return []

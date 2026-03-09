@@ -1,4 +1,6 @@
 import logging
+import time
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, TypedDict, cast
 
 import requests
@@ -6,6 +8,17 @@ import requests
 from src.util import env as env_util
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AnalyticsCenterError(Exception):
+    kind: str
+    message: str
+    status_code: Optional[int] = None
+    transient: bool = False
+
+    def __str__(self) -> str:
+        return self.message
 
 
 class ProxyHttpRequestPayload(TypedDict):
@@ -38,11 +51,131 @@ class AnalyticsCenterClient:
         action_server_token: str,
         target: str = "analytics",
         timeout_seconds: int = 30,
+        retry_attempts: int = 2,
+        retry_backoff_seconds: float = 0.6,
     ):
         self.proxy_url = proxy_url
         self.action_server_token = action_server_token
         self.target = target
         self.timeout_seconds = timeout_seconds
+        self.retry_attempts = max(0, int(retry_attempts))
+        self.retry_backoff_seconds = max(0.0, float(retry_backoff_seconds))
+
+    @staticmethod
+    def _is_transient_status(status_code: int) -> bool:
+        return status_code in {408, 429, 500, 502, 503, 504}
+
+    def _sleep_before_retry(self, attempt: int) -> None:
+        delay = self.retry_backoff_seconds * (2**attempt)
+        if delay > 0:
+            time.sleep(delay)
+
+    def _request_via_proxy(
+        self,
+        user_sub: str,
+        path: str,
+        query: Dict[str, Any],
+        request_name: str,
+        raise_on_error: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        headers = {
+            "Content-Type": "application/json",
+            "x-action-server-token": self.action_server_token,
+        }
+
+        request_payload: ProxyRequestPayload = {
+            "userSub": user_sub,
+            "target": self.target,
+            "request": {
+                "path": path,
+                "method": "GET",
+                "query": query,
+            },
+        }
+
+        attempts_total = self.retry_attempts + 1
+        last_error: Optional[AnalyticsCenterError] = None
+
+        for attempt in range(attempts_total):
+            try:
+                response = requests.post(
+                    self.proxy_url,
+                    headers=headers,
+                    json=request_payload,
+                    timeout=self.timeout_seconds,
+                )
+            except requests.Timeout as exc:
+                last_error = AnalyticsCenterError(
+                    kind="timeout",
+                    message=f"{request_name} request timed out",
+                    transient=True,
+                )
+                logger.warning(
+                    "[AnalyticsCenterClient] Timeout during %s (attempt=%s/%s): %s",
+                    request_name,
+                    attempt + 1,
+                    attempts_total,
+                    exc,
+                )
+                if attempt < self.retry_attempts:
+                    self._sleep_before_retry(attempt)
+                    continue
+                break
+            except requests.RequestException as exc:
+                last_error = AnalyticsCenterError(
+                    kind="request_error",
+                    message=f"{request_name} request failed",
+                    transient=True,
+                )
+                logger.warning(
+                    "[AnalyticsCenterClient] Request exception during %s (attempt=%s/%s): %s",
+                    request_name,
+                    attempt + 1,
+                    attempts_total,
+                    exc,
+                )
+                if attempt < self.retry_attempts:
+                    self._sleep_before_retry(attempt)
+                    continue
+                break
+
+            if response.status_code != 200:
+                logger.error(
+                    "[AnalyticsCenterClient] Proxy error %s during %s (attempt=%s/%s, target=%s, body_len=%s)",
+                    response.status_code,
+                    request_name,
+                    attempt + 1,
+                    attempts_total,
+                    self.target,
+                    len(response.text or ""),
+                )
+                transient = self._is_transient_status(response.status_code)
+                last_error = AnalyticsCenterError(
+                    kind="http_error",
+                    message=f"Proxy returned HTTP {response.status_code} during {request_name}",
+                    status_code=response.status_code,
+                    transient=transient,
+                )
+                if transient and attempt < self.retry_attempts:
+                    self._sleep_before_retry(attempt)
+                    continue
+                break
+
+            response_payload_any: Any = response.json()
+            if isinstance(response_payload_any, dict):
+                return cast(Dict[str, Any], response_payload_any)
+
+            last_error = AnalyticsCenterError(
+                kind="invalid_response",
+                message=f"Unexpected response format during {request_name}",
+                transient=False,
+            )
+            logger.error("[AnalyticsCenterClient] Unexpected response shape during %s", request_name)
+            break
+
+        if raise_on_error and last_error is not None:
+            raise last_error
+        return None
 
     def list_providers(
         self,
@@ -53,13 +186,8 @@ class AnalyticsCenterClient:
         sort: Optional[str] = None,
         user: Optional[str] = None,
         group: Optional[int] = None,
+        raise_on_error: bool = False,
     ) -> Optional[ProviderCollectionResult]:
-        url = self.proxy_url
-        headers = {
-            "Content-Type": "application/json",
-            "x-action-server-token": self.action_server_token,
-        }
-
         query: Dict[str, Any] = {
             "limit": limit,
             "offset": offset,
@@ -73,63 +201,51 @@ class AnalyticsCenterClient:
         if isinstance(group, int) and group > 0:
             query["group"] = group
 
-        request_payload: ProxyRequestPayload = {
-            "userSub": user_sub,
-            "target": self.target,
-            "request": {
-                "path": "/api/rest/analytics-center/providers",
-                "method": "GET",
-                "query": query,
-            },
-        }
-
-        try:
-            response = requests.post(url, headers=headers, json=request_payload, timeout=self.timeout_seconds)
-            if response.status_code != 200:
-                logger.error(
-                    "[AnalyticsCenterClient] Proxy error %s fetching providers (target=%s, body_len=%s)",
-                    response.status_code,
-                    self.target,
-                    len(response.text or ""),
-                )
-                return None
-            response_payload_any: Any = response.json()
-            if isinstance(response_payload_any, dict):
-                payload_dict = cast(Dict[str, Any], response_payload_any)
-            else:
-                payload_dict = {}
-
-            results_any = payload_dict.get("results")
-            if isinstance(results_any, list):
-                results_list = cast(List[Any], results_any)
-                provider_results: List[Dict[str, Any]] = [cast(Dict[str, Any], r) for r in results_list if isinstance(r, dict)]
-
-                pagination_any = payload_dict.get("pagination")
-                count = len(provider_results)
-                out_limit = limit
-                out_offset = offset
-                if isinstance(pagination_any, dict):
-                    pagination_dict = cast(Dict[str, Any], pagination_any)
-                    c_any = pagination_dict.get("count")
-                    l_any = pagination_dict.get("limit")
-                    o_any = pagination_dict.get("offset")
-                    if isinstance(c_any, int) and c_any >= 0:
-                        count = c_any
-                    if isinstance(l_any, int) and l_any >= 0:
-                        out_limit = l_any
-                    if isinstance(o_any, int) and o_any >= 0:
-                        out_offset = o_any
-
-                return {
-                    "results": provider_results,
-                    "count": count,
-                    "limit": out_limit,
-                    "offset": out_offset,
-                }
-            logger.error("[AnalyticsCenterClient] Unexpected response format from providers list")
+        payload_dict = self._request_via_proxy(
+            user_sub=user_sub,
+            path="/api/rest/analytics-center/providers",
+            query=query,
+            request_name="list_providers",
+            raise_on_error=raise_on_error,
+        )
+        if payload_dict is None:
             return None
-        except Exception as exc:
-            logger.error("[AnalyticsCenterClient] Request failed: %s", exc)
+
+        results_any = payload_dict.get("results")
+        if isinstance(results_any, list):
+            results_list = cast(List[Any], results_any)
+            provider_results: List[Dict[str, Any]] = [cast(Dict[str, Any], r) for r in results_list if isinstance(r, dict)]
+
+            pagination_any = payload_dict.get("pagination")
+            count = len(provider_results)
+            out_limit = limit
+            out_offset = offset
+            if isinstance(pagination_any, dict):
+                pagination_dict = cast(Dict[str, Any], pagination_any)
+                c_any = pagination_dict.get("count")
+                l_any = pagination_dict.get("limit")
+                o_any = pagination_dict.get("offset")
+                if isinstance(c_any, int) and c_any >= 0:
+                    count = c_any
+                if isinstance(l_any, int) and l_any >= 0:
+                    out_limit = l_any
+                if isinstance(o_any, int) and o_any >= 0:
+                    out_offset = o_any
+
+            return {
+                "results": provider_results,
+                "count": count,
+                "limit": out_limit,
+                "offset": out_offset,
+            }
+
+        logger.error("[AnalyticsCenterClient] Unexpected response format from providers list")
+        if raise_on_error:
+            raise AnalyticsCenterError(
+                kind="invalid_response",
+                message="Unexpected providers response format",
+                transient=False,
+            )
             return None
 
     def list_countries(
@@ -138,13 +254,8 @@ class AnalyticsCenterClient:
         limit: int = 300,
         offset: int = 0,
         code: Optional[str] = None,
+        raise_on_error: bool = False,
     ) -> Optional[CountryCollectionResult]:
-        url = self.proxy_url
-        headers = {
-            "Content-Type": "application/json",
-            "x-action-server-token": self.action_server_token,
-        }
-
         query: Dict[str, Any] = {
             "limit": limit,
             "offset": offset,
@@ -152,46 +263,32 @@ class AnalyticsCenterClient:
         if isinstance(code, str) and code.strip():
             query["code"] = code.strip().upper()
 
-        request_payload: ProxyRequestPayload = {
-            "userSub": user_sub,
-            "target": self.target,
-            "request": {
-                "path": "/api/rest/analytics-center/countries",
-                "method": "GET",
-                "query": query,
-            },
-        }
-
-        try:
-            response = requests.post(url, headers=headers, json=request_payload, timeout=self.timeout_seconds)
-            if response.status_code != 200:
-                logger.error(
-                    "[AnalyticsCenterClient] Proxy error %s fetching countries (target=%s, body_len=%s)",
-                    response.status_code,
-                    self.target,
-                    len(response.text or ""),
-                )
-                return None
-
-            response_payload_any: Any = response.json()
-            if isinstance(response_payload_any, dict):
-                payload_dict = cast(Dict[str, Any], response_payload_any)
-            else:
-                payload_dict = {}
-
-            results_any = payload_dict.get("results")
-            if isinstance(results_any, list):
-                results_list = cast(List[Any], results_any)
-                country_results: List[Dict[str, Any]] = [cast(Dict[str, Any], r) for r in results_list if isinstance(r, dict)]
-                return {"results": country_results}
-
-            logger.error("[AnalyticsCenterClient] Unexpected response format from countries list")
-            return None
-        except Exception as exc:
-            logger.error("[AnalyticsCenterClient] Country request failed: %s", exc)
+        payload_dict = self._request_via_proxy(
+            user_sub=user_sub,
+            path="/api/rest/analytics-center/countries",
+            query=query,
+            request_name="list_countries",
+            raise_on_error=raise_on_error,
+        )
+        if payload_dict is None:
             return None
 
-    def resolve_country_code(self, user_sub: str, country_input: str) -> Optional[str]:
+        results_any = payload_dict.get("results")
+        if isinstance(results_any, list):
+            results_list = cast(List[Any], results_any)
+            country_results: List[Dict[str, Any]] = [cast(Dict[str, Any], r) for r in results_list if isinstance(r, dict)]
+            return {"results": country_results}
+
+        logger.error("[AnalyticsCenterClient] Unexpected response format from countries list")
+        if raise_on_error:
+            raise AnalyticsCenterError(
+                kind="invalid_response",
+                message="Unexpected countries response format",
+                transient=False,
+            )
+            return None
+
+    def resolve_country_code(self, user_sub: str, country_input: str, raise_on_error: bool = False) -> Optional[str]:
         raw = (country_input or "").strip()
         if not raw:
             return None
@@ -217,7 +314,7 @@ class AnalyticsCenterClient:
         if normalized in aliases:
             return aliases[normalized]
 
-        countries_page = self.list_countries(user_sub=user_sub, limit=300, offset=0)
+        countries_page = self.list_countries(user_sub=user_sub, limit=300, offset=0, raise_on_error=raise_on_error)
         if not countries_page:
             return None
 
