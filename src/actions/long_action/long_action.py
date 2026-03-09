@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import threading
 import uuid
@@ -19,6 +20,7 @@ from . import long_action_registry as registry
 from .long_action_context import LongActionContext
 
 _CALLBACK_TOKEN_ENV = "LONG_TASK_CALLBACK_TOKEN"
+logger = logging.getLogger(__name__)
 # Privacy/safety defaults: do not log callback payloads or URLs.
 _LOG_CALLBACK_STATUS = env_util.env_flag("LONG_ACTION_LOG_CALLBACK_STATUS", default=False)
 _LOG_CALLBACK_ERRORS = env_util.env_flag("LONG_ACTION_LOG_CALLBACK_ERRORS", default=False)

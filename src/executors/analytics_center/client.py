@@ -26,7 +26,7 @@ class ProviderCollectionResult(TypedDict):
     limit: int
     offset: int
 
-b 
+
 class CountryCollectionResult(TypedDict):
     results: List[Dict[str, Any]]
 
