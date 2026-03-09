@@ -43,8 +43,13 @@ logger = logging.getLogger(__name__)
 # - Avoid logging raw GraphQL queries by default.
 _LOG_GRAPHQL_QUERY = env_util.env_flag("EXECUTOR_LOG_GRAPHQL_QUERY", default=False)
 
-proxy_url, api_url = env_util.require_all_env("GRAPHQL_PROXY_URL", "GRAPHQL_API_URL")
-client = GraphQLProxyClient(proxy_url=proxy_url, graphql_url=api_url)
+proxy_url, action_server_token = env_util.require_all_env("RASA_PROXY_URL", "ACTION_SERVER_TOKEN")
+graphql_target = env_util.require_any_env("RASA_PROXY_GRAPHQL_TARGET")
+client = GraphQLProxyClient(
+    proxy_url=proxy_url,
+    action_server_token=action_server_token,
+    target=graphql_target if isinstance(graphql_target, str) and graphql_target.strip() else "graphql",
+)
 
 
 METRIC_METADATA: Dict[str, Any] = get_metric_metadata()
@@ -227,13 +232,13 @@ class Dimension:
         return None
 
 
-def execute_plan(plan: AnalysisPlan, session_token: str) -> VisualizationResponse:
+def execute_plan(plan: AnalysisPlan, user_sub: str) -> VisualizationResponse:
     """Sync wrapper that delegates to the async implementation with concurrency=1.
 
     - If no event loop is running, run the coroutine directly with asyncio.run.
     - If an event loop is already running, offload to a new thread and run a fresh loop there.
     """
-    coro = execute_plan_async(plan, session_token, max_concurrency=1)
+    coro = execute_plan_async(plan, user_sub, max_concurrency=1)
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -248,7 +253,7 @@ ProgressCallback = Callable[[str], None]
 
 async def execute_plan_async(
     plan: AnalysisPlan,
-    session_token: str,
+    user_sub: str,
     max_concurrency: int = 4,
     progress_cb: Optional[ProgressCallback] = None,
 ) -> VisualizationResponse:
@@ -349,7 +354,7 @@ async def execute_plan_async(
                     q_hash,
                     len(query_str),
                 )
-            resp = await asyncio.to_thread(client.query, query_str, session_token)
+            resp = await asyncio.to_thread(client.query, query_str, user_sub)
         series: List[ChartSeries] = []
         if resp is None:
             logger.error(

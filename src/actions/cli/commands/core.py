@@ -14,6 +14,7 @@ def _help(dispatcher: Any, tracker: Any, domain: Any, args: List[str], opts: Dic
         "  help                       Show this help",
         "  ping                       Simple connectivity check",
         "  gql | test_gql             Run GraphQL smoke test",
+        "  hospitals | test_hospitals Test provider listing/search filters",
         "  test_charts                Send demo charts payload (all charts)",
         "  test_line                  Send a single demo line chart",
         "  test_analytics             Demo chart + typed statistical results",

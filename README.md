@@ -6,7 +6,7 @@ At a high level:
 
 - A user asks a question (e.g. “Show DTN by sex over the last 6 months”).
 - The server creates an **AnalysisPlan** (either via a heuristic planner or an LLM-based planner).
-- It executes the plan by querying a **GraphQL backend via a proxy**.
+- It executes the plan by querying upstream services through the app backend **`/api/rasa-proxy`** endpoint.
 - It returns a typed **VisualizationResponse** (charts + optional stats) as a Rasa `json_message` payload.
 
 The action server entrypoint is the standard Rasa SDK module invocation:
@@ -62,8 +62,8 @@ Run (example):
 
 ```bash
 docker run --rm -p 5055:5055 \
-	-e GRAPHQL_PROXY_URL=... \
-	-e GRAPHQL_API_URL=... \
+	-e RASA_PROXY_URL=... \
+	-e ACTION_SERVER_TOKEN=... \
 	-e LLM_MODEL=... \
 	-e OPENAI_API_KEY=... \
 	<your-published-image>:<tag>
@@ -75,10 +75,15 @@ This codebase loads `.env` automatically (via python-dotenv) when you use helper
 
 ### Required
 
-- **`GRAPHQL_PROXY_URL`**: proxy endpoint that forwards GraphQL requests.
-- **`GRAPHQL_API_URL`**: upstream GraphQL aggregation endpoint.
+- **`RASA_PROXY_URL`**: app backend proxy endpoint (for example `http://host.docker.internal:3000/api/rasa-proxy`).
+- **`ACTION_SERVER_TOKEN`**: shared secret sent as `x-action-server-token` when calling the proxy.
 - **`LLM_MODEL`**: model name passed to `langchain_openai.ChatOpenAI(model=...)`.
 - **`OPENAI_API_KEY`**: OpenAI-compatible API key.
+
+### Optional: proxy target/path overrides
+
+- `RASA_PROXY_GRAPHQL_TARGET` (default: `graphql`)
+- `RASA_PROXY_ANALYTICS_TARGET` (default: `analytics`)
 
 ### Optional
 

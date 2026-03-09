@@ -13,11 +13,16 @@ class GraphQLPayload(TypedDict):
     variables: Dict[str, Any]
 
 
+class ProxyHttpRequestPayload(TypedDict):
+    path: str
+    method: str
+    body: GraphQLPayload
+
+
 class ProxyRequestPayload(TypedDict):
-    operation: str
+    userSub: str
     target: str
-    url: str
-    payload: GraphQLPayload
+    request: ProxyHttpRequestPayload
 
 
 logger = logging.getLogger(__name__)
@@ -27,25 +32,43 @@ _LOG_GRAPHQL_BODY = env_util.env_flag("GRAPHQL_LOG_BODY", default=False)
 
 
 class GraphQLProxyClient:
-    def __init__(self, proxy_url: str, graphql_url: str):
+    def __init__(
+        self,
+        proxy_url: str,
+        action_server_token: str,
+        target: str = "graphql",
+        path: str = "/api/graphql/aggregation",
+        timeout_seconds: int = 30,
+    ):
         self.proxy_url = proxy_url
-        self.graphql_url = graphql_url
+        self.action_server_token = action_server_token
+        self.target = target
+        self.path = path
+        self.timeout_seconds = timeout_seconds
 
-    def query(self, query_str: str, session_token: str, variables: Optional[Dict[str, Any]] = None) -> gqlr.MetricsQueryResponse | None:
+    def query(self, query_str: str, user_sub: str, variables: Optional[Dict[str, Any]] = None) -> gqlr.MetricsQueryResponse | None:
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {session_token}",
+            "x-action-server-token": self.action_server_token,
         }
 
         proxy_payload: ProxyRequestPayload = {
-            "operation": "query",
-            "target": "graphql",
-            "url": self.graphql_url,
-            "payload": {"query": query_str, "variables": variables or {}},
+            "userSub": user_sub,
+            "target": self.target,
+            "request": {
+                "path": self.path,
+                "method": "POST",
+                "body": {"query": query_str, "variables": variables or {}},
+            },
         }
 
         try:
-            response = requests.post(self.proxy_url, headers=headers, json=proxy_payload)
+            response = requests.post(
+                self.proxy_url,
+                headers=headers,
+                json=proxy_payload,
+                timeout=self.timeout_seconds,
+            )
 
             q_hash = hashlib.sha256(query_str.encode("utf-8")).hexdigest()[:12]
 
@@ -69,18 +92,20 @@ class GraphQLProxyClient:
                     body_preview = response.text[:1000] if _LOG_GRAPHQL_BODY else "(body logging disabled)"
                     query_preview = query_str[:300] if _LOG_GRAPHQL_QUERY else "(query logging disabled)"
                     logger.error(
-                        "[GraphQLProxyClient] Error %s (Content-Type=%s, hash=%s). Body preview: %s. Query preview: %s",
+                        "[GraphQLProxyClient] Proxy error %s (Content-Type=%s, target=%s, hash=%s). Body preview: %s. Query preview: %s",
                         response.status_code,
                         content_type,
+                        self.target,
                         q_hash,
                         body_preview,
                         query_preview,
                     )
                 else:
                     logger.error(
-                        "[GraphQLProxyClient] Error %s (Content-Type=%s, hash=%s, body_len=%s, query_len=%s)",
+                        "[GraphQLProxyClient] Proxy error %s (Content-Type=%s, target=%s, hash=%s, body_len=%s, query_len=%s)",
                         response.status_code,
                         content_type,
+                        self.target,
                         q_hash,
                         len(response.text or ""),
                         len(query_str),

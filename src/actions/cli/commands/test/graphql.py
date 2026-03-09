@@ -27,8 +27,9 @@ def test_graphql(dispatcher: Any, tracker: Any, domain: Any, args: List[str], op
     """Run a minimal GraphQL smoke test via the proxy and report status."""
     logger = logging.getLogger(__name__)
     try:
-        proxy_url, graphql_url = env_util.require_all_env("GRAPHQL_PROXY_URL", "GRAPHQL_API_URL")
-        session_token = tracker.sender_id
+        proxy_url, action_server_token = env_util.require_all_env("RASA_PROXY_URL", "ACTION_SERVER_TOKEN")
+        user_sub = tracker.sender_id
+        graphql_target = env_util.require_any_env("RASA_PROXY_GRAPHQL_TARGET")
         provider_ids: List[int] = [1]
 
         end_dt = datetime.now(timezone.utc).date()
@@ -49,8 +50,12 @@ def test_graphql(dispatcher: Any, tracker: Any, domain: Any, args: List[str], op
         else:
             logger.debug("GraphQL CLI test query prepared (hash=%s, len=%s)", q_hash, len(query_str))
 
-        client = GraphQLProxyClient(proxy_url=proxy_url, graphql_url=graphql_url)
-        result = client.query(query_str=query_str, session_token=session_token)
+        client = GraphQLProxyClient(
+            proxy_url=proxy_url,
+            action_server_token=action_server_token,
+            target=graphql_target if isinstance(graphql_target, str) and graphql_target.strip() else "graphql",
+        )
+        result = client.query(query_str=query_str, user_sub=user_sub)
 
         if result is None:
             dispatcher.utter_message(text="❌ GraphQL test request failed (no response or non-200). Check logs for details.")

@@ -50,7 +50,7 @@ class ActionGenerateVisualization(LongAction):
     async def work(self, ctx: LongActionContext) -> Any:
         try:
             user_message = ctx.text
-            session_token = ctx.sender_id
+            user_sub = ctx.sender_id
             if _LOG_USER_TEXT:
                 logger.info("Processing visualization request: '%s'", user_message)
             else:
@@ -112,7 +112,7 @@ class ActionGenerateVisualization(LongAction):
 
             visualization = await plan_executor.execute_plan_async(
                 plan_obj,
-                session_token=session_token,
+                user_sub=user_sub,
                 max_concurrency=4,
                 progress_cb=progress,
             )
@@ -142,12 +142,36 @@ class ActionListHospitals(Action):
         domain: rasa_types.DomainDict,
     ) -> List[Dict[Text, Any]]:
         try:
-            session_token = tracker.sender_id
+            user_sub = tracker.sender_id
+            filters = self._extract_filters(tracker)
             client = get_analytics_center_client()
-            providers = client.list_providers(session_token=session_token, limit=50, offset=0)
-            if not providers:
+
+            raw_country = filters.get("country_code")
+            if isinstance(raw_country, str) and raw_country.strip():
+                resolved_country = client.resolve_country_code(user_sub=user_sub, country_input=raw_country)
+                if resolved_country:
+                    filters["country_code"] = resolved_country
+                else:
+                    dispatcher.utter_message(text=f"I couldn't match country '{raw_country}'. Please try a 2-letter code like ES, MX, DE, or FR.")
+                    return []
+
+            provider_page = client.list_providers(
+                user_sub=user_sub,
+                limit=filters["limit"],
+                offset=filters["offset"],
+                country_code=filters.get("country_code"),
+                sort=filters.get("sort"),
+                user=filters.get("user_id"),
+                group=filters.get("group_id"),
+            )
+            if not provider_page:
                 dispatcher.utter_message(text="I couldn't find any hospitals you can compare against.")
                 return []
+
+            providers = provider_page["results"]
+            total_count = provider_page["count"]
+            offset = provider_page["offset"]
+            limit = provider_page["limit"]
 
             names: List[str] = []
             for provider in providers:
@@ -155,11 +179,39 @@ class ActionListHospitals(Action):
                 if isinstance(name, str) and name.strip():
                     names.append(name.strip())
 
+            name_filter = filters.get("name_contains")
+            if isinstance(name_filter, str) and name_filter.strip():
+                needle = name_filter.strip().lower()
+                names = [n for n in names if needle in n.lower()]
+
             if not names:
-                dispatcher.utter_message(text="I couldn't find any hospitals you can compare against.")
+                no_match_msg = "I couldn't find any hospitals matching your filters."
+                if isinstance(name_filter, str) and name_filter.strip():
+                    no_match_msg += " Try a shorter or less specific name."
+                dispatcher.utter_message(text=no_match_msg)
                 return []
 
-            dispatcher.utter_message(json_message={"hospitals": names})
+            preview = ", ".join(names[:10])
+            more_count = max(len(names) - 10, 0)
+            criteria: List[str] = []
+            country_code = filters.get("country_code")
+            sort = filters.get("sort")
+            if isinstance(country_code, str) and country_code.strip():
+                criteria.append(f"country={country_code.strip().upper()}")
+            if isinstance(sort, str) and sort.strip():
+                criteria.append(f"sort={sort.strip()}")
+
+            criteria_text = f" ({', '.join(criteria)})" if criteria else ""
+
+            if isinstance(name_filter, str) and name_filter.strip():
+                prefix = f"I found {len(names)} matching hospitals on this page (search='{name_filter.strip()}', offset={offset}, limit={limit}); total providers before name filter: {total_count}."
+            else:
+                shown_start = offset + 1 if names else 0
+                shown_end = offset + len(names)
+                prefix = f"I found {total_count} hospitals{criteria_text}; showing {shown_start}-{shown_end}."
+
+            text_message = prefix + f" {preview}." + (f" (+{more_count} more in this page)" if more_count else "")
+            dispatcher.utter_message(text=text_message)
             return []
         except Exception as exc:
             logger.exception("Error listing hospitals")
@@ -167,6 +219,110 @@ class ActionListHospitals(Action):
             if _ECHO_INTERNAL_ERRORS:
                 dispatcher.utter_message(text=f"Error listing hospitals: {str(exc)}")
             return []
+
+    @staticmethod
+    def _extract_filters(tracker: Tracker) -> Dict[str, Any]:
+        tracker_any: Any = tracker
+        latest_any: Any = tracker_any.latest_message or {}
+        latest = cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
+
+        metadata_any: Any = latest.get("metadata")
+        metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
+
+        entities_by_name: Dict[str, Any] = {}
+        entities_any: Any = latest.get("entities")
+        if isinstance(entities_any, list):
+            entities_list = cast(List[Any], entities_any)
+            for ent_any in entities_list:
+                if not isinstance(ent_any, dict):
+                    continue
+                ent = cast(Dict[str, Any], ent_any)
+                key = ent.get("entity")
+                value = ent.get("value")
+                if isinstance(key, str) and key.strip() and value is not None and key not in entities_by_name:
+                    entities_by_name[key] = value
+
+        def first_str(*candidates: Any) -> Optional[str]:
+            for candidate in candidates:
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip()
+            return None
+
+        def first_int(*candidates: Any) -> Optional[int]:
+            for candidate in candidates:
+                if isinstance(candidate, int):
+                    return candidate
+                if isinstance(candidate, str):
+                    txt = candidate.strip()
+                    if txt.isdigit():
+                        return int(txt)
+            return None
+
+        country_code = first_str(
+            metadata.get("countryCode"),
+            metadata.get("country_code"),
+            entities_by_name.get("countryCode"),
+            entities_by_name.get("country_code"),
+            entities_by_name.get("country"),
+            tracker_any.get_slot("countryCode"),
+            tracker_any.get_slot("country_code"),
+            tracker_any.get_slot("country"),
+        )
+
+        name_contains = first_str(
+            metadata.get("hospitalName"),
+            metadata.get("hospital_name"),
+            metadata.get("name"),
+            entities_by_name.get("hospital_name"),
+            entities_by_name.get("hospital"),
+            entities_by_name.get("provider"),
+            entities_by_name.get("name"),
+            tracker_any.get_slot("hospital_name"),
+            tracker_any.get_slot("hospital"),
+            tracker_any.get_slot("provider"),
+            tracker_any.get_slot("name"),
+        )
+
+        sort = first_str(
+            metadata.get("sort"),
+            tracker_any.get_slot("sort"),
+        )
+
+        user_id = first_str(
+            metadata.get("user"),
+            metadata.get("userId"),
+            tracker_any.get_slot("user"),
+            tracker_any.get_slot("user_id"),
+        )
+
+        group_id = first_int(
+            metadata.get("group"),
+            metadata.get("groupId"),
+            tracker_any.get_slot("group"),
+            tracker_any.get_slot("group_id"),
+        )
+
+        limit_val = first_int(
+            metadata.get("limit"),
+            tracker_any.get_slot("limit"),
+        )
+        offset_val = first_int(
+            metadata.get("offset"),
+            tracker_any.get_slot("offset"),
+        )
+
+        limit = 50 if limit_val is None else max(1, min(limit_val, 200))
+        offset = 0 if offset_val is None else max(0, offset_val)
+
+        return {
+            "country_code": country_code.upper() if isinstance(country_code, str) and len(country_code) == 2 else country_code,
+            "name_contains": name_contains,
+            "sort": sort,
+            "user_id": user_id,
+            "group_id": group_id,
+            "limit": limit,
+            "offset": offset,
+        }
 
 
 class ActionExplainMetric(Action):
