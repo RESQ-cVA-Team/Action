@@ -42,6 +42,14 @@ def env_flag(name: str, default: bool = False) -> bool:
     return default
 
 
+def get_env(name: str, default: str | None = None) -> str | None:
+    """Get an optional environment variable with dotenv loading applied."""
+
+    _ensure_loaded()
+    value = os.getenv(name)
+    return value if value is not None else default
+
+
 @overload
 def require_all_env(key: str) -> str: ...
 @overload

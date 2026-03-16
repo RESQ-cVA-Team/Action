@@ -64,8 +64,10 @@ Run (example):
 docker run --rm -p 5055:5055 \
 	-e RASA_PROXY_URL=... \
 	-e ACTION_SERVER_TOKEN=... \
+	-e LLM_PROVIDER=openai-compatible \
 	-e LLM_MODEL=... \
-	-e OPENAI_API_KEY=... \
+	-e LLM_BASE_URL=... \
+	-e LLM_API_KEY=... \
 	<your-published-image>:<tag>
 ```
 
@@ -77,8 +79,8 @@ This codebase loads `.env` automatically (via python-dotenv) when you use helper
 
 - **`RASA_PROXY_URL`**: app backend proxy endpoint (for example `http://host.docker.internal:3000/api/rasa-proxy`).
 - **`ACTION_SERVER_TOKEN`**: shared secret sent as `x-action-server-token` when calling the proxy.
-- **`LLM_MODEL`**: model name passed to `langchain_openai.ChatOpenAI(model=...)`.
-- **`OPENAI_API_KEY`**: OpenAI-compatible API key.
+- **`LLM_PROVIDER`**: one of `openai`, `openai-compatible`, `ollama`, `vllm`, or `sglang`.
+- **`LLM_MODEL`**: model name for the selected provider.
 
 ### Optional: proxy target/path overrides
 
@@ -88,6 +90,36 @@ This codebase loads `.env` automatically (via python-dotenv) when you use helper
 ### Optional
 
 - `LOGLEVEL` (default: `INFO`): logging level used by [src/__init__.py](src/__init__.py).
+
+### LLM provider configuration
+
+- For `LLM_PROVIDER=openai`:
+	- `LLM_API_KEY` is required.
+- For `LLM_PROVIDER=openai-compatible`:
+	- `LLM_BASE_URL` is required.
+	- `LLM_API_KEY` is required.
+- For `LLM_PROVIDER=ollama`:
+	- `LLM_BASE_URL` is optional (default: `http://ollama:11434`).
+- For `LLM_PROVIDER=vllm`:
+	- `LLM_BASE_URL` is required.
+	- `LLM_API_KEY` is optional (required only if your vLLM gateway enforces auth).
+- For `LLM_PROVIDER=sglang`:
+	- `LLM_BASE_URL` is required.
+	- `LLM_API_KEY` is optional (required only if your SGLang gateway enforces auth).
+
+Optional advanced setting:
+
+- `LLM_KWARGS_JSON`: JSON object merged into provider constructor kwargs (for advanced provider/model flags).
+
+### Extending with new providers
+
+Provider plugins live under [src/executors/langchain/providers](src/executors/langchain/providers).
+
+To add a provider:
+
+1. Add a new plugin file implementing `LlmProviderPlugin` from [src/executors/langchain/providers/base.py](src/executors/langchain/providers/base.py).
+2. Register it in [src/executors/langchain/llm_factory.py](src/executors/langchain/llm_factory.py) via `register_provider(...)` (or registry registration).
+3. Set `LLM_PROVIDER` to that plugin name.
 
 ### Optional: callback streaming
 

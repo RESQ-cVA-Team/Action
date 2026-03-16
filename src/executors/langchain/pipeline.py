@@ -1,11 +1,11 @@
 import logging
+import re
 from typing import Any, Callable, Dict, List, Literal, Optional, Type, TypedDict, Union, overload
-
-from langchain_openai import ChatOpenAI
 
 from langchain.prompts import ChatPromptTemplate
 from src.domain.langchain.schema import AnalysisPlan
 from src.executors.langchain.examples import get_few_shot_examples
+from src.executors.langchain.llm_factory import create_chat_llm, get_llm_provider
 from src.util import env
 
 logger = logging.getLogger(__name__)
@@ -16,8 +16,65 @@ _LOG_PROMPTS = env.env_flag("PLANNER_LOG_PROMPTS", default=False)
 _LOG_REASONING = env.env_flag("PLANNER_LOG_REASONING", default=False)
 _ENABLE_COT = env.env_flag("PLANNER_ENABLE_COT", default=True)
 
-LLM_MODEL = env.require_all_env("LLM_MODEL")
-llm: Any = ChatOpenAI(model=LLM_MODEL, temperature=0)
+LLM_PROVIDER = get_llm_provider()
+llm: Any = create_chat_llm(temperature=0)
+logger.info("[Planner] Initialized LLM provider=%s", LLM_PROVIDER)
+
+
+def _extract_text(response: Any) -> str:
+    if isinstance(response, str):
+        return response
+
+    content = getattr(response, "content", None)
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        chunks: List[str] = []
+        for item in content:
+            if isinstance(item, str):
+                chunks.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if text:
+                    chunks.append(str(text))
+        if chunks:
+            return "\n".join(chunks)
+
+    return str(response)
+
+
+def _extract_json_block(text: str) -> str:
+    candidate = text.strip()
+    fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", candidate, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        candidate = fenced.group(1).strip()
+
+    if candidate.startswith("{") and candidate.endswith("}"):
+        return candidate
+
+    start = candidate.find("{")
+    end = candidate.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("Model output does not contain a JSON object")
+    return candidate[start : end + 1]
+
+
+def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
+    import json
+
+    if isinstance(response, AnalysisPlan):
+        return response
+
+    if isinstance(response, dict):
+        return AnalysisPlan.model_validate(response)
+
+    text = _extract_text(response)
+    json_block = _extract_json_block(text)
+    parsed = json.loads(json_block)
+    if not isinstance(parsed, dict):
+        raise ValueError("Model output JSON must be an object")
+    return AnalysisPlan.model_validate(parsed)
 
 
 def get_schema_description(model: Type[Any]) -> str:
@@ -97,10 +154,8 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
     ]
 )
 
-structured_llm: Any = llm.with_structured_output(AnalysisPlan)
-
 cot_chain: Any = cot_prompt | llm
-plan_chain: Any = plan_prompt | structured_llm
+plan_chain: Any = plan_prompt | llm
 
 
 class GeneratePlanDebug(TypedDict):
@@ -208,11 +263,7 @@ def generate_analysis_plan(
                 logger.debug("[Planner] cot_prompt_rendered: %s", cot_prompt_rendered)
             cot_response: Any = cot_chain.invoke(cot_inputs)
             # Prefer plain text content to avoid bloating prompts.
-            reasoning_text: str
-            try:
-                reasoning_text = str(getattr(cot_response, "content"))
-            except Exception:
-                reasoning_text = str(cot_response)
+            reasoning_text: str = _extract_text(cot_response)
             if _LOG_REASONING:
                 logger.debug("[Planner] cot_response(content): %s", reasoning_text)
             steps.append(
@@ -257,21 +308,17 @@ def generate_analysis_plan(
             # Invoke only the plan chain here. (We already ran the optional COT step above.)
             if _LOG_PROMPTS:
                 logger.debug("[Planner] Attempt %s: invoking plan_chain", attempt + 1)
-            result: Any = plan_chain.invoke(plan_inputs)
+            raw_result: Any = plan_chain.invoke(plan_inputs)
             if _LOG_PROMPTS:
-                logger.debug("[Planner] Attempt %s: result: %s", attempt + 1, result)
+                logger.debug("[Planner] Attempt %s: result: %s", attempt + 1, raw_result)
             steps.append(
                 {
                     "step": f"plan_attempt_{attempt + 1}",
                     "prompt": plan_prompt_rendered if _LOG_PROMPTS else "(prompt logging disabled)",
-                    "response": result,
+                    "response": raw_result,
                 }
             )
-            if not isinstance(result, AnalysisPlan):
-                try:
-                    result = AnalysisPlan.model_validate(result)
-                except Exception:
-                    pass
+            result: AnalysisPlan = _coerce_analysis_plan(raw_result)
 
             if debug:
                 debug_payload: GeneratePlanDebug = {
@@ -283,12 +330,11 @@ def generate_analysis_plan(
                 if progress_cb is not None:
                     progress_cb("Finished thinking about a plan.")
                 return debug_payload
-            assert isinstance(result, AnalysisPlan), "Expected AnalysisPlan from structured output"
             if progress_cb is not None:
                 progress_cb("Finished thinking about a plan.")
             return result
-        except ValidationError as ve:
-            logger.warning("[Planner] ValidationError on attempt %s: %s", attempt + 1, ve)
+        except (ValidationError, ValueError, TypeError) as ve:
+            logger.warning("[Planner] Plan parsing/validation error on attempt %s: %s", attempt + 1, ve)
             attempts.append(
                 {
                     "error": str(ve),
@@ -333,9 +379,10 @@ def generate_analysis_plan(
                 except Exception:
                     critique_prompt_rendered = "(failed to render critique prompt for logging)"
 
-            critique_chain: Any = critique_prompt_obj | llm.with_structured_output(AnalysisPlan)
+            critique_chain: Any = critique_prompt_obj | llm
             try:
-                critique_response: Any = critique_chain.invoke(critique_inputs)
+                critique_raw_response: Any = critique_chain.invoke(critique_inputs)
+                critique_response: AnalysisPlan = _coerce_analysis_plan(critique_raw_response)
             except Exception as critique_exc:
                 logger.warning("[Planner] Correction step failed on attempt %s: %s", attempt + 1, critique_exc)
                 steps.append(
@@ -352,7 +399,7 @@ def generate_analysis_plan(
                 {
                     "step": f"correction_attempt_{attempt + 1}",
                     "prompt": critique_prompt_rendered if _LOG_PROMPTS else "(prompt logging disabled)",
-                    "response": critique_response,
+                    "response": critique_raw_response,
                 }
             )
             if debug:
@@ -365,7 +412,6 @@ def generate_analysis_plan(
                 if progress_cb is not None:
                     progress_cb("Finished thinking about a plan.")
                 return debug_payload
-            assert isinstance(critique_response, AnalysisPlan), "Expected AnalysisPlan from critique structured output"
             if progress_cb is not None:
                 progress_cb("Finished thinking about a plan.")
             return critique_response
