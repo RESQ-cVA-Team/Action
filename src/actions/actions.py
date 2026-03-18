@@ -25,6 +25,18 @@ logger = logging.getLogger(__name__)
 # - Do not echo internal exception messages to end users by default.
 _LOG_USER_TEXT = env_util.env_flag("ACTIONS_LOG_USER_TEXT", default=False)
 _ECHO_INTERNAL_ERRORS = env_util.env_flag("ACTIONS_ECHO_INTERNAL_ERRORS", default=False)
+_ENABLE_HEURISTIC_SHORTCUT = env_util.env_flag("ACTIONS_ENABLE_HEURISTIC_SHORTCUT", default=False)
+
+_heuristic_threshold_raw = env_util.get_env("ACTIONS_HEURISTIC_MIN_CONFIDENCE", default="0.85") or "0.85"
+try:
+    _heuristic_min_confidence = float(_heuristic_threshold_raw)
+except Exception:
+    _heuristic_min_confidence = 0.85
+if _heuristic_min_confidence < 0.0:
+    _heuristic_min_confidence = 0.0
+if _heuristic_min_confidence > 1.0:
+    _heuristic_min_confidence = 1.0
+_HEURISTIC_MIN_CONFIDENCE = _heuristic_min_confidence
 
 try:
     ssot_loader.validate_metric_metadata_complete(logger)
@@ -92,16 +104,34 @@ class ActionGenerateVisualization(LongAction):
             def progress(msg: str) -> None:
                 ctx.say(progress=msg)
 
-            heuristic_plan = HeuristicVisualizationPlanner.try_plan(
-                question=user_message,
-                entities=extracted_entities,
-                language=override_language,
-            )
-
-            if heuristic_plan is not None:
-                progress("Using simple heuristic plan (no LLM needed)")
-                plan_obj: lang_schema.AnalysisPlan = heuristic_plan
+            plan_obj: lang_schema.AnalysisPlan
+            if _ENABLE_HEURISTIC_SHORTCUT:
+                heuristic_result = HeuristicVisualizationPlanner.try_plan_with_diagnostics(
+                    question=user_message,
+                    entities=extracted_entities,
+                    language=override_language,
+                )
+                if heuristic_result.plan is not None and heuristic_result.confidence >= _HEURISTIC_MIN_CONFIDENCE:
+                    progress(f"Using simple heuristic plan (confidence={heuristic_result.confidence:.2f})")
+                    plan_obj = heuristic_result.plan
+                else:
+                    logger.info(
+                        "Heuristic shortcut skipped (reason=%s, confidence=%.3f, threshold=%.3f)",
+                        heuristic_result.reason,
+                        heuristic_result.confidence,
+                        _HEURISTIC_MIN_CONFIDENCE,
+                    )
+                    progress("Calling planner LLM to build a plan")
+                    plan_obj = lang_pipeline.generate_analysis_plan(
+                        question=user_message,
+                        entities=extracted_entities,
+                        language=override_language,
+                        max_retries=2,
+                        debug=False,
+                        progress_cb=progress,
+                    )
             else:
+                logger.info("Heuristic shortcut disabled via ACTIONS_ENABLE_HEURISTIC_SHORTCUT")
                 progress("Calling planner LLM to build a plan")
                 plan_obj = lang_pipeline.generate_analysis_plan(
                     question=user_message,

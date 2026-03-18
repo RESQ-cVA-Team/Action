@@ -1,3 +1,3 @@
-from .heuristic_visualization_planner import HeuristicVisualizationPlanner
+from .heuristic_visualization_planner import HeuristicPlannerResult, HeuristicVisualizationPlanner
 
-__all__ = ["HeuristicVisualizationPlanner"]
+__all__ = ["HeuristicPlannerResult", "HeuristicVisualizationPlanner"]

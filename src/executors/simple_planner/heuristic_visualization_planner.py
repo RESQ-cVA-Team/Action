@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, cast
 
 from src.domain.langchain.schema import AnalysisPlan, ChartSpec, GroupBySex, GroupByStrokeType, GroupByTime, MetricSpec, TimeWindow
 from src.shared.ssot_loader import get_metric_metadata
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class HeuristicPlannerResult:
+    plan: Optional[AnalysisPlan]
+    confidence: float
+    reason: str
 
 
 # Build a lightweight synonym index for metrics from SSOT so we can
@@ -82,79 +90,80 @@ class HeuristicVisualizationPlanner:
     """
 
     @staticmethod
-    def try_plan(question: str, entities: Dict[str, Any], language: Optional[str]) -> Optional[AnalysisPlan]:
+    def try_plan_with_diagnostics(question: str, entities: Dict[str, Any], language: Optional[str]) -> HeuristicPlannerResult:
         text = (question or "").strip()
         if not text:
-            return None
+            return HeuristicPlannerResult(plan=None, confidence=0.0, reason="empty_question")
 
         q_lower = text.lower()
 
-        # Reject obviously complex requests so we defer to the LLM planner.
-        # We *allow* certain simple "by X" patterns that we know how to
-        # handle (e.g. "by sex", "by stroke type"). Any other use of
-        # "by", or markers like "vs"/"compare", is treated as complex.
         complexity_markers = [" vs ", " versus ", " compare ", " correlation", " impact ", " per "]
         if any(marker in q_lower for marker in complexity_markers):
-            return None
+            return HeuristicPlannerResult(plan=None, confidence=0.0, reason="complex_query_marker")
 
-        # 1) Detect chart type from simple keywords. Default to LINE.
         chart_type = "LINE"
+        chart_confidence = 0.55
         if "bar chart" in q_lower or "bar graph" in q_lower:
             chart_type = "BAR"
+            chart_confidence = 0.9
         elif "area chart" in q_lower or "area graph" in q_lower:
             chart_type = "AREA"
+            chart_confidence = 0.9
         elif "histogram" in q_lower or "distribution" in q_lower:
             chart_type = "HISTOGRAM"
+            chart_confidence = 0.8
         elif "line chart" in q_lower or "line graph" in q_lower or "trend" in q_lower:
             chart_type = "LINE"
+            chart_confidence = 0.9
 
-        # 2) Detect a single metric.
         metric_code: Optional[str] = None
+        metric_confidence = 0.0
 
-        # a) Check entities for a metric-like code.
         metric_entity_keys = ["metric", "metric_code", "metric_type"]
         for key in metric_entity_keys:
-            if key in entities and isinstance(entities[key], str):
-                metric_code = entities[key].upper()
+            value = entities.get(key)
+            if isinstance(value, str) and value.strip():
+                metric_code = value.strip().upper()
+                metric_confidence = 1.0
                 break
 
-        # b) Fallback to simple keyword/synonym match using SSOT metadata.
         if metric_code is None:
             metric_code = _find_metric_from_text(q_lower)
+            if metric_code is not None:
+                metric_confidence = 0.75
 
         if metric_code is None:
-            # Not a simple, known metric → let the LangChain planner handle it.
-            return None
+            return HeuristicPlannerResult(plan=None, confidence=0.0, reason="metric_not_confident")
 
-        # 3) Optional simple group_by patterns we know how to handle.
         group_by: list[Any] = []
+        groupby_score_parts: List[float] = []
 
-        # "by sex" / "by gender" → GroupBySex
         if "by sex" in q_lower or "by gender" in q_lower:
             try:
                 group_by.append(GroupBySex())
+                groupby_score_parts.append(1.0)
             except Exception:
                 pass
 
-        # "by stroke type" / "by stroke" → GroupByStrokeType
         if "by stroke type" in q_lower or "by stroke" in q_lower:
             try:
                 group_by.append(GroupByStrokeType())
+                groupby_score_parts.append(1.0)
             except Exception:
                 pass
 
-        # "over time" / "time series" / "over the last" → GroupByTime (last 6 months by month).
         if "over time" in q_lower or "time series" in q_lower or "over the last" in q_lower:
             try:
                 window = TimeWindow(last_n=6, unit="MONTH")
                 group_by.append(GroupByTime(grain="MONTH", window=window, include_partial=True))
+                groupby_score_parts.append(0.85)
             except Exception:
                 pass
 
-        # If the user mentioned "by" but we didn't recognise any safe
-        # group_by pattern, treat it as complex and let the LLM handle it.
         if " by " in q_lower and not group_by:
-            return None
+            return HeuristicPlannerResult(plan=None, confidence=0.0, reason="unrecognized_groupby")
+
+        groupby_confidence = min(groupby_score_parts) if groupby_score_parts else 1.0
 
         try:
             metric_spec = MetricSpec(metric=metric_code)
@@ -162,13 +171,23 @@ class HeuristicVisualizationPlanner:
             plan = AnalysisPlan(charts=[chart_spec], statistical_tests=None)
         except Exception as exc:
             logger.debug("HeuristicVisualizationPlanner failed to build plan for question %r: %s", question, exc)
-            return None
+            return HeuristicPlannerResult(plan=None, confidence=0.0, reason="plan_build_failed")
 
+        confidence = round(metric_confidence * 0.6 + chart_confidence * 0.2 + groupby_confidence * 0.2, 3)
         logger.info(
-            "HeuristicVisualizationPlanner produced a simple plan for question %r (metric=%s, chart_type=%s, group_by=%s)",
+            "HeuristicVisualizationPlanner produced a simple plan for question %r (metric=%s, chart_type=%s, group_by=%s, confidence=%.3f)",
             question,
             metric_code,
             chart_type,
             group_by,
+            confidence,
         )
-        return plan
+        return HeuristicPlannerResult(plan=plan, confidence=confidence, reason="heuristic_plan_ready")
+
+    @staticmethod
+    def try_plan(question: str, entities: Dict[str, Any], language: Optional[str]) -> Optional[AnalysisPlan]:
+        return HeuristicVisualizationPlanner.try_plan_with_diagnostics(
+            question=question,
+            entities=entities,
+            language=language,
+        ).plan
