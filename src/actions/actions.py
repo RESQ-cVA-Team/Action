@@ -6,7 +6,11 @@ from rasa_sdk import Action, Tracker  # type: ignore
 from rasa_sdk import types as rasa_types  # type: ignore
 from rasa_sdk.executor import CollectingDispatcher  # type: ignore
 
-from src.actions.error_messages import friendly_hospital_error, friendly_metric_error, friendly_visualization_error
+from src.actions.error_messages import (
+    friendly_hospital_error,
+    friendly_metric_error,
+    friendly_visualization_error,
+)
 from src.actions.long_action.long_action import LongAction
 from src.actions.long_action.long_action_context import LongActionContext
 from src.domain.langchain import schema as lang_schema
@@ -73,7 +77,11 @@ class ActionGenerateVisualization(LongAction):
                     for e_any in ents_list:
                         if isinstance(e_any, dict):
                             entities_list.append(cast(Dict[str, Any], e_any))
-            extracted_entities: Dict[str, Any] = {ent["entity"]: ent["value"] for ent in entities_list if isinstance(ent.get("entity"), str) and "value" in ent}
+            extracted_entities: Dict[str, Any] = {
+                ent["entity"]: ent["value"]
+                for ent in entities_list
+                if isinstance(ent.get("entity"), str) and "value" in ent
+            }
 
             override_language: Any = None
             try:
@@ -129,6 +137,15 @@ class ActionGenerateVisualization(LongAction):
         finally:
             if completed_successfully:
                 ctx.say(text="✅ Visualization generation complete.")
+                ctx.say(
+                    text="Would you like to generate another visualization? (TEST)",
+                    buttons=[
+                        {"title": "Door In Door Out", "payload": "DIDO"},
+                        {"title": "Door To Needle Time", "payload": "DTN"},
+                        {"title": "Stroke Units", "payload": "Stroke Units"},
+                        {"title": "Other", "payload": "/other"},
+                    ],
+                )
             ctx.done()
         return None
 
@@ -152,11 +169,15 @@ class ActionListHospitals(Action):
 
             raw_country = filters.get("country_code")
             if isinstance(raw_country, str) and raw_country.strip():
-                resolved_country = client.resolve_country_code(user_sub=user_sub, country_input=raw_country, raise_on_error=True)
+                resolved_country = client.resolve_country_code(
+                    user_sub=user_sub, country_input=raw_country, raise_on_error=True
+                )
                 if resolved_country:
                     filters["country_code"] = resolved_country
                 else:
-                    dispatcher.utter_message(text=f"I couldn't match country '{raw_country}'. Please try a 2-letter code like ES, MX, DE, or FR.")
+                    dispatcher.utter_message(
+                        text=f"I couldn't match country '{raw_country}'. Please try a 2-letter code like ES, MX, DE, or FR."
+                    )
                     return []
 
             provider_page = client.list_providers(
@@ -170,7 +191,9 @@ class ActionListHospitals(Action):
                 raise_on_error=True,
             )
             if not provider_page:
-                dispatcher.utter_message(text="I couldn't find any hospitals you can compare against.")
+                dispatcher.utter_message(
+                    text="I couldn't find any hospitals you can compare against."
+                )
                 return []
 
             providers = provider_page["results"]
@@ -180,7 +203,11 @@ class ActionListHospitals(Action):
 
             names: List[str] = []
             for provider in providers:
-                name = provider.get("nameEnglish") or provider.get("nameNative") or provider.get("shortName")
+                name = (
+                    provider.get("nameEnglish")
+                    or provider.get("nameNative")
+                    or provider.get("shortName")
+                )
                 if isinstance(name, str) and name.strip():
                     names.append(name.strip())
 
@@ -215,7 +242,11 @@ class ActionListHospitals(Action):
                 shown_end = offset + len(names)
                 prefix = f"I found {total_count} hospitals{criteria_text}; showing {shown_start}-{shown_end}."
 
-            text_message = prefix + f" {preview}." + (f" (+{more_count} more in this page)" if more_count else "")
+            text_message = (
+                prefix
+                + f" {preview}."
+                + (f" (+{more_count} more in this page)" if more_count else "")
+            )
             dispatcher.utter_message(text=text_message)
             return []
         except Exception as exc:
@@ -229,10 +260,14 @@ class ActionListHospitals(Action):
     def _extract_filters(tracker: Tracker) -> Dict[str, Any]:
         tracker_any: Any = tracker
         latest_any: Any = tracker_any.latest_message or {}
-        latest = cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
+        latest = (
+            cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
+        )
 
         metadata_any: Any = latest.get("metadata")
-        metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
+        metadata = (
+            cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
+        )
 
         entities_by_name: Dict[str, Any] = {}
         entities_any: Any = latest.get("entities")
@@ -244,7 +279,12 @@ class ActionListHospitals(Action):
                 ent = cast(Dict[str, Any], ent_any)
                 key = ent.get("entity")
                 value = ent.get("value")
-                if isinstance(key, str) and key.strip() and value is not None and key not in entities_by_name:
+                if (
+                    isinstance(key, str)
+                    and key.strip()
+                    and value is not None
+                    and key not in entities_by_name
+                ):
                     entities_by_name[key] = value
 
         def first_str(*candidates: Any) -> Optional[str]:
@@ -320,7 +360,9 @@ class ActionListHospitals(Action):
         offset = 0 if offset_val is None else max(0, offset_val)
 
         return {
-            "country_code": country_code.upper() if isinstance(country_code, str) and len(country_code) == 2 else country_code,
+            "country_code": country_code.upper()
+            if isinstance(country_code, str) and len(country_code) == 2
+            else country_code,
             "name_contains": name_contains,
             "sort": sort,
             "user_id": user_id,
@@ -354,19 +396,30 @@ class ActionExplainMetric(Action):
 
             raw_kpi = self._extract_kpi(tracker)
             if not raw_kpi:
-                dispatcher.utter_message(text="I couldn't find any metric in your request.")
+                dispatcher.utter_message(
+                    text="I couldn't find any metric in your request."
+                )
                 return []
 
             norm_key = ssot_loader.normalize_metric_text_key(raw_kpi)
             if not norm_key:
-                dispatcher.utter_message(text="I couldn't understand the metric you asked about.")
+                dispatcher.utter_message(
+                    text="I couldn't understand the metric you asked about."
+                )
                 return []
 
             record = _METRIC_TEXT_LOOKUP.get(norm_key)
             if not record:
                 suggestions = self._suggest_metrics(language, max_items=5)
                 if suggestions:
-                    dispatcher.utter_message(text=("I don't recognise that metric. " + "Here are a few metrics I can describe: " + ", ".join(suggestions) + "."))
+                    dispatcher.utter_message(
+                        text=(
+                            "I don't recognise that metric. "
+                            + "Here are a few metrics I can describe: "
+                            + ", ".join(suggestions)
+                            + "."
+                        )
+                    )
                 else:
                     dispatcher.utter_message(text="I don't recognise that metric.")
                 return []
@@ -386,7 +439,9 @@ class ActionExplainMetric(Action):
                         break
 
             if not canonical or not description_text:
-                dispatcher.utter_message(text="This is a known metric, but its description is not configured yet.")
+                dispatcher.utter_message(
+                    text="This is a known metric, but its description is not configured yet."
+                )
                 return []
 
             # Human-friendly display name from SSOT synonyms.

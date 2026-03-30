@@ -1,0 +1,49 @@
+# Metric Sequence Configuration
+# This file defines the ordered sequence of metrics to suggest to users
+# after they generate visualizations. Users are guided through metrics one-by-one.
+#
+# PLACEHOLDER: This is a static configuration for MVP. In the future, the backend
+# may customize this sequence per deployment or user preference.
+#
+# Fields:
+#   - sequence: ordered list of metrics
+#   - name: canonical metric identifier (must match MetricType.yml)
+#   - display_name: human-readable name for suggestions
+#   - group: optional grouping/category (for future filtering)
+
+version: "3.1"
+
+metric_sequence:
+  - name: AA_DTN_LE60
+    display_name: "Door-to-Needle ≤60 minutes"
+    group: "treatment_timing"
+  - name: AA_DTN_LE45
+    display_name: "Door-to-Needle ≤45 minutes"
+    group: "treatment_timing"
+  - name: AA_DTG_LE120
+    display_name: "Door-to-Groin ≤120 minutes"
+    group: "treatment_timing"
+  - name: AA_DTG_LE90
+    display_name: "Door-to-Groin ≤90 minutes"
+    group: "treatment_timing"
+  - name: AA_RECANALIZATION
+    display_name: "Recanalization"
+    group: "treatment"
+  - name: AA_IMAGING
+    display_name: "Imaging at First Hospital"
+    group: "treatment"
+  - name: AA_SWALLOWING_SCREENING
+    display_name: "Swallowing Screening"
+    group: "screening"
+  - name: AA_ANTICOAGULANTS
+    display_name: "Anticoagulants at Discharge"
+    group: "medication"
+  - name: AA_ANTITHROMBOTICS
+    display_name: "Antithrombotics at Discharge"
+    group: "medication"
+  - name: AA_STROKE_UNIT
+    display_name: "Stroke Unit or ICU"
+    group: "treatment"
+  - name: AGE
+    display_name: "Patient Age"
+    group: "demographics"
