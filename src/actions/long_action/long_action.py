@@ -7,6 +7,7 @@ import os
 import threading
 import uuid
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 import requests
@@ -24,6 +25,19 @@ logger = logging.getLogger(__name__)
 # Privacy/safety defaults: do not log callback payloads or URLs.
 _LOG_CALLBACK_STATUS = env_util.env_flag("LONG_ACTION_LOG_CALLBACK_STATUS", default=False)
 _LOG_CALLBACK_ERRORS = env_util.env_flag("LONG_ACTION_LOG_CALLBACK_ERRORS", default=False)
+_DEFER_CALLBACK_HANDOFF = env_util.env_flag("LONG_ACTION_DEFER_CALLBACK_HANDOFF", default=False)
+
+
+@dataclass
+class PreworkResult:
+    """Outcome of LongAction.prework.
+
+    - events: immediate Rasa events to return from action run.
+    - proceed: whether async/sync work phase should continue.
+    """
+
+    events: List[Dict[str, Any]] = field(default_factory=list)
+    proceed: bool = True
 
 
 def _get_callback_config(tracker: Tracker) -> Optional[Tuple[str, str]]:
@@ -41,8 +55,8 @@ def _get_callback_config(tracker: Tracker) -> Optional[Tuple[str, str]]:
     if isinstance(meta_any, dict):
         meta = cast(Dict[str, Any], meta_any)
         url_val = meta.get("callback_url")
-        if isinstance(url_val, str) and url_val.strip():
-            callback_url = url_val.strip()
+        if isinstance(url_val, str) and url_val:
+            callback_url = url_val
 
     if not callback_url:
         return None
@@ -58,6 +72,16 @@ class LongAction(Action, ABC):
     def __init__(self):
         registry.register(self)
 
+    async def prework(self, ctx: LongActionContext) -> PreworkResult:
+        """Optional in-band phase before work() starts.
+
+        Runs with dispatcher-backed context so messages/events are handled like
+        a normal action run. Subclasses can override to perform quick routing,
+        slot updates, or early exits prior to long-running callback work.
+        """
+
+        return PreworkResult()
+
     async def run(
         self,
         dispatcher: CollectingDispatcher,
@@ -70,21 +94,49 @@ class LongAction(Action, ABC):
             "latest_message": tracker.latest_message,
             "slots": tracker.current_state().get("slots", {}),
         }
+        events_any = getattr(tracker, "events", None)
+        if isinstance(events_any, list):
+            tracker_snapshot["events"] = list(cast(List[Any], events_any))
 
         callback_cfg = _get_callback_config(tracker)
+
+        # Prework always runs in dispatcher mode so subclasses can emit normal
+        # in-band messages and return Rasa events before any long-running work.
+        pre_ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher)
+        pre_outcome = await self.prework(pre_ctx)
+        immediate_events = pre_outcome.events if isinstance(pre_outcome.events, list) else []
+        if not pre_outcome.proceed:
+            return immediate_events
 
         # If no callback is configured, fall back to synchronous execution so
         # behavior is predictable in rasa shell and simple REST setups.
         if callback_cfg is None:
             ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher)
             await self.work(ctx)
-            return []
+            return immediate_events
 
         # Callback is configured: run the long task asynchronously and notify
         # the frontend via HTTP callback when finished. We do not schedule Rasa
         # reminders or use a poller in this mode.
         callback_url, callback_token = callback_cfg
         job_id = uuid.uuid4().hex
+
+        if _DEFER_CALLBACK_HANDOFF:
+            # Optional hybrid mode: start in normal dispatcher path and let the
+            # action explicitly switch to callback transport via
+            # ctx.enable_callback_mode().
+            ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher)
+            ctx.attach_progress_callback(
+                lambda message, ctx=ctx, job_id=job_id, callback_url=callback_url, callback_token=callback_token: self._post_progress(
+                    ctx,
+                    job_id,
+                    callback_url,
+                    callback_token,
+                    message,
+                )
+            )
+            await self.work(ctx)
+            return immediate_events
 
         ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot)
 
@@ -107,7 +159,7 @@ class LongAction(Action, ABC):
         ).start()
 
         # No additional events required; we rely on the external callback.
-        return []
+        return immediate_events
 
     def _post_progress(
         self,

@@ -1,9 +1,9 @@
-from src.executors import plan_executor
 from src.executors.analytics_center.client import AnalyticsCenterError
+from src.executors.orchestration.plan_executor import VisualizationExecutionError
 
 
 def friendly_visualization_error(exc: Exception) -> str:
-    if isinstance(exc, plan_executor.VisualizationExecutionError):
+    if isinstance(exc, VisualizationExecutionError):
         return exc.user_message
     if isinstance(exc, TimeoutError):
         return "Visualization generation timed out. Please try again."

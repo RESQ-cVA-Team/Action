@@ -55,11 +55,24 @@ LLM_BASE_URL=https://<your-vllm-host>/v1
 LLM_MODEL=<model-id>
 LLM_API_KEY=<optional-or-required-by-provider>
 
-# Optional: heuristic planner shortcut (disabled by default)
-ACTIONS_ENABLE_HEURISTIC_SHORTCUT=false
-ACTIONS_HEURISTIC_MIN_CONFIDENCE=0.85
-
 LOGLEVEL=DEBUG
+
+# Optional: file logging for debugging
+LOG_TO_FILE=true
+LOG_FILE_DIR=.tmp/logs
+LOG_FILE_LEVEL=DEBUG
+LOG_FILE_SESSION=false
+LOG_FILE_ROTATE=true
+LOG_FILE_MAX_BYTES=10485760
+LOG_FILE_BACKUP_COUNT=3
+LOG_FILE_RETENTION_DAYS=7
+LOG_COLOR=false
+
+# Optional: reduce repeated low-level third-party HTTP logs
+LOG_NOISY_LIB_LEVEL=WARNING
+# Leave empty (default) to disable per-library suppression, or opt in:
+LOG_NOISY_LIB_LOGGERS=
+# LOG_NOISY_LIB_LOGGERS=openai,httpx,httpcore,urllib3
 ```
 
 If using OpenAI:

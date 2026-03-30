@@ -26,6 +26,20 @@ class GroupedBy(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class TimePeriodRef(BaseModel):
+    start_date: Optional[str] = Field(default=None, alias="startDate")
+    end_date: Optional[str] = Field(default=None, alias="endDate")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class DataOriginRef(BaseModel):
+    provider_group_id: Optional[int] = Field(default=None, alias="providerGroupId")
+    provider_id: Optional[int] = Field(default=None, alias="providerId")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class D1(BaseModel):
     edges: List[float]
     case_count: List[int] = Field(..., alias="caseCount")
@@ -61,6 +75,8 @@ class Kpi1(BaseModel):
 class MetricKpiGroup(BaseModel):
     kpi1: Kpi1
     grouped_by: Optional[GroupedBy] = Field(default=None, alias="groupedBy")
+    time_period: Optional[TimePeriodRef] = Field(default=None, alias="timePeriod")
+    data_origin: Optional[DataOriginRef] = Field(default=None, alias="dataOrigin")
 
     model_config = ConfigDict(populate_by_name=True)
 
