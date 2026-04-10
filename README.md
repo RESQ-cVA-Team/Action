@@ -1,149 +1,178 @@
-## What this repo is
+# Action Service — Runbook
 
-This is a **Rasa SDK action server** that turns natural-language clinical analytics questions into structured chart payloads.
+This README only covers:
 
-At a high level:
+- How to run the action service as a developer
+- How to run it in production
 
-- A user asks a question (e.g. “Show DTN by sex over the last 6 months”).
-- The server creates an **AnalysisPlan** (either via a heuristic planner or an LLM-based planner).
-- It executes the plan by querying upstream services through the app backend **`/api/rasa-proxy`** endpoint.
-- It returns a typed **VisualizationResponse** (charts + optional stats) as a Rasa `json_message` payload.
+---
 
-The action server entrypoint is the standard Rasa SDK module invocation:
+## Related repositories
 
-```bash
-python -m rasa_sdk --actions src.actions
-```
+- Webapp: https://github.com/09c7b0ed-f907-45d2-bc7c-48b17f2d9940/Webapp
+- Action (this repo): https://github.com/09c7b0ed-f907-45d2-bc7c-48b17f2d9940/Action
+- Rasa: https://github.com/09c7b0ed-f907-45d2-bc7c-48b17f2d9940/Rasa
+- SSOT: https://github.com/09c7b0ed-f907-45d2-bc7c-48b17f2d9940/SSOT
 
-## Key actions
+---
 
-- `action_generate_visualization`: plans + executes a visualization request.
-- `action_explain_metric`: explains a metric/KPI using SSOT YAML metadata (multi-language descriptions).
+## 1) Development setup
 
-## SSOT (Source of Truth) YAML
+### Prerequisites (recommended path)
 
-This repo depends on YAML files under src/shared/SSOT (metrics, enums, chart/test types). It is configured as a git submodule.
+- Docker + Docker Compose
+- VS Code + Dev Containers extension
 
-In most normal workflows this directory is already present after cloning. If you ever see runtime/build errors about missing SSOT YAML (for example `ChartType.yml`), initialize the submodule:
+### Dev Container workflow (recommended)
 
-```bash
-git submodule update --init --recursive
-```
+1. Open this repository in VS Code.
+2. Choose **Reopen in Container**.
+3. Wait for post-create setup to finish (`pip install -e . && mypy --strict . && ruff check .`).
+4. Configure `.env` (repo root) as shown below.
+5. Run the service command.
 
-## Running
-
-### Option A: VS Code Dev Container
-
-The devcontainer is defined in [.devcontainer/devcontainer.json](.devcontainer/devcontainer.json) and uses Docker Compose ([.devcontainer/docker-compose.yml](.devcontainer/docker-compose.yml)).
-
-1) Open this repo in the Dev Container.
-2) Start the action server:
-
-- VS Code task: “Start Rasa Actions” ([.vscode/tasks.json](.vscode/tasks.json))
-- Or manually:
+### Option B: Local machine
 
 ```bash
-python -m rasa_sdk --actions src.actions
-```
-
-The Compose file maps port `5055:5055`.
-
-If the server fails to start due to missing packages, install deps inside the container:
-
-```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### Option B: Run a prebuilt Docker image
+### Configure environment (`.env` in repo root)
 
-This repo is typically built/published by CI (GitHub Actions). Pull the published image for your environment, then run it with the required env vars.
+```env
+RASA_PROXY_URL=http://host.docker.internal:3000/api/rasa-proxy
+ACTION_SERVER_TOKEN=<set-a-shared-token>
+LONG_TASK_CALLBACK_TOKEN=<set-a-shared-token>
 
-Run (example):
+RASA_PROXY_GRAPHQL_TARGET=graphql
+RASA_PROXY_ANALYTICS_TARGET=analytics
 
-```bash
-docker run --rm -p 5055:5055 \
-	-e RASA_PROXY_URL=... \
-	-e ACTION_SERVER_TOKEN=... \
-	-e LLM_PROVIDER=openai-compatible \
-	-e LLM_MODEL=... \
-	-e LLM_BASE_URL=... \
-	-e LLM_API_KEY=... \
-	<your-published-image>:<tag>
+LLM_PROVIDER=vllm
+LLM_BASE_URL=https://<your-vllm-host>/v1
+LLM_MODEL=<model-id>
+LLM_API_KEY=<optional-or-required-by-provider>
+
+LOGLEVEL=DEBUG
+
+# Optional: file logging for debugging
+LOG_TO_FILE=true
+LOG_FILE_DIR=.tmp/logs
+LOG_FILE_LEVEL=DEBUG
+LOG_FILE_SESSION=false
+LOG_FILE_ROTATE=true
+LOG_FILE_MAX_BYTES=10485760
+LOG_FILE_BACKUP_COUNT=3
+LOG_FILE_RETENTION_DAYS=7
+LOG_COLOR=false
+
+# Optional: reduce repeated low-level third-party HTTP logs
+LOG_NOISY_LIB_LEVEL=WARNING
+# Leave empty (default) to disable per-library suppression, or opt in:
+LOG_NOISY_LIB_LOGGERS=
+# LOG_NOISY_LIB_LOGGERS=openai,httpx,httpcore,urllib3
 ```
 
-## Environment variables
+If using OpenAI:
 
-This codebase loads `.env` automatically (via python-dotenv) when you use helpers in [src/util/env.py](src/util/env.py). The repo’s `.gitignore` is configured to **not commit** `.env`.
+```env
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-4o-mini
+LLM_API_KEY=<openai-api-key>
+LLM_BASE_URL=
+```
 
-### Required
+### Run locally
 
-- **`RASA_PROXY_URL`**: app backend proxy endpoint (for example `http://host.docker.internal:3000/api/rasa-proxy`).
-- **`ACTION_SERVER_TOKEN`**: shared secret sent as `x-action-server-token` when calling the proxy.
-- **`LLM_PROVIDER`**: one of `openai`, `openai-compatible`, `ollama`, `vllm`, or `sglang`.
-- **`LLM_MODEL`**: model name for the selected provider.
+```bash
+python -m rasa_sdk --actions src.actions
+```
 
-### Optional: proxy target/path overrides
+The action server listens on port `5055`.
 
-- `RASA_PROXY_GRAPHQL_TARGET` (default: `graphql`)
-- `RASA_PROXY_ANALYTICS_TARGET` (default: `analytics`)
+### VS Code tasks (optional)
 
-### Optional
+This repo includes `.vscode/tasks.json` with:
 
-- `LOGLEVEL` (default: `INFO`): logging level used by [src/__init__.py](src/__init__.py).
+- `Start Rasa Actions`
 
-### LLM provider configuration
+Run from VS Code: **Terminal → Run Task**.
 
-- For `LLM_PROVIDER=openai`:
-	- `LLM_API_KEY` is required.
-- For `LLM_PROVIDER=openai-compatible`:
-	- `LLM_BASE_URL` is required.
-	- `LLM_API_KEY` is required.
-- For `LLM_PROVIDER=ollama`:
-	- `LLM_BASE_URL` is optional (default: `http://ollama:11434`).
-- For `LLM_PROVIDER=vllm`:
-	- `LLM_BASE_URL` is required.
-	- `LLM_API_KEY` is optional (required only if your vLLM gateway enforces auth).
-- For `LLM_PROVIDER=sglang`:
-	- `LLM_BASE_URL` is required.
-	- `LLM_API_KEY` is optional (required only if your SGLang gateway enforces auth).
+---
 
-Optional advanced setting:
+## 2) Production run
 
-- `LLM_KWARGS_JSON`: JSON object merged into provider constructor kwargs (for advanced provider/model flags).
+### Required dependencies
 
-### Extending with new providers
+- Webapp (routes chat traffic and callbacks)
+- One or more Rasa runtime containers (language-specific)
+- Redis (tracker + lock stores)
+- Duckling
 
-Provider plugins live under [src/executors/langchain/providers](src/executors/langchain/providers).
+### Required Action environment variables
 
-To add a provider:
+- `ACTION_SERVER_TOKEN`
+- `LONG_TASK_CALLBACK_TOKEN`
+- `RASA_PROXY_URL`
+- `RASA_PROXY_GRAPHQL_TARGET`
+- `RASA_PROXY_ANALYTICS_TARGET`
+- `GRAPHQL_API_URL`
+- `LOGLEVEL`
+- `LLM_PROVIDER`
+- `LLM_MODEL`
+- `LLM_API_KEY` (provider-dependent)
 
-1. Add a new plugin file implementing `LlmProviderPlugin` from [src/executors/langchain/providers/base.py](src/executors/langchain/providers/base.py).
-2. Register it in [src/executors/langchain/llm_factory.py](src/executors/langchain/llm_factory.py) via `register_provider(...)` (or registry registration).
-3. Set `LLM_PROVIDER` to that plugin name.
+### Recommended image tags
 
-### Optional: callback streaming
+- `ghcr.io/09c7b0ed-f907-45d2-bc7c-48b17f2d9940/action:latest`
+- `ghcr.io/09c7b0ed-f907-45d2-bc7c-48b17f2d9940/webapp:latest`
+- `ghcr.io/09c7b0ed-f907-45d2-bc7c-48b17f2d9940/rasa:<locale>-latest`
 
-If the incoming message metadata includes a `callback_url`, `action_generate_visualization` can stream progress + results to that endpoint.
+### Minimal production compose snippet (action)
 
-- `LONG_TASK_CALLBACK_TOKEN` (default: unset)
-	- If set, callback POSTs include header `x-action-server-token`.
+```yaml
+services:
+  action:
+    image: ghcr.io/09c7b0ed-f907-45d2-bc7c-48b17f2d9940/action:latest
+    environment:
+      ACTION_SERVER_TOKEN: <shared-action-token>
+      LONG_TASK_CALLBACK_TOKEN: <shared-action-token>
+      RASA_PROXY_URL: http://webapp:3000/api/rasa-proxy
+      GRAPHQL_API_URL: https://<your-domain>/api/graphql/aggregation
+      RASA_PROXY_GRAPHQL_TARGET: graphql
+      RASA_PROXY_ANALYTICS_TARGET: analytics
+      LOGLEVEL: INFO
+      LLM_PROVIDER: openai
+      LLM_MODEL: gpt-4o-mini
+      LLM_API_KEY: <llm-api-key>
+```
 
-### Optional: debug / verbosity flags
+Start stack:
 
-All flags are parsed as booleans (truthy: `1/true/yes/on`; falsy: `0/false/no/off`).
+```bash
+docker compose up -d
+```
 
-- `ACTIONS_LOG_USER_TEXT` (default: `false`)
-- `ACTIONS_ECHO_INTERNAL_ERRORS` (default: `false`)
+---
 
-- `PLANNER_ENABLE_COT` (default: `true`)
-- `PLANNER_LOG_PROMPTS` (default: `false`)
-- `PLANNER_LOG_REASONING` (default: `false`)
+## 3) Quick verification
 
-- `EXECUTOR_LOG_GRAPHQL_QUERY` (default: `false`)
-- `GRAPHQL_LOG_QUERY` (default: `false`)
-- `GRAPHQL_LOG_BODY` (default: `false`)
+- Action endpoint is reachable at `http://<action-host>:5055/webhook`
+- Rasa can reach `http://action:5055/webhook`
+- Action can reach Webapp proxy endpoint `/api/rasa-proxy`
+- Shared tokens match across services:
+  - `ACTION_SERVER_TOKEN`
+  - `LONG_TASK_CALLBACK_TOKEN`
 
-- `LONG_ACTION_LOG_CALLBACK_STATUS` (default: `false`)
-- `LONG_ACTION_LOG_CALLBACK_ERRORS` (default: `false`)
+---
 
-- `CLI_LOG_GRAPHQL_QUERY` (default: `false`)
+## 4) Common commands
+
+Run action server:
+
+```bash
+python -m rasa_sdk --actions src.actions
+```
+

@@ -135,14 +135,21 @@ class TimePeriod(BaseModel):
 class DataOrigin(BaseModel):
     """Data source configuration"""
 
-    provider_group_id: List[int] = Field(alias="providerGroupId")
+    provider_group_id: Optional[List[int]] = Field(default=None, alias="providerGroupId")
+    provider_id: Optional[List[int]] = Field(default=None, alias="providerId")
+
+    @model_validator(mode="after")
+    def validate_origin(self):
+        if not self.provider_group_id and not self.provider_id:
+            raise ValueError("DataOrigin requires at least one of providerGroupId or providerId")
+        return self
 
 
 class GraphQLQueryRequest(BaseModel):
     """Main GraphQL query request model"""
 
     metrics: List[MetricRequest]
-    time_period: TimePeriod = Field(default_factory=TimePeriod, alias="timePeriod")
+    time_period: TimePeriod | List[TimePeriod] = Field(default_factory=TimePeriod, alias="timePeriod")
     data_origin: DataOrigin = Field(alias="dataOrigin")
 
     case_filter: Optional[FilterType] = Field(default=None, alias="caseFilter")
@@ -155,6 +162,8 @@ class GraphQLQueryRequest(BaseModel):
         if self.group_by:
             for metric in self.metrics:
                 metric.include_grouping = True
+        if isinstance(self.time_period, list) and len(self.time_period) == 0:
+            raise ValueError("timePeriod list cannot be empty")
         return self
 
     def to_graphql_string(self) -> str:
@@ -170,13 +179,8 @@ class GraphQLQueryGenerator:
         """Generate GraphQL query string from request model"""
 
         filter_args: List[str] = []
-        tp = request.time_period
-        filter_args.append(f'timePeriod: {{ startDate: "{tp.start_date}", endDate: "{tp.end_date}" }}')
-
-        provider_ids = ", ".join(str(id) for id in request.data_origin.provider_group_id)
-        filter_args.append(f"""
-            dataOrigin: {{providerGroupId: [{provider_ids}]}}
-        """)
+        filter_args.append(GraphQLQueryGenerator._generate_time_period_arg(request.time_period))
+        filter_args.append(GraphQLQueryGenerator._generate_data_origin_arg(request.data_origin))
 
         if request.case_filter:
             filter_args.append(f"caseFilter: {GraphQLQueryGenerator._generate_filter(request.case_filter)}")
@@ -211,6 +215,27 @@ class GraphQLQueryGenerator:
         """
 
         return GraphQLQueryGenerator._clean_query(query)
+
+    @staticmethod
+    def _generate_time_period_arg(time_period: TimePeriod | List[TimePeriod]) -> str:
+        def render_one(tp: TimePeriod) -> str:
+            return f'{{ startDate: "{tp.start_date}", endDate: "{tp.end_date}" }}'
+
+        if isinstance(time_period, list):
+            parts = ", ".join(render_one(tp) for tp in time_period)
+            return f"timePeriod: [{parts}]"
+        return f"timePeriod: {render_one(time_period)}"
+
+    @staticmethod
+    def _generate_data_origin_arg(data_origin: DataOrigin) -> str:
+        parts: List[str] = []
+        if data_origin.provider_group_id:
+            provider_group_ids = ", ".join(str(id) for id in data_origin.provider_group_id)
+            parts.append(f"providerGroupId: [{provider_group_ids}]")
+        if data_origin.provider_id:
+            provider_ids = ", ".join(str(id) for id in data_origin.provider_id)
+            parts.append(f"providerId: [{provider_ids}]")
+        return f"dataOrigin: {{{', '.join(parts)}}}"
 
     @staticmethod
     def _generate_filter(filter_obj: FilterType) -> str:

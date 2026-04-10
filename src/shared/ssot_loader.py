@@ -53,6 +53,59 @@ def get_canonical_values(filename: str) -> Tuple[str, ...]:
     return tuple(values)
 
 
+@lru_cache(maxsize=16)
+def _canonical_lookup(filename: str) -> Dict[str, str]:
+    """Return normalized text -> canonical mapping for an SSOT type file.
+
+    Includes both canonical values and all synonyms.
+    """
+    items = _load_yaml(filename)
+    lookup: Dict[str, str] = {}
+
+    for item in items:
+        canonical_any = item.get("canonical")
+        if not isinstance(canonical_any, str) or not canonical_any.strip():
+            continue
+        canonical = canonical_any.strip().upper()
+
+        keys: List[str] = [canonical]
+        syn_any = item.get("synonyms")
+        if isinstance(syn_any, list):
+            for s_any in cast(List[Any], syn_any):
+                if isinstance(s_any, str) and s_any.strip():
+                    keys.append(s_any.strip())
+
+        for key in keys:
+            norm = normalize_metric_text_key(key)
+            if not norm:
+                continue
+            lookup.setdefault(norm, canonical)
+
+    return lookup
+
+
+def _resolve_canonical_value(filename: str, value: str) -> Optional[str]:
+    text = (value or "").strip()
+    if not text:
+        return None
+
+    lookup = _canonical_lookup(filename)
+    norm = normalize_metric_text_key(text)
+    if not norm:
+        return None
+    return lookup.get(norm)
+
+
+def resolve_chart_type(value: str) -> Optional[str]:
+    """Resolve a chart type (canonical or synonym) to ChartType canonical value."""
+    return _resolve_canonical_value("ChartType.yml", value)
+
+
+def resolve_groupby_canonical(value: str) -> Optional[str]:
+    """Resolve a group-by field (canonical or synonym) to GroupByType canonical value."""
+    return _resolve_canonical_value("GroupByType.yml", value)
+
+
 def create_enum(name: str, filename: str) -> Any:
     values = get_canonical_values(filename)
     # Use functional API; maintain str subclassing for compatibility.
@@ -590,6 +643,8 @@ __all__ = [
     "get_metric_display_name",
     "get_enum_option_label",
     "get_canonical_display_name",
+    "resolve_chart_type",
+    "resolve_groupby_canonical",
     "get_sex_label",
     "get_stroke_label",
     "normalize_metric_text_key",

@@ -568,57 +568,54 @@ class ChartSpec(BaseModel):
         - GroupByBoolean: at most one per boolean_type.
         - GroupByCanonicalField: no duplicates of the same field (but multiple distinct canonical fields are allowed).
         """
-        try:
-            gb = self.group_by or []
-            if not gb:
-                return self
-
-            seen_specs: set[GroupBySpec] = set()
-            sex_count = 0
-            stroke_count = 0
-            age_count = 0
-            nihss_count = 0
-            time_count = 0
-            boolean_by_type: dict[str, int] = {}
-            canonical_fields: set[str] = set()
-
-            for g in gb:
-                if g in seen_specs:
-                    raise ValueError("Duplicate groupBy spec detected in chart.group_by; remove duplicates.")
-                seen_specs.add(g)
-
-                if isinstance(g, GroupBySex):
-                    sex_count += 1
-                    if sex_count > 1:
-                        raise ValueError("Only one GroupBySex is allowed per chart.")
-                elif isinstance(g, GroupByStrokeType):
-                    stroke_count += 1
-                    if stroke_count > 1:
-                        raise ValueError("Only one GroupByStrokeType is allowed per chart.")
-                elif isinstance(g, GroupByAge):
-                    age_count += 1
-                    if age_count > 1:
-                        raise ValueError("Only one GroupByAge is allowed per chart.")
-                elif isinstance(g, GroupByNIHSS):
-                    nihss_count += 1
-                    if nihss_count > 1:
-                        raise ValueError("Only one GroupByNIHSS is allowed per chart.")
-                elif isinstance(g, GroupByTime):
-                    time_count += 1
-                    if time_count > 1:
-                        raise ValueError("Only one GroupByTime is allowed per chart.")
-                elif isinstance(g, GroupByBoolean):
-                    boolean_by_type[g.boolean_type] = boolean_by_type.get(g.boolean_type, 0) + 1
-                elif isinstance(g, GroupByCanonicalField):
-                    if g.field in canonical_fields:
-                        raise ValueError("Duplicate GroupByCanonicalField for the same field is not allowed.")
-                    canonical_fields.add(g.field)
-
-            for btype, count in boolean_by_type.items():
-                if count > 1:
-                    raise ValueError(f"Only one GroupByBoolean per boolean_type is allowed (duplicate for '{btype}').")
-        except Exception:
+        gb = self.group_by or []
+        if not gb:
             return self
+
+        seen_specs: set[GroupBySpec] = set()
+        sex_count = 0
+        stroke_count = 0
+        age_count = 0
+        nihss_count = 0
+        time_count = 0
+        boolean_by_type: dict[str, int] = {}
+        canonical_fields: set[str] = set()
+
+        for g in gb:
+            if g in seen_specs:
+                raise ValueError("Duplicate groupBy spec detected in chart.group_by; remove duplicates.")
+            seen_specs.add(g)
+
+            if isinstance(g, GroupBySex):
+                sex_count += 1
+                if sex_count > 1:
+                    raise ValueError("Only one GroupBySex is allowed per chart.")
+            elif isinstance(g, GroupByStrokeType):
+                stroke_count += 1
+                if stroke_count > 1:
+                    raise ValueError("Only one GroupByStrokeType is allowed per chart.")
+            elif isinstance(g, GroupByAge):
+                age_count += 1
+                if age_count > 1:
+                    raise ValueError("Only one GroupByAge is allowed per chart.")
+            elif isinstance(g, GroupByNIHSS):
+                nihss_count += 1
+                if nihss_count > 1:
+                    raise ValueError("Only one GroupByNIHSS is allowed per chart.")
+            elif isinstance(g, GroupByTime):
+                time_count += 1
+                if time_count > 1:
+                    raise ValueError("Only one GroupByTime is allowed per chart.")
+            elif isinstance(g, GroupByBoolean):
+                boolean_by_type[g.boolean_type] = boolean_by_type.get(g.boolean_type, 0) + 1
+            elif isinstance(g, GroupByCanonicalField):
+                if g.field in canonical_fields:
+                    raise ValueError("Duplicate GroupByCanonicalField for the same field is not allowed.")
+                canonical_fields.add(g.field)
+
+        for btype, count in boolean_by_type.items():
+            if count > 1:
+                raise ValueError(f"Only one GroupByBoolean per boolean_type is allowed (duplicate for '{btype}').")
 
         return self
 
@@ -658,50 +655,58 @@ class StatisticalTestSpec(BaseModel):
         - GroupByBoolean: only one per boolean_type.
         - Allow multiple distinct GroupByCanonicalField but no duplicates of same field.
         """
-        try:
-            gb = self.group_by or []
-            if not gb:
-                return self
-            seen: set[GroupBySpec] = set()
-            sex = stroke = age = nihss = time = 0
-            boolean_types: dict[str, int] = {}
-            canonical_fields: set[str] = set()
-            for g in gb:
-                if g in seen:
-                    raise ValueError("Duplicate group_by spec in statistical test.")
-                seen.add(g)
-                if isinstance(g, GroupBySex):
-                    sex += 1
-                    if sex > 1:
-                        raise ValueError("Only one GroupBySex allowed in a statistical test.")
-                elif isinstance(g, GroupByStrokeType):
-                    stroke += 1
-                    if stroke > 1:
-                        raise ValueError("Only one GroupByStrokeType allowed in a statistical test.")
-                elif isinstance(g, GroupByAge):
-                    age += 1
-                    if age > 1:
-                        raise ValueError("Only one GroupByAge allowed in a statistical test.")
-                elif isinstance(g, GroupByNIHSS):
-                    nihss += 1
-                    if nihss > 1:
-                        raise ValueError("Only one GroupByNIHSS allowed in a statistical test.")
-                elif isinstance(g, GroupByTime):
-                    time += 1
-                    if time > 1:
-                        raise ValueError("Only one GroupByTime allowed in a statistical test.")
-                elif isinstance(g, GroupByBoolean):
-                    boolean_types[g.boolean_type] = boolean_types.get(g.boolean_type, 0) + 1
-                elif isinstance(g, GroupByCanonicalField):
-                    if g.field in canonical_fields:
-                        raise ValueError("Duplicate GroupByCanonicalField for same field in statistical test.")
-                    canonical_fields.add(g.field)
-            for bt, ct in boolean_types.items():
-                if ct > 1:
-                    raise ValueError(f"Duplicate GroupByBoolean for boolean_type '{bt}' in statistical test.")
-        except Exception:
+        gb = self.group_by or []
+        if not gb:
             return self
+
+        seen: set[GroupBySpec] = set()
+        sex = stroke = age = nihss = time = 0
+        boolean_types: dict[str, int] = {}
+        canonical_fields: set[str] = set()
+        for g in gb:
+            if g in seen:
+                raise ValueError("Duplicate group_by spec in statistical test.")
+            seen.add(g)
+            if isinstance(g, GroupBySex):
+                sex += 1
+                if sex > 1:
+                    raise ValueError("Only one GroupBySex allowed in a statistical test.")
+            elif isinstance(g, GroupByStrokeType):
+                stroke += 1
+                if stroke > 1:
+                    raise ValueError("Only one GroupByStrokeType allowed in a statistical test.")
+            elif isinstance(g, GroupByAge):
+                age += 1
+                if age > 1:
+                    raise ValueError("Only one GroupByAge allowed in a statistical test.")
+            elif isinstance(g, GroupByNIHSS):
+                nihss += 1
+                if nihss > 1:
+                    raise ValueError("Only one GroupByNIHSS allowed in a statistical test.")
+            elif isinstance(g, GroupByTime):
+                time += 1
+                if time > 1:
+                    raise ValueError("Only one GroupByTime allowed in a statistical test.")
+            elif isinstance(g, GroupByBoolean):
+                boolean_types[g.boolean_type] = boolean_types.get(g.boolean_type, 0) + 1
+            elif isinstance(g, GroupByCanonicalField):
+                if g.field in canonical_fields:
+                    raise ValueError("Duplicate GroupByCanonicalField for same field in statistical test.")
+                canonical_fields.add(g.field)
+        for bt, ct in boolean_types.items():
+            if ct > 1:
+                raise ValueError(f"Duplicate GroupByBoolean for boolean_type '{bt}' in statistical test.")
         return self
+
+
+class PlanMetadata(BaseModel):
+    trace_id: Optional[str] = None
+    planner_provider: Optional[str] = None
+    planner_model: Optional[str] = None
+    planner_version: str = "pipeline-v2"
+    fallback_used: bool = False
+    fallback_reason: Optional[str] = None
+    generated_at_utc: Optional[str] = None
 
 
 class AnalysisPlan(BaseModel):
@@ -715,3 +720,4 @@ class AnalysisPlan(BaseModel):
 
     charts: Optional[List[ChartSpec]] = None
     statistical_tests: Optional[List[StatisticalTestSpec]] = None
+    metadata: PlanMetadata = Field(default_factory=PlanMetadata)
