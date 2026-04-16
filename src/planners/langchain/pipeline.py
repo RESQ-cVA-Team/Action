@@ -61,6 +61,31 @@ _INTENT_KEYWORDS: Dict[str, List[str]] = {
     "stat_test": _env_csv_tokens("PLANNER_INTENT_TEST_KEYWORDS", "test,anova,t-test,chi,wilcoxon,mann-whitney"),
 }
 
+_SUPPORTED_STAT_TESTS_RAW = env.get_env("EXECUTOR_SUPPORTED_STAT_TESTS", default="MANN_WHITNEY_U_TEST") or "MANN_WHITNEY_U_TEST"
+_SUPPORTED_STAT_TESTS = [token.strip().upper() for token in _SUPPORTED_STAT_TESTS_RAW.split(",") if token.strip()]
+
+_SINGLE_CHART_HINTS = [
+    "one graph",
+    "one chart",
+    "single chart",
+    "single graph",
+    "single visual",
+    "in one graph",
+    "in one chart",
+    "same graph",
+    "same chart",
+]
+_MULTI_CHART_HINTS = [
+    "separate charts",
+    "separate chart",
+    "multiple charts",
+    "multiple visuals",
+    "two charts",
+    "three charts",
+    "as separate visuals",
+    "as separate charts",
+]
+
 _planner_timeout_raw = env.get_env("PLANNER_REQUEST_TIMEOUT_SECONDS", default="30") or "30"
 _planner_timeout_seconds = 30.0
 try:
@@ -249,6 +274,7 @@ def _iter_entity_values(value: Any) -> List[str]:
 def _with_plan_metadata(
     plan: AnalysisPlan,
     trace_id: Optional[str],
+    requested_visual_layout: Optional[str] = None,
     fallback_used: bool = False,
     fallback_reason: Optional[str] = None,
 ) -> AnalysisPlan:
@@ -258,11 +284,24 @@ def _with_plan_metadata(
         planner_provider=current.planner_provider or LLM_PROVIDER,
         planner_model=current.planner_model or (_LLM_MODEL or None),
         planner_version=current.planner_version or "pipeline-v2",
+        requested_visual_layout=current.requested_visual_layout or requested_visual_layout,
         fallback_used=bool(current.fallback_used or fallback_used),
         fallback_reason=current.fallback_reason or fallback_reason,
         generated_at_utc=current.generated_at_utc or _utc_now_iso(),
     )
     return plan.model_copy(update={"metadata": metadata})
+
+
+def _infer_requested_visual_layout(question: str) -> Optional[str]:
+    lowered = (question or "").strip().lower()
+    if not lowered:
+        return None
+
+    if any(token in lowered for token in _MULTI_CHART_HINTS):
+        return "multi_chart"
+    if any(token in lowered for token in _SINGLE_CHART_HINTS):
+        return "single_chart"
+    return None
 
 
 def _plan_for_cache(plan: AnalysisPlan) -> AnalysisPlan:
@@ -315,7 +354,13 @@ def _build_timeout_fallback_plan(question: str, entities: Dict[str, Any], langua
         ],
         statistical_tests=None,
     )
-    return _with_plan_metadata(plan, trace_id=trace_id, fallback_used=True, fallback_reason="planner_timeout")
+    return _with_plan_metadata(
+        plan,
+        trace_id=trace_id,
+        requested_visual_layout=_infer_requested_visual_layout(question),
+        fallback_used=True,
+        fallback_reason="planner_timeout",
+    )
 
 
 def _cache_key(question: str, entities: Dict[str, Any], language: str) -> str:
@@ -544,10 +589,13 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
             "Keep enum-like codes (metric, chart_type, test_type, stroke categories, sex categories) in their canonical uppercase English forms. "
             "Use the reasoning and prior examples. Place detected entities into metrics (group_by / filters). "
             "Prefer LINE/BAR for trends or comparisons; BOX/VIOLIN/HISTOGRAM for distributions. "
-            "Title guidance: Avoid phrases like 'Over Time' unless there is an explicit temporal grouping. If no time/canonical grouping is specified and a LINE chart is used for a distribution, prefer '<METRIC> Distribution' for the title.",
+            "Title guidance: Avoid phrases like 'Over Time' unless there is an explicit temporal grouping. If no time/canonical grouping is specified and a LINE chart is used for a distribution, prefer '<METRIC> Distribution' for the title. "
+            "Chart intent guidance: If user asks for one graph/one chart/single visual with multiple splits, prefer one chart with multiple group_by dimensions. If user asks for separate charts/multiple visuals, produce multiple chart specs. "
+            "Statistical test guidance: Only use test types listed in SUPPORTED_STAT_TESTS_JSON; otherwise omit statistical_tests and return charts.",
         ),
         ("system", "SCHEMA:\n" + SCHEMA_DESCRIPTION),
         ("system", "FEW_SHOT_EXAMPLES:\n{few_shots}"),
+        ("system", "SUPPORTED_STAT_TESTS_JSON:\n{supported_stat_tests}"),
         ("system", "REASONING (English internal reasoning shown below can differ from output language):\n{reasoning}"),
         ("user", "USER_UTTERANCE:\n{question}\n\nENTITIES_DETECTED(JSON):\n{entities}"),
     ]
@@ -632,6 +680,8 @@ def generate_analysis_plan(
     if not language:
         language = "auto"
 
+    requested_visual_layout = _infer_requested_visual_layout(question)
+
     _record_cache_event(None)
 
     cache_key: Optional[str] = None
@@ -644,7 +694,7 @@ def generate_analysis_plan(
                 progress_cb("Using cached plan.")
             if _LOG_PROMPTS:
                 logger.debug("[Planner] plan cache hit")
-            return _with_plan_metadata(cached_plan, trace_id=trace_id)
+            return _with_plan_metadata(cached_plan, trace_id=trace_id, requested_visual_layout=requested_visual_layout)
         _record_cache_event(False)
 
     # High-level notification that planning has started.
@@ -672,6 +722,7 @@ def generate_analysis_plan(
         "entities": json.dumps(entities),
         "few_shots": few_shots_text,
         "language": language,
+        "supported_stat_tests": json.dumps(_SUPPORTED_STAT_TESTS),
     }
     if _LOG_PROMPTS:
         logger.debug("[Planner] input_dict: %s", input_dict)
@@ -729,6 +780,7 @@ def generate_analysis_plan(
         "reasoning": reasoning,
         "few_shots": few_shots_text,
         "language": language,
+        "supported_stat_tests": json.dumps(_SUPPORTED_STAT_TESTS),
     }
 
     plan_prompt_rendered: str = ""
@@ -756,7 +808,11 @@ def generate_analysis_plan(
                     "response": raw_result,
                 }
             )
-            result: AnalysisPlan = _with_plan_metadata(_coerce_analysis_plan(raw_result), trace_id=trace_id)
+            result: AnalysisPlan = _with_plan_metadata(
+                _coerce_analysis_plan(raw_result),
+                trace_id=trace_id,
+                requested_visual_layout=requested_visual_layout,
+            )
 
             if debug:
                 debug_payload: GeneratePlanDebug = {
@@ -863,7 +919,11 @@ def generate_analysis_plan(
             critique_chain: Any = critique_prompt_obj | llm
             try:
                 critique_raw_response: Any = _invoke_with_timeout(critique_chain, critique_inputs, label="critique_chain")
-                critique_response: AnalysisPlan = _with_plan_metadata(_coerce_analysis_plan(critique_raw_response), trace_id=trace_id)
+                critique_response: AnalysisPlan = _with_plan_metadata(
+                    _coerce_analysis_plan(critique_raw_response),
+                    trace_id=trace_id,
+                    requested_visual_layout=requested_visual_layout,
+                )
             except Exception as critique_exc:
                 logger.warning("[Planner] Correction step failed on attempt %s: %s", attempt + 1, critique_exc)
                 steps.append(

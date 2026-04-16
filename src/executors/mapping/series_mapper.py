@@ -97,7 +97,13 @@ def map_metrics_payload_to_series(
                 else:
                     x_value = "value"
 
-                series_name = metric_label_from_alias(metric_name)
+                name_parts: List[str] = []
+                if include_metric_alias:
+                    name_parts.append(metric_label_from_alias(metric_name))
+                name_parts.extend([part for part in label_parts if part])
+                if not name_parts:
+                    name_parts.append(metric_label_from_alias(metric_name))
+                series_name = " — ".join(name_parts)
                 series.append(
                     ChartSeries(
                         name=series_name,

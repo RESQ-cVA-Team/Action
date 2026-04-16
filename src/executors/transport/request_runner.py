@@ -22,15 +22,18 @@ async def run_graphql_request(
     request_failures: List[str],
     client: GraphQLProxyClient,
     user_sub: str,
+    trace_id: str,
     semaphore: asyncio.Semaphore,
     log_graphql_query: bool = False,
 ) -> List[ChartSeries]:
+    trace_label = trace_id
     async with semaphore:
         query_str = req.to_graphql_string()
         q_hash = hashlib.sha256(query_str.encode("utf-8")).hexdigest()[:12]
         if log_graphql_query:
             logger.debug(
-                "[plan_executor] GraphQL query for chart (groupBy=%s, labels=%s, hash=%s):\n%s",
+                "[plan_executor] GraphQL query for chart (trace_id=%s, groupBy=%s, labels=%s, hash=%s):\n%s",
+                trace_label,
                 group_by_field,
                 " | ".join(label_parts),
                 q_hash,
@@ -38,14 +41,22 @@ async def run_graphql_request(
             )
         else:
             logger.info(
-                "[plan_executor] GraphQL query for chart (groupBy=%s, labels=%s, hash=%s, len=%s)",
+                "[plan_executor] GraphQL query for chart (trace_id=%s, groupBy=%s, labels=%s, hash=%s, len=%s)",
+                trace_label,
                 group_by_field,
                 " | ".join(label_parts),
                 q_hash,
                 len(query_str),
             )
         try:
-            resp = await asyncio.to_thread(client.query, query_str, user_sub, None, True)
+            resp = await asyncio.to_thread(
+                client.query,
+                query_str=query_str,
+                user_sub=user_sub,
+                trace_id=trace_id,
+                variables=None,
+                raise_on_error=True,
+            )
         except GraphQLProxyError as exc:
             if exc.kind == "timeout":
                 request_failures.append("timeout")
@@ -54,7 +65,8 @@ async def run_graphql_request(
             else:
                 request_failures.append("upstream_error")
             logger.error(
-                "[plan_executor] GraphQL request failed (groupBy=%s, labels=%s, kind=%s, status=%s)",
+                "[plan_executor] GraphQL request failed (trace_id=%s, groupBy=%s, labels=%s, kind=%s, status=%s)",
+                trace_label,
                 group_by_field,
                 " - ".join([part for part in label_parts if part]) or "(none)",
                 exc.kind,
@@ -64,7 +76,7 @@ async def run_graphql_request(
 
     if resp is None:
         request_failures.append("upstream_error")
-        logger.error("[plan_executor] GraphQL returned empty response")
+        logger.error("[plan_executor] GraphQL returned empty response (trace_id=%s)", trace_label)
         return []
 
     metrics_payload = None
@@ -74,7 +86,7 @@ async def run_graphql_request(
     if getattr(resp, "errors", None):
         request_failures.append("graphql_error")
         error_count = len(resp.errors or [])
-        logger.error("[plan_executor] GraphQL errors returned (count=%s)", error_count)
+        logger.error("[plan_executor] GraphQL errors returned (trace_id=%s, count=%s)", trace_label, error_count)
 
     if not metrics_payload:
         return []

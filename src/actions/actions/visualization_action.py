@@ -1,14 +1,12 @@
 import json
 import logging
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, Protocol, cast
 from uuid import uuid4
 
-from rasa_sdk import Action, Tracker  # type: ignore
-from rasa_sdk import types as rasa_types  # type: ignore
-from rasa_sdk.events import EventType, FollowupAction, SlotSet  # type: ignore
-from rasa_sdk.executor import CollectingDispatcher  # type: ignore
+from rasa_sdk import Action  # type: ignore
+from rasa_sdk.events import FollowupAction, SlotSet  # type: ignore
 
-from src.actions.error_messages import friendly_visualization_error
+from src.actions.error_messages import visualization_error_payload
 from src.actions.long_action.long_action import LongAction, PreworkResult
 from src.actions.long_action.long_action_context import LongActionContext
 from src.actions.utils.visualization import extract_entities_from_latest_message, format_execution_summary, resolve_override_language
@@ -25,6 +23,7 @@ _ECHO_INTERNAL_ERRORS = env_util.env_flag("ACTIONS_ECHO_INTERNAL_ERRORS", defaul
 _SHOW_EXECUTION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_EXECUTION_SUMMARY", default=True)
 _DEFER_CALLBACK_HANDOFF = env_util.env_flag("LONG_ACTION_DEFER_CALLBACK_HANDOFF", default=False)
 _SHOW_NORMALIZATION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_NORMALIZATION_SUMMARY", default=True)
+_VISUALIZATION_REQUEST_INTENTS = {"generate_visualization", "update_visualization"}
 
 _planner_retries_raw = env_util.get_env("ACTIONS_PLANNER_MAX_RETRIES", default="2") or "2"
 try:
@@ -40,21 +39,41 @@ except Exception:
     _executor_max_concurrency = 4
 _EXECUTOR_MAX_CONCURRENCY = _executor_max_concurrency
 
+DomainDict = Dict[str, Any]
+RasaEventList = List[Any]
 
-class ActionClarifyVisualizationRequest(Action):
+
+class DispatcherLike(Protocol):
+    def utter_message(
+        self,
+        text: Optional[str] = None,
+        json_message: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> None: ...
+
+
+class TrackerLike(Protocol):
+    sender_id: str
+    latest_message: Dict[str, Any]
+    events: List[Dict[str, Any]]
+
+    def current_state(self) -> Dict[str, Any]: ...
+
+
+class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
     def name(self) -> str:
         return "action_clarify_visualization_request"
 
     async def run(
         self,
-        dispatcher: CollectingDispatcher,
-        tracker: Tracker,
-        domain: rasa_types.DomainDict,
-    ) -> List[EventType]:
+        dispatcher: DispatcherLike,
+        tracker: TrackerLike,
+        domain: DomainDict,
+    ) -> RasaEventList:
+        trace_id = uuid4().hex
         try:
             fallback_limit = 12
-            intent_name = "generate_visualization"
-            latest_msg: Dict[str, Any] = tracker.latest_message
+            latest_msg = tracker.latest_message
 
             user_message_any = latest_msg.get("text")
             user_message = user_message_any if isinstance(user_message_any, str) else ""
@@ -62,12 +81,13 @@ class ActionClarifyVisualizationRequest(Action):
 
             metadata_any = latest_msg.get("metadata")
             metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
+            trace_id = _trace_id_from_metadata(metadata) or trace_id
+            logger.info("Starting visualization clarification routing (trace_id=%s)", trace_id)
             slots_any = tracker.current_state().get("slots", {})
             slots = cast(Dict[str, Any], slots_any) if isinstance(slots_any, dict) else {}
             override_language = resolve_override_language(metadata, slots)
 
-            events_any = getattr(tracker, "events", None)
-            events = cast(List[Dict[str, Any]], events_any) if isinstance(events_any, list) else []
+            events = tracker.events
 
             recent_messages: List[str] = []
             for ev in events:
@@ -97,7 +117,7 @@ class ActionClarifyVisualizationRequest(Action):
                     if isinstance(fallback_name_any, str) and fallback_name_any.strip():
                         name_any = fallback_name_any
 
-                if isinstance(name_any, str) and name_any.strip() == intent_name:
+                if isinstance(name_any, str) and name_any.strip() in _VISUALIZATION_REQUEST_INTENTS:
                     anchor_idx = idx
                     break
 
@@ -120,7 +140,7 @@ class ActionClarifyVisualizationRequest(Action):
                 question=planner_question,
                 entities=extracted_entities,
                 language=override_language,
-                trace_id=uuid4().hex,
+                trace_id=trace_id,
                 max_retries=_PLANNER_MAX_RETRIES,
                 include_plan=False,
                 conversation_history=conversation_history,
@@ -130,6 +150,7 @@ class ActionClarifyVisualizationRequest(Action):
             dispatcher.utter_message(
                 json_message={
                     "type": "visualization_query_decision",
+                    "trace_id": trace_id,
                     "decision": outcome.decision,
                     "reason": outcome.reason,
                     "clarification_type": outcome.clarification_type,
@@ -149,11 +170,21 @@ class ActionClarifyVisualizationRequest(Action):
 
             return [
                 SlotSet("awaiting_visualization_clarification", False),
-                FollowupAction("action_generate_visualization"),
+                FollowupAction("action_oneshot_generate_visualization"),
             ]
         except Exception as e:
-            logger.exception("Error routing visualization request")
-            dispatcher.utter_message(text=f"❌ {friendly_visualization_error(e)}")
+            logger.exception("Error routing visualization request (trace_id=%s)", trace_id)
+            payload = visualization_error_payload(e, trace_id=trace_id)
+            dispatcher.utter_message(
+                json_message={
+                    "type": "visualization_error",
+                    "trace_id": payload.get("trace_id"),
+                    "error_code": payload.get("code"),
+                    "reason": payload.get("reason"),
+                    "message": payload.get("message"),
+                }
+            )
+            dispatcher.utter_message(text=f"❌ {payload.get('message')} (Error code: {payload.get('code')}, Trace ID: {payload.get('trace_id')})")
             if _ECHO_INTERNAL_ERRORS:
                 dispatcher.utter_message(text=f"Error routing visualization request: {str(e)}")
             return []
@@ -179,8 +210,56 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
     }
 
 
-class ActionGenerateVisualization(LongAction):
-    """Long action that uses the planner chain to generate visualizations and statistics.
+_INTERNAL_TRACE_ID_KEY = "_visualization_trace_id"
+
+
+def _normalize_trace_id(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        token = value.strip()
+    else:
+        token = str(value).strip()
+    return token or None
+
+
+def _trace_id_from_metadata(metadata: Dict[str, Any]) -> Optional[str]:
+    for key in ("trace_id", "traceId", "x-trace-id", "x_trace_id"):
+        trace_id = _normalize_trace_id(metadata.get(key))
+        if trace_id:
+            return trace_id
+
+    headers_any = metadata.get("headers")
+    headers = cast(Dict[str, Any], headers_any) if isinstance(headers_any, dict) else {}
+    for key in ("x-trace-id", "x_trace_id", "trace_id", "traceId"):
+        trace_id = _normalize_trace_id(headers.get(key))
+        if trace_id:
+            return trace_id
+
+    return None
+
+
+def _ensure_context_trace_id(ctx: LongActionContext) -> str:
+    existing = ctx.tracker_snapshot.get(_INTERNAL_TRACE_ID_KEY)
+    if isinstance(existing, str) and existing.strip():
+        return existing.strip()
+
+    metadata_trace_id = _trace_id_from_metadata(ctx.metadata)
+    if metadata_trace_id:
+        ctx.tracker_snapshot[_INTERNAL_TRACE_ID_KEY] = metadata_trace_id
+        return metadata_trace_id
+
+    generated = uuid4().hex
+    ctx.tracker_snapshot[_INTERNAL_TRACE_ID_KEY] = generated
+    return generated
+
+
+def _is_guided_visualization_request(slots: Dict[str, Any]) -> bool:
+    return slots.get("guided_hospital_scope") is not None
+
+
+class ActionOneShotGenerateVisualization(LongAction):
+    """Freeform one-shot visualization action backed by the planner chain.
 
     In callback mode this streams messages via the long-action callback URL;
     otherwise it behaves like a normal synchronous action and uses the
@@ -188,11 +267,21 @@ class ActionGenerateVisualization(LongAction):
     """
 
     def name(self) -> str:
-        return "action_generate_visualization"
+        return "action_oneshot_generate_visualization"
 
     async def prework(self, ctx: LongActionContext) -> PreworkResult:
-        trace_id = uuid4().hex
+        trace_id = _ensure_context_trace_id(ctx)
+        logger.info("Starting one-shot prework (trace_id=%s)", trace_id)
         try:
+            if _is_guided_visualization_request(ctx.slots):
+                return PreworkResult(
+                    events=[
+                        SlotSet("awaiting_visualization_clarification", False),
+                        FollowupAction("action_guided_generate_visualization"),
+                    ],
+                    proceed=False,
+                )
+
             latest_any = ctx.tracker_snapshot.get("latest_message")
             latest_msg = cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
             parse_data_any = latest_msg.get("parse_data")
@@ -211,8 +300,15 @@ class ActionGenerateVisualization(LongAction):
             intent_name = intent_name_any.strip() if isinstance(intent_name_any, str) else ""
             awaiting_clarification = bool(ctx.slots.get("awaiting_visualization_clarification"))
 
-            if awaiting_clarification and intent_name != "generate_visualization":
+            if awaiting_clarification and intent_name not in _VISUALIZATION_REQUEST_INTENTS:
                 return PreworkResult(events=[FollowupAction("action_clarify_visualization_request")], proceed=False)
+
+            # Defensive fallback: if routing reaches this action for an unrelated
+            # intent, always send a user-facing response instead of returning
+            # nothing and leaving the conversation hanging.
+            if intent_name and intent_name not in _VISUALIZATION_REQUEST_INTENTS and not _is_guided_visualization_request(ctx.slots):
+                ctx.say(text=("I can help with visualization requests. Try asking to generate a chart, or ask to update the current chart."))
+                return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=False)
 
             request_ctx = _extract_request_context(ctx)
             outcome = orchestrate_visualization_request(
@@ -260,8 +356,18 @@ class ActionGenerateVisualization(LongAction):
                 return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=False)
             return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=True)
         except Exception as e:
-            logger.exception("Error generating visualization (prework)")
-            ctx.say(text=f"❌ {friendly_visualization_error(e)}")
+            logger.exception("Error generating visualization (prework, trace_id=%s)", trace_id)
+            payload = visualization_error_payload(e, trace_id=trace_id)
+            ctx.say(
+                json_message={
+                    "type": "visualization_error",
+                    "trace_id": payload.get("trace_id"),
+                    "error_code": payload.get("code"),
+                    "reason": payload.get("reason"),
+                    "message": payload.get("message"),
+                }
+            )
+            ctx.say(text=f"❌ {payload.get('message')} (Error code: {payload.get('code')}, Trace ID: {payload.get('trace_id')})")
             if _ECHO_INTERNAL_ERRORS:
                 ctx.say(text=f"Error generating visualization: {str(e)}")
             return PreworkResult(events=[], proceed=False)
@@ -270,7 +376,7 @@ class ActionGenerateVisualization(LongAction):
         completed_successfully = False
         execution_summary: Optional[Any] = None
         planner_diagnostics: Optional[Dict[str, Any]] = None
-        trace_id = uuid4().hex
+        trace_id = _ensure_context_trace_id(ctx)
         try:
             request_ctx = _extract_request_context(ctx)
             user_message = cast(str, request_ctx["user_message"])
@@ -280,10 +386,11 @@ class ActionGenerateVisualization(LongAction):
             override_language = cast(Optional[str], request_ctx["override_language"])
 
             if _LOG_USER_TEXT:
-                logger.info("Processing visualization request: '%s'", user_message)
+                logger.info("Processing visualization request (trace_id=%s): '%s'", trace_id, user_message)
             else:
                 logger.info(
-                    "Processing visualization request (text_len=%s)",
+                    "Processing visualization request (trace_id=%s, text_len=%s)",
+                    trace_id,
                     len(user_message or ""),
                 )
 
@@ -313,6 +420,14 @@ class ActionGenerateVisualization(LongAction):
             )
             planner_diagnostics = lang_pipeline.get_plan_cache_diagnostics()
 
+            ctx.say(
+                json_message={
+                    "type": "visualization_plan",
+                    "trace_id": trace_id,
+                    "plan": cast(Any, plan_obj).model_dump(mode="json", exclude_none=True),
+                }
+            )
+
             visualization = await execute_plan_async(
                 plan_obj,
                 user_sub=user_sub,
@@ -321,12 +436,22 @@ class ActionGenerateVisualization(LongAction):
                 summary_cb=on_summary,
                 trace_id=trace_id,
             )
-
-            ctx.say(json_message=json.loads(visualization.model_dump_json()))
+            visualization_json = cast(Any, visualization).model_dump_json()
+            ctx.say(json_message=json.loads(cast(str, visualization_json)))
             completed_successfully = True
         except Exception as e:
-            logger.exception("Error generating visualization")
-            ctx.say(text=f"❌ {friendly_visualization_error(e)}")
+            logger.exception("Error generating visualization (trace_id=%s)", trace_id)
+            payload = visualization_error_payload(e, trace_id=trace_id)
+            ctx.say(
+                json_message={
+                    "type": "visualization_error",
+                    "trace_id": payload.get("trace_id"),
+                    "error_code": payload.get("code"),
+                    "reason": payload.get("reason"),
+                    "message": payload.get("message"),
+                }
+            )
+            ctx.say(text=f"❌ {payload.get('message')} (Error code: {payload.get('code')}, Trace ID: {payload.get('trace_id')})")
             if _ECHO_INTERNAL_ERRORS:
                 ctx.say(text=f"Error generating visualization: {str(e)}")
         finally:

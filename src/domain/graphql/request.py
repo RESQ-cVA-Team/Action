@@ -6,17 +6,53 @@ Uses SSOT-based enums for consistency across the system.
 
 from typing import List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.domain.graphql.ssot_enums import BooleanPropertyType, GroupByType, MetricType, Operator, SexType, StrokeType
+from src.shared.ssot_loader import get_metric_metadata
+
+
+def _numeric_filter_properties() -> set[str]:
+    out: set[str] = set()
+    metadata = get_metric_metadata()
+    for meta in metadata.values():
+        if not isinstance(meta, dict):
+            continue
+        props = meta.get("properties")
+        if isinstance(props, list):
+            for prop in props:
+                if isinstance(prop, str) and prop.strip():
+                    out.add(prop.strip().upper())
+    # Safe fallback for legacy environments with partial metadata.
+    if not out:
+        out = {
+            "AGE",
+            "ADMISSION_NIHSS",
+            "GLUCOSE",
+            "CHOLESTEROL",
+            "SYSTOLIC_PRESSURE",
+            "DIASTOLIC_PRESSURE",
+        }
+    return out
+
+
+_NUMERIC_FILTER_PROPERTIES = _numeric_filter_properties()
 
 
 class IntegerFilter(BaseModel):
     """Filter for integer/numeric values"""
 
-    property: Literal["AGE", "ADMISSION_NIHSS", "GLUCOSE", "CHOLESTEROL", "SYSTOLIC_PRESSURE", "DIASTOLIC_PRESSURE"]
+    property: str
     operator: Operator
     value: int
+
+    @field_validator("property")
+    def validate_property(cls, value: str) -> str:
+        normalized = (value or "").strip().upper()
+        if normalized not in _NUMERIC_FILTER_PROPERTIES:
+            allowed = sorted(_NUMERIC_FILTER_PROPERTIES)
+            raise ValueError(f"{value} is not a valid numeric filter property. Allowed: {allowed}")
+        return normalized
 
 
 class BooleanFilter(BaseModel):

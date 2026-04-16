@@ -40,6 +40,16 @@ def _load_yaml(filename: str) -> List[Dict[str, Any]]:
     return items
 
 
+def get_ssot_items(filename: str) -> List[Dict[str, Any]]:
+    """Return raw SSOT records for a given YAML file.
+
+    This is a public wrapper around the cached YAML loader for modules that
+    need read-only access to item-level data (canonical + synonyms + metadata).
+    """
+
+    return _load_yaml(filename)
+
+
 @lru_cache(maxsize=64)
 def get_canonical_values(filename: str) -> Tuple[str, ...]:
     items = _load_yaml(filename)
@@ -636,6 +646,7 @@ def get_stroke_label(value: str) -> str:
 __all__ = [
     "BASE_SSOT",
     "create_enum",
+    "get_ssot_items",
     "get_canonical_values",
     "get_metric_metadata",
     "get_metric_text_lookup",

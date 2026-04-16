@@ -36,7 +36,8 @@ def _ping(dispatcher: Any, tracker: Any, domain: Any, args: List[str], opts: Dic
 
 ALLOWED_ACTIONS = {
     "action_clarify_visualization_request",
-    "action_generate_visualization",
+    "action_guided_generate_visualization",
+    "action_oneshot_generate_visualization",
     "action_dummy_countdown",
 }
 

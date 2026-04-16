@@ -27,6 +27,7 @@ def make_batch_summary(
 def make_execution_summary(
     trace_id: Optional[str],
     chart_count: int,
+    requested_visual_layout: Optional[str],
     estimated_queries: int,
     actual_queries: int,
     batches: List[ExecutionBatchSummary],
@@ -35,6 +36,7 @@ def make_execution_summary(
     return ExecutionSummary(
         trace_id=trace_id,
         chart_count=chart_count,
+        requested_visual_layout=requested_visual_layout,
         estimated_queries=estimated_queries,
         actual_queries=actual_queries,
         batches=batches,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Union, cast
+from typing import Any, Dict, List, Literal, Optional, Set, Union, cast
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -566,7 +566,7 @@ class ChartSpec(BaseModel):
         - At most one GroupBySex and one GroupByStrokeType.
         - At most one GroupByAge and one GroupByNIHSS.
         - GroupByBoolean: at most one per boolean_type.
-        - GroupByCanonicalField: no duplicates of the same field (but multiple distinct canonical fields are allowed).
+        - GroupByCanonicalField: no duplicates of the same field (multiple distinct canonical fields are allowed).
         """
         gb = self.group_by or []
         if not gb:
@@ -704,6 +704,9 @@ class PlanMetadata(BaseModel):
     planner_provider: Optional[str] = None
     planner_model: Optional[str] = None
     planner_version: str = "pipeline-v2"
+    request_mode: Optional[Literal["freeform", "guided"]] = None
+    requested_visual_layout: Optional[Literal["single_chart", "multi_chart"]] = None
+    data_origin_override: Optional[Dict[str, Any]] = None
     fallback_used: bool = False
     fallback_reason: Optional[str] = None
     generated_at_utc: Optional[str] = None

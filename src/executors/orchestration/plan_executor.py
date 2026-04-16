@@ -3,12 +3,17 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, cast
 
+from src.domain.dto.analytics import StatisticalTestResult
 from src.domain.dto.charts.types import ChartAxis, ChartSeries
 from src.domain.dto.execution_summary import ExecutionBatchSummary, ExecutionSummary
 from src.domain.dto.response import VisualizationResponse
-from src.domain.langchain.schema import AnalysisPlan
+from src.domain.graphql.request import DataOrigin, TimePeriod
+from src.domain.graphql.request import DateFilter as GQLDateFilter
+from src.domain.graphql.request import LogicalFilter as GQLLogicalFilter
+from src.domain.langchain.schema import AnalysisPlan, GroupBySpec, StatisticalTestSpec
 from src.executors.graphql.client import GraphQLProxyClient
 from src.executors.mapping.chart_builder import build_chart_dto
 from src.executors.mapping.filter_mapper import to_gql_filter
@@ -56,40 +61,336 @@ client = GraphQLProxyClient(
 
 METRIC_METADATA: Dict[str, Any] = get_metric_metadata()
 
+_AXIS_LABEL_OVERRIDES: Dict[str, str] = {
+    "DTN": "Door-to-Needle Time",
+    "ONSET_TO_DOOR": "Onset-to-Door Time",
+    "DOOR_TO_REPERFUSION": "Door-to-Reperfusion Time",
+}
 
-def _emit_compiler_diagnostics(progress_cb: Optional[Callable[[str], None]], payload: Dict[str, Any]) -> None:
-    logger.info("[plan_executor] compiler_diagnostics=%s", json.dumps(payload, default=str, sort_keys=True))
+_AXIS_UNIT_FALLBACKS: Dict[str, str] = {
+    "DTN": "minutes",
+    "ONSET_TO_DOOR": "minutes",
+    "DOOR_TO_REPERFUSION": "minutes",
+}
+
+_AXIS_ACRONYMS = {"NIHSS", "DTN", "IVT", "EVT", "TIA", "LVO", "ICH", "SAH", "CT", "MRI"}
+
+
+def _normalize_axis_display_label(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return ""
+
+    def _word_case(word: str) -> str:
+        token = word.strip()
+        if not token:
+            return token
+        upper = token.upper()
+        if upper in _AXIS_ACRONYMS:
+            return upper
+        if token.isupper() and len(token) <= 4:
+            return token
+        if token[:1].isdigit():
+            return token
+        return token[:1].upper() + token[1:].lower()
+
+    out_words: List[str] = []
+    for word in text.split():
+        if "-" in word:
+            out_words.append("-".join(_word_case(part) for part in word.split("-")))
+        else:
+            out_words.append(_word_case(word))
+    return " ".join(out_words)
+
+
+def _parse_int_csv(raw: str) -> List[int]:
+    out: List[int] = []
+    for part in (raw or "").split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            out.append(int(token))
+        except Exception:
+            continue
+    return out
+
+
+_DEFAULT_PROVIDER_GROUP_IDS = _parse_int_csv(env_util.get_env("EXECUTOR_DEFAULT_PROVIDER_GROUP_IDS", default="1") or "1")
+_DEFAULT_PROVIDER_IDS = _parse_int_csv(env_util.get_env("EXECUTOR_DEFAULT_PROVIDER_IDS", default="") or "")
+
+
+def _build_default_data_origin() -> DataOrigin:
+    provider_group_ids = list(_DEFAULT_PROVIDER_GROUP_IDS)
+    provider_ids = list(_DEFAULT_PROVIDER_IDS)
+    if not provider_group_ids and not provider_ids:
+        provider_group_ids = [1]
+
+    kwargs: Dict[str, Any] = {}
+    if provider_group_ids:
+        kwargs["providerGroupId"] = provider_group_ids
+    if provider_ids:
+        kwargs["providerId"] = provider_ids
+    return DataOrigin(**kwargs)
+
+
+def _data_origin_from_plan(plan: AnalysisPlan) -> Optional[DataOrigin]:
+    metadata = getattr(plan, "metadata", None)
+    override_any = getattr(metadata, "data_origin_override", None) if metadata is not None else None
+    if not isinstance(override_any, dict) or not override_any:
+        return None
+    try:
+        return DataOrigin.model_validate(override_any)
+    except Exception:
+        logger.warning("[plan_executor] Ignoring invalid data_origin_override in plan metadata", exc_info=True)
+        return None
+
+
+def _collect_date_bounds(filter_obj: Optional[Any]) -> tuple[Optional[str], Optional[str]]:
+    if filter_obj is None:
+        return None, None
+
+    min_start: Optional[str] = None
+    max_end: Optional[str] = None
+
+    def visit(node: Any) -> None:
+        nonlocal min_start, max_end
+        if isinstance(node, GQLLogicalFilter):
+            for child in node.children:
+                visit(child)
+            return
+        if isinstance(node, GQLDateFilter) and node.property == "DISCHARGE_DATE":
+            op = node.operator.value
+            val = node.value
+            if op in ("GE", "GT"):
+                if min_start is None or val < min_start:
+                    min_start = val
+            if op in ("LE", "LT"):
+                if max_end is None or val > max_end:
+                    max_end = val
+
+    visit(filter_obj)
+    return min_start, max_end
+
+
+def _default_time_period_from_filter(filter_obj: Optional[Any]) -> Dict[str, str]:
+    start_bound, end_bound = _collect_date_bounds(filter_obj)
+    default_tp = TimePeriod()
+    return {
+        "startDate": start_bound or cast(str, default_tp.start_date),
+        "endDate": end_bound or cast(str, default_tp.end_date),
+    }
+
+
+def _merge_case_filters(base_filter: Optional[Any], cohort_filter: Optional[Any]) -> Optional[Any]:
+    if base_filter is None:
+        return cohort_filter
+    if cohort_filter is None:
+        return base_filter
+    return GQLLogicalFilter(operator="AND", children=[base_filter, cohort_filter])
+
+
+def _cohort_split_from_groupby(group_by: Optional[List[GroupBySpec]]) -> Optional[tuple[Dimension, Any, Any, str, str]]:
+    if not group_by:
+        return None
+
+    for spec in group_by:
+        dim = Dimension(spec)
+        cats = list(dim.categories())
+        if not cats:
+            continue
+
+        if len(cats) < 2:
+            continue
+
+        c_a = cats[0]
+        c_b = cats[1]
+        f_a = dim.filter_for(c_a)
+        f_b = dim.filter_for(c_b)
+        if f_a is None or f_b is None:
+            continue
+
+        return dim, c_a, c_b, dim.label_for(c_a), dim.label_for(c_b)
+
+    return None
+
+
+def _execute_mann_whitney_test(test: StatisticalTestSpec, user_sub: str, trace_id: str) -> List[StatisticalTestResult]:
+    base_filter = to_gql_filter(test.filters)
+    cohort_split = _cohort_split_from_groupby(test.group_by)
+    if cohort_split is None:
+        logger.warning(
+            "[plan_executor] Skipping MANN_WHITNEY_U_TEST (trace_id=%s) due to missing/unsupported two-cohort group_by in test '%s'",
+            trace_id or "-",
+            test.title or "(untitled)",
+        )
+        return []
+
+    dim, cat_a, cat_b, label_a, label_b = cohort_split
+
+    cohort_filter_a = _merge_case_filters(base_filter, dim.filter_for(cat_a))
+    cohort_filter_b = _merge_case_filters(base_filter, dim.filter_for(cat_b))
+
+    data_origin_payload = _build_default_data_origin().model_dump(by_alias=True, exclude_none=True)
+    time_period_payload = _default_time_period_from_filter(base_filter)
+
+    metric_values = [m.metric for m in (test.metrics or []) if isinstance(m.metric, str) and m.metric.strip()]
+    if not metric_values:
+        return []
+
+    query = """
+query MannWhitney($metric: [StatisticsMetricEnum!]!, $cohortA: CohortFilterInput!, $cohortB: CohortFilterInput!) {
+  getMannWhitneyUTest(metric: $metric, cohortA: $cohortA, cohortB: $cohortB) {
+    metric
+    uStatistic
+    pValue
+    significant
+    cohortA { size median }
+    cohortB { size median }
+  }
+}
+    """.strip()
+
+    variables: Dict[str, Any] = {
+        "metric": metric_values,
+        "cohortA": {
+            "dataOrigin": data_origin_payload,
+            "timePeriod": time_period_payload,
+            "caseFilter": cohort_filter_a.model_dump(by_alias=True, exclude_none=True) if cohort_filter_a is not None else None,
+        },
+        "cohortB": {
+            "dataOrigin": data_origin_payload,
+            "timePeriod": time_period_payload,
+            "caseFilter": cohort_filter_b.model_dump(by_alias=True, exclude_none=True) if cohort_filter_b is not None else None,
+        },
+    }
+
+    payload = client.query_raw(query_str=query, user_sub=user_sub, variables=variables, trace_id=trace_id, raise_on_error=False)
+    if payload is None:
+        return []
+
+    data_any = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data_any, dict):
+        return []
+
+    rows_any = data_any.get("getMannWhitneyUTest")
+    if not isinstance(rows_any, list):
+        return []
+
+    out: List[StatisticalTestResult] = []
+    for row_any in rows_any:
+        if not isinstance(row_any, dict):
+            continue
+        row = cast(Dict[str, Any], row_any)
+
+        p_value_any = row.get("pValue")
+        p_value: Optional[float]
+        if isinstance(p_value_any, (int, float)):
+            p_value = float(p_value_any)
+        else:
+            p_value = None
+
+        u_stat_any = row.get("uStatistic")
+        u_stat = float(u_stat_any) if isinstance(u_stat_any, (int, float)) else None
+        significant_any = row.get("significant")
+        significant = bool(significant_any) if isinstance(significant_any, bool) else None
+
+        cohort_a = cast(Dict[str, Any], row.get("cohortA") or {})
+        cohort_b = cast(Dict[str, Any], row.get("cohortB") or {})
+
+        metric_name = row.get("metric")
+        metric_label = str(metric_name) if isinstance(metric_name, str) else "UNKNOWN"
+
+        out.append(
+            StatisticalTestResult(
+                test_type="MANN_WHITNEY_U_TEST",
+                p_value=p_value,
+                passed=significant,
+                title=test.title or f"Mann-Whitney U Test: {metric_label}",
+                description=test.description,
+                details={
+                    "trace_id": trace_id,
+                    "metric": metric_label,
+                    "u_statistic": u_stat,
+                    "cohort_a_label": label_a,
+                    "cohort_b_label": label_b,
+                    "cohort_a_size": cohort_a.get("size"),
+                    "cohort_b_size": cohort_b.get("size"),
+                    "cohort_a_median": cohort_a.get("median"),
+                    "cohort_b_median": cohort_b.get("median"),
+                },
+            )
+        )
+
+    return out
+
+
+def _execute_statistical_tests(plan: AnalysisPlan, user_sub: str, trace_id: str) -> List[StatisticalTestResult]:
+    tests = plan.statistical_tests or []
+    results: List[StatisticalTestResult] = []
+
+    for test in tests:
+        test_type = (test.test_type or "").upper().strip()
+        try:
+            if test_type == "MANN_WHITNEY_U_TEST":
+                results.extend(_execute_mann_whitney_test(test=test, user_sub=user_sub, trace_id=trace_id))
+            else:
+                logger.warning("[plan_executor] Statistical test type '%s' is not implemented yet (trace_id=%s)", test_type, trace_id or "-")
+        except Exception:
+            logger.exception("[plan_executor] Statistical test execution failed for test type '%s' (trace_id=%s)", test_type, trace_id or "-")
+
+    return results
+
+
+def _emit_compiler_diagnostics(progress_cb: Optional[Callable[[str], None]], payload: Dict[str, Any], trace_id: str) -> None:
+    logger.info("[plan_executor] compiler_diagnostics (trace_id=%s)=%s", trace_id, json.dumps(payload, default=str, sort_keys=True))
     if progress_cb is not None:
         progress_cb(f"Compiler diagnostics: {json.dumps(payload, default=str, sort_keys=True)}")
 
 
 class VisualizationExecutionError(RuntimeError):
-    def __init__(self, user_message: str, reason: str = "unknown"):
+    def __init__(
+        self,
+        user_message: str,
+        reason: str = "unknown",
+        code: str = "EXEC_UNKNOWN",
+        trace_id: Optional[str] = None,
+    ):
         super().__init__(user_message)
         self.user_message = user_message
         self.reason = reason
+        self.code = code
+        self.trace_id = trace_id
 
 
-def _to_execution_error(failure_reasons: List[str]) -> VisualizationExecutionError:
+def _to_execution_error(failure_reasons: List[str], trace_id: Optional[str] = None) -> VisualizationExecutionError:
     reason_set = set(failure_reasons)
     if "timeout" in reason_set:
         return VisualizationExecutionError(
             user_message="The data service timed out while generating the visualization. Please try again.",
             reason="timeout",
+            code="EXEC_TIMEOUT",
+            trace_id=trace_id,
         )
     if "service_unavailable" in reason_set:
         return VisualizationExecutionError(
             user_message="The analytics service is temporarily unavailable. Please try again in a moment.",
             reason="service_unavailable",
+            code="EXEC_SERVICE_UNAVAILABLE",
+            trace_id=trace_id,
         )
     if "graphql_error" in reason_set:
         return VisualizationExecutionError(
             user_message="The analytics service returned an error while generating the visualization.",
             reason="graphql_error",
+            code="EXEC_GRAPHQL_ERROR",
+            trace_id=trace_id,
         )
     return VisualizationExecutionError(
         user_message="Could not fetch analytics data for this visualization. Please try again.",
         reason="data_fetch_failed",
+        code="EXEC_DATA_FETCH_FAILED",
+        trace_id=trace_id,
     )
 
 
@@ -147,16 +448,84 @@ def _derive_distribution_defaults(metric_code: str) -> tuple[int, int, int]:
 
 
 def _axis_from_meta(metric_code: str, x_min: int, x_max: int) -> tuple[ChartAxis, ChartAxis]:
-    meta = _get_metric_meta(metric_code)
-    display = get_metric_display_name(metric_code)
+    metric_key = (metric_code or "").upper()
+    meta = _get_metric_meta(metric_key)
+    display = _AXIS_LABEL_OVERRIDES.get(metric_key) or _normalize_axis_display_label(get_metric_display_name(metric_key))
     unit_any: Any = meta.get("unit")
     if unit_any is None:
         unit_any = cast(Dict[str, Any], meta.get("numeric") or {}).get("unit")
     unit: Optional[str] = cast(Optional[str], unit_any)
+    if unit is None:
+        unit = _AXIS_UNIT_FALLBACKS.get(metric_key)
     x_label = f"{display} ({unit})" if unit else display
     x_axis = ChartAxis(label=x_label, min_value=x_min, max_value=x_max)
     y_axis = ChartAxis(label="Cases")
     return x_axis, y_axis
+
+
+def _format_iso_date(value: str) -> str:
+    token = (value or "").strip()
+    if not token:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(token.replace("Z", "+00:00"))
+        return parsed.date().isoformat()
+    except Exception:
+        return token.split("T", 1)[0]
+
+
+def _parse_iso_date(value: str) -> Optional[datetime]:
+    token = (value or "").strip()
+    if not token:
+        return None
+    try:
+        return datetime.fromisoformat(token.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _sampled_period_from_specs(specs: List[RequestSpec]) -> Optional[str]:
+    starts: List[tuple[datetime, str]] = []
+    ends: List[tuple[datetime, str]] = []
+
+    for spec in specs:
+        time_period_any = getattr(spec.req, "time_period", None)
+        periods: List[TimePeriod]
+        if isinstance(time_period_any, list):
+            periods = [p for p in time_period_any if isinstance(p, TimePeriod)]
+        elif isinstance(time_period_any, TimePeriod):
+            periods = [time_period_any]
+        else:
+            periods = []
+
+        for period in periods:
+            start_raw = cast(Optional[str], getattr(period, "start_date", None))
+            end_raw = cast(Optional[str], getattr(period, "end_date", None))
+
+            if isinstance(start_raw, str):
+                parsed = _parse_iso_date(start_raw)
+                shown = _format_iso_date(start_raw)
+                if parsed is not None and shown:
+                    starts.append((parsed, shown))
+
+            if isinstance(end_raw, str):
+                parsed = _parse_iso_date(end_raw)
+                shown = _format_iso_date(end_raw)
+                if parsed is not None and shown:
+                    ends.append((parsed, shown))
+
+    start_text = min(starts, key=lambda item: item[0])[1] if starts else None
+    end_text = max(ends, key=lambda item: item[0])[1] if ends else None
+
+    if start_text and end_text:
+        if start_text == end_text:
+            return start_text
+        return f"{start_text} to {end_text}"
+    if start_text:
+        return f"{start_text} onward"
+    if end_text:
+        return f"up to {end_text}"
+    return None
 
 
 def execute_plan(plan: AnalysisPlan, user_sub: str) -> VisualizationResponse:
@@ -201,6 +570,7 @@ async def _execute_request_spec(
     spec: RequestSpec,
     request_failures: List[str],
     context: ExecutionContext,
+    trace_id: str,
 ) -> List[ChartSeries]:
     return await run_graphql_request(
         req=spec.req,
@@ -211,6 +581,7 @@ async def _execute_request_spec(
         request_failures=request_failures,
         client=client,
         user_sub=context.user_sub,
+        trace_id=trace_id,
         semaphore=context.semaphore,
         log_graphql_query=context.log_graphql_query,
     )
@@ -220,6 +591,7 @@ async def _execute_specs_concurrent(
     specs: List[RequestSpec],
     request_failures: List[str],
     context: ExecutionContext,
+    trace_id: str,
     total_requests: int,
     progress_prefix: str = "Fetching data",
 ) -> List[ChartSeries]:
@@ -227,7 +599,17 @@ async def _execute_specs_concurrent(
     if not specs:
         return []
 
-    tasks = [asyncio.create_task(_execute_request_spec(spec=spec, request_failures=request_failures, context=context)) for spec in specs]
+    tasks = [
+        asyncio.create_task(
+            _execute_request_spec(
+                spec=spec,
+                request_failures=request_failures,
+                context=context,
+                trace_id=trace_id,
+            )
+        )
+        for spec in specs
+    ]
 
     all_series: List[ChartSeries] = []
     completed = 0
@@ -244,6 +626,7 @@ async def _execute_specs_sequential(
     specs: List[RequestSpec],
     request_failures: List[str],
     context: ExecutionContext,
+    trace_id: str,
     total_requests: int,
     progress_prefix: str,
 ) -> List[ChartSeries]:
@@ -252,7 +635,7 @@ async def _execute_specs_sequential(
     completed = 0
 
     for spec in specs:
-        result = await _execute_request_spec(spec=spec, request_failures=request_failures, context=context)
+        result = await _execute_request_spec(spec=spec, request_failures=request_failures, context=context, trace_id=trace_id)
         all_series.extend(result)
         completed += 1
         _emit_progress(context, completed=completed, total=total_requests, prefix=progress_prefix)
@@ -276,12 +659,15 @@ async def execute_plan_async(
     """
     if not trace_id and getattr(plan, "metadata", None) is not None:
         trace_id = plan.metadata.trace_id
+    trace_id_resolved = (trace_id or "").strip()
+    if not trace_id_resolved:
+        raise ValueError("trace_id is required for execute_plan_async")
+
+    logger.info("[plan_executor] execute_plan_async start (trace_id=%s)", trace_id_resolved)
 
     plan, normalization_summary = normalize_analysis_plan_with_diagnostics(plan)
     plan_charts = coalesce(plan.charts, [])
-    if plan.statistical_tests:
-        logger.warning("Statistical tests are defined in the plan but not implemented in this executor yet. They will be ignored.")
-    response: VisualizationResponse = VisualizationResponse()
+    response: VisualizationResponse = VisualizationResponse(trace_id=trace_id_resolved)
     estimated_queries = estimate_query_count_for_plan(plan)
     actual_queries = 0
     summary_batches: List[ExecutionBatchSummary] = []
@@ -294,6 +680,7 @@ async def execute_plan_async(
         progress_cb=progress_cb,
         log_graphql_query=_LOG_GRAPHQL_QUERY,
     )
+    data_origin_override = _data_origin_from_plan(plan)
 
     for planChart in plan_charts:
         metric_requests, derived_axes = build_metric_requests(
@@ -315,6 +702,7 @@ async def execute_plan_async(
             total_requests = batch.request_count
             gb_field = batch.server_groupby
             actual_queries += total_requests
+            fallback_specs: List[RequestSpec] = []
 
             summary_batches.append(
                 make_batch_summary(
@@ -339,6 +727,7 @@ async def execute_plan_async(
                         "filter_dimensions": [d.kind.__name__ for d in filter_dims],
                         "query_count_estimate": total_requests,
                     },
+                    trace_id=trace_id_resolved,
                 )
             include_metric_alias = len(planChart.metrics) > 1
 
@@ -353,12 +742,14 @@ async def execute_plan_async(
                 batched_time_periods=batched_time_periods,
                 include_metric_alias=include_metric_alias,
                 group_by_field=gb_field,
+                data_origin=data_origin_override,
             )
 
             all_series = await _execute_specs_concurrent(
                 specs=primary_specs,
                 request_failures=request_failures,
                 context=execution_context,
+                trace_id=trace_id_resolved,
                 total_requests=total_requests,
                 progress_prefix="Fetching data",
             )
@@ -374,7 +765,8 @@ async def execute_plan_async(
                 )
             ):
                 logger.warning(
-                    "[plan_executor] Batched multi-period request timed out; retrying with per-period requests (period_count=%s, combos=%s)",
+                    "[plan_executor] Batched multi-period request timed out (trace_id=%s); retrying with per-period requests (period_count=%s, combos=%s)",
+                    trace_id_resolved,
                     len(batched_time_periods),
                     len(combo_contexts),
                 )
@@ -385,6 +777,7 @@ async def execute_plan_async(
                     metric_requests=metric_requests,
                     combo_contexts=combo_contexts,
                     batched_time_periods=batched_time_periods,
+                    data_origin=data_origin_override,
                 )
 
                 retry_count = max(1, len(fallback_specs))
@@ -393,32 +786,43 @@ async def execute_plan_async(
                     specs=fallback_specs,
                     request_failures=request_failures,
                     context=execution_context,
+                    trace_id=trace_id_resolved,
                     total_requests=retry_count,
                     progress_prefix="Retrying with per-period requests",
                 )
+
+            sampled_period_override = _sampled_period_from_specs(primary_specs)
+            if sampled_period_override is None and fallback_specs:
+                sampled_period_override = _sampled_period_from_specs(fallback_specs)
 
             all_series = merge_series_by_name(all_series)
 
             if not all_series:
                 logger.warning(
-                    "[plan_executor] No series generated for chart '%s'%s. This often indicates a backend error or empty results.",
+                    "[plan_executor] No series generated for chart '%s'%s (trace_id=%s). This often indicates a backend error or empty results.",
                     planChart.title or "Chart",
                     "",
+                    trace_id_resolved,
                 )
                 if request_failures:
-                    raise _to_execution_error(request_failures)
+                    raise _to_execution_error(request_failures, trace_id=trace_id_resolved)
             vis_chart = build_chart_dto(
                 plan_chart=planChart,
                 dimensions=dims,
                 series=all_series,
                 derived_axes=derived_axes,
+                sampled_period_override=sampled_period_override,
             )
             response.charts.append(vis_chart)
 
+    if plan.statistical_tests:
+        response.stats.extend(_execute_statistical_tests(plan=plan, user_sub=user_sub, trace_id=trace_id_resolved))
+
     if summary_cb is not None:
         payload = make_execution_summary(
-            trace_id=trace_id,
+            trace_id=trace_id_resolved,
             chart_count=len(plan_charts),
+            requested_visual_layout=plan.metadata.requested_visual_layout if getattr(plan, "metadata", None) is not None else None,
             estimated_queries=estimated_queries,
             actual_queries=actual_queries,
             batches=summary_batches,
@@ -427,6 +831,6 @@ async def execute_plan_async(
         try:
             summary_cb(payload)
         except Exception:
-            logger.debug("Failed to emit execution summary callback", exc_info=True)
+            logger.debug("Failed to emit execution summary callback (trace_id=%s)", trace_id_resolved, exc_info=True)
 
     return response

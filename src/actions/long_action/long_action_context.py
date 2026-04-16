@@ -6,6 +6,7 @@ class LongActionContext:
         self.sender_id = sender_id
         self.tracker_snapshot = tracker_snapshot
         self.dispatcher = dispatcher
+        self._pending_events: List[Dict[str, Any]] = []
         # Optional progress callback used in callback mode to stream
         # individual messages back to the frontend as they are emitted.
         self._progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
@@ -188,3 +189,15 @@ class LongActionContext:
         if self.dispatcher is not None:
             # Nothing to clean up in synchronous mode.
             return
+
+    @property
+    def pending_events(self) -> List[Dict[str, Any]]:
+        return list(self._pending_events)
+
+    def add_event(self, event: Dict[str, Any]) -> None:
+        if isinstance(event, dict):
+            self._pending_events.append(event)
+
+    def add_events(self, events: List[Dict[str, Any]]) -> None:
+        for event in events:
+            self.add_event(event)

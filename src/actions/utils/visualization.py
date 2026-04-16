@@ -317,6 +317,8 @@ def format_execution_summary(
 
     estimated = summary.get("estimated_queries")
     actual = summary.get("actual_queries")
+    chart_count = summary.get("chart_count")
+    requested_visual_layout = summary.get("requested_visual_layout")
     trace_id = summary.get("trace_id")
     normalization_any = summary.get("normalization")
     normalization = cast(Dict[str, Any], normalization_any) if isinstance(normalization_any, dict) else None
@@ -327,6 +329,16 @@ def format_execution_summary(
 
     if isinstance(trace_id, str) and trace_id.strip():
         lines.append(f"Trace ID: {trace_id.strip()}")
+
+    if isinstance(requested_visual_layout, str) and requested_visual_layout:
+        layout_label = requested_visual_layout.replace("_", " ")
+        lines.append(f"Requested layout: {layout_label}.")
+
+    if isinstance(chart_count, int):
+        if chart_count == 1:
+            lines.append("Plan produced 1 chart.")
+        else:
+            lines.append(f"Plan produced {chart_count} charts.")
 
     if isinstance(planner_diagnostics, dict):
         cache_hit = planner_diagnostics.get("last_call_cache_hit")
