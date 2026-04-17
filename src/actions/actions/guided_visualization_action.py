@@ -23,15 +23,22 @@ from src.actions.guided_visualization_validation import (
 )
 from src.actions.utils.visualization import format_execution_summary
 from src.executors import execute_plan_async
+from src.shared.ssot_loader import get_canonical_values
 from src.util import env as env_util
 
 logger = logging.getLogger(__name__)
 
 _ECHO_INTERNAL_ERRORS = env_util.env_flag("ACTIONS_ECHO_INTERNAL_ERRORS", default=False)
-_SHOW_EXECUTION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_EXECUTION_SUMMARY", default=True)
-_SHOW_NORMALIZATION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_NORMALIZATION_SUMMARY", default=True)
+_SHOW_EXECUTION_SUMMARY = env_util.env_flag(
+    "ACTIONS_SHOW_EXECUTION_SUMMARY", default=True
+)
+_SHOW_NORMALIZATION_SUMMARY = env_util.env_flag(
+    "ACTIONS_SHOW_NORMALIZATION_SUMMARY", default=True
+)
 
-_executor_concurrency_raw = env_util.get_env("ACTIONS_EXECUTOR_MAX_CONCURRENCY", default="4") or "4"
+_executor_concurrency_raw = (
+    env_util.get_env("ACTIONS_EXECUTOR_MAX_CONCURRENCY", default="4") or "4"
+)
 try:
     _executor_max_concurrency = max(1, int(_executor_concurrency_raw))
 except Exception:
@@ -40,6 +47,25 @@ _EXECUTOR_MAX_CONCURRENCY = _executor_max_concurrency
 
 DomainDict = Dict[str, Any]
 RasaEventList = List[Any]
+
+
+def _build_button_payload(
+    prompt: str,
+    slot_name: str,
+    button_options: List[str],
+    allow_skip: bool = True,
+) -> Dict[str, Any]:
+    """Build a JSON payload with buttons for slot prompts."""
+    buttons = [{"title": option, "payload": option} for option in button_options]
+    if allow_skip:
+        buttons.append({"title": "Skip", "payload": "/skip_guided_step"})
+
+    return {
+        "type": "slot_prompt_with_buttons",
+        "slot_name": slot_name,
+        "text": prompt,
+        "buttons": buttons,
+    }
 
 
 def _normalize_trace_id(value: Any) -> Optional[str]:
@@ -55,7 +81,9 @@ def _normalize_trace_id(value: Any) -> Optional[str]:
 def _tracker_trace_id(tracker: TrackerLike) -> Optional[str]:
     latest = tracker.latest_message if isinstance(tracker.latest_message, dict) else {}
     metadata_any = latest.get("metadata")
-    metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
+    metadata = (
+        cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
+    )
 
     for key in ("trace_id", "traceId", "x-trace-id", "x_trace_id"):
         trace_id = _normalize_trace_id(metadata.get(key))
@@ -85,21 +113,29 @@ class ActionGuidedGenerateVisualization(Action):  # pyright: ignore
         trace_id = _tracker_trace_id(tracker) or uuid4().hex
         execution_summary: Any = None
         try:
-            logger.info("Starting guided visualization generation (trace_id=%s)", trace_id)
+            logger.info(
+                "Starting guided visualization generation (trace_id=%s)", trace_id
+            )
             slots_any = tracker.current_state().get("slots", {})
-            slots = cast(Dict[str, Any], slots_any) if isinstance(slots_any, dict) else {}
+            slots = (
+                cast(Dict[str, Any], slots_any) if isinstance(slots_any, dict) else {}
+            )
             user_sub = str(tracker.sender_id)
 
             def on_summary(summary: Any) -> None:
                 nonlocal execution_summary
                 execution_summary = summary
 
-            plan_obj = build_guided_plan(slots=slots, user_sub=user_sub, trace_id=trace_id)
+            plan_obj = build_guided_plan(
+                slots=slots, user_sub=user_sub, trace_id=trace_id
+            )
             dispatcher.utter_message(
                 json_message={
                     "type": "visualization_plan",
                     "trace_id": trace_id,
-                    "plan": cast(Any, plan_obj).model_dump(mode="json", exclude_none=True),
+                    "plan": cast(Any, plan_obj).model_dump(
+                        mode="json", exclude_none=True
+                    ),
                 }
             )
 
@@ -112,7 +148,9 @@ class ActionGuidedGenerateVisualization(Action):  # pyright: ignore
                 trace_id=trace_id,
             )
             visualization_json = cast(Any, visualization).model_dump_json()
-            dispatcher.utter_message(json_message=json.loads(cast(str, visualization_json)))
+            dispatcher.utter_message(
+                json_message=json.loads(cast(str, visualization_json))
+            )
             if _SHOW_EXECUTION_SUMMARY and execution_summary is not None:
                 dispatcher.utter_message(
                     text=format_execution_summary(
@@ -124,9 +162,14 @@ class ActionGuidedGenerateVisualization(Action):  # pyright: ignore
             else:
                 dispatcher.utter_message(text="✅ Visualization generation complete.")
 
-            return [SlotSet("awaiting_visualization_clarification", False), *guided_slots_clear_events()]
+            return [
+                SlotSet("awaiting_visualization_clarification", False),
+                *guided_slots_clear_events(),
+            ]
         except Exception as e:
-            logger.exception("Error generating guided visualization (trace_id=%s)", trace_id)
+            logger.exception(
+                "Error generating guided visualization (trace_id=%s)", trace_id
+            )
             payload = visualization_error_payload(e, trace_id=trace_id)
             dispatcher.utter_message(
                 json_message={
@@ -137,9 +180,13 @@ class ActionGuidedGenerateVisualization(Action):  # pyright: ignore
                     "message": payload.get("message"),
                 }
             )
-            dispatcher.utter_message(text=f"❌ {payload.get('message')} (Error code: {payload.get('code')}, Trace ID: {payload.get('trace_id')})")
+            dispatcher.utter_message(
+                text=f"❌ {payload.get('message')} (Error code: {payload.get('code')}, Trace ID: {payload.get('trace_id')})"
+            )
             if _ECHO_INTERNAL_ERRORS:
-                dispatcher.utter_message(text=f"Error generating guided visualization: {str(e)}")
+                dispatcher.utter_message(
+                    text=f"Error generating guided visualization: {str(e)}"
+                )
             return [SlotSet("awaiting_visualization_clarification", False)]
 
 
@@ -154,7 +201,9 @@ class ValidateGuidedVisualizationForm(FormValidationAction):  # pyright: ignore
         tracker: TrackerLike,
         domain: DomainDict,
     ) -> Dict[Text, Any]:
-        return validate_required_metric(slot_value=slot_value, dispatcher=dispatcher, tracker=tracker)
+        return validate_required_metric(
+            slot_value=slot_value, dispatcher=dispatcher, tracker=tracker
+        )
 
     def validate_guided_hospital_scope(
         self,
@@ -163,7 +212,9 @@ class ValidateGuidedVisualizationForm(FormValidationAction):  # pyright: ignore
         tracker: TrackerLike,
         domain: DomainDict,
     ) -> Dict[Text, Any]:
-        return validate_guided_hospital_scope(slot_value=slot_value, dispatcher=dispatcher, tracker=tracker)
+        return validate_guided_hospital_scope(
+            slot_value=slot_value, dispatcher=dispatcher, tracker=tracker
+        )
 
     def validate_stroke_type(
         self,
@@ -236,3 +287,95 @@ class ValidateGuidedVisualizationForm(FormValidationAction):  # pyright: ignore
             filename="ChartType.yml",
             prompt="I couldn't match that chart type. Please enter a valid chart type or skip.",
         )
+
+    def ask_for_sex(
+        self,
+        dispatcher: DispatcherLike,
+        tracker: TrackerLike,
+        domain: DomainDict,
+    ) -> None:
+        """Ask for sex filter with button options."""
+        try:
+            sex_options = list(get_canonical_values("SexType.yml"))
+            payload = _build_button_payload(
+                prompt="Would you like to filter by patient sex?",
+                slot_name="sex",
+                button_options=sex_options,
+            )
+            dispatcher.utter_message(json_message=payload)
+        except Exception as e:
+            logger.warning(
+                "Failed to build sex buttons, falling back to text: %s", str(e)
+            )
+            dispatcher.utter_message(
+                text="Would you like to filter by patient sex? (or type 'skip')"
+            )
+
+    def ask_for_stroke_type(
+        self,
+        dispatcher: DispatcherLike,
+        tracker: TrackerLike,
+        domain: DomainDict,
+    ) -> None:
+        """Ask for stroke type filter with button options."""
+        try:
+            stroke_options = list(get_canonical_values("StrokeType.yml"))
+            payload = _build_button_payload(
+                prompt="Would you like to filter by stroke type?",
+                slot_name="stroke_type",
+                button_options=stroke_options,
+            )
+            dispatcher.utter_message(json_message=payload)
+        except Exception as e:
+            logger.warning(
+                "Failed to build stroke type buttons, falling back to text: %s", str(e)
+            )
+            dispatcher.utter_message(
+                text="Would you like to filter by stroke type? (or type 'skip')"
+            )
+
+    def ask_for_group_by(
+        self,
+        dispatcher: DispatcherLike,
+        tracker: TrackerLike,
+        domain: DomainDict,
+    ) -> None:
+        """Ask for grouping field with button options."""
+        try:
+            group_by_options = list(get_canonical_values("GroupByType.yml"))
+            payload = _build_button_payload(
+                prompt="Would you like to group the results by any field?",
+                slot_name="group_by",
+                button_options=group_by_options,
+            )
+            dispatcher.utter_message(json_message=payload)
+        except Exception as e:
+            logger.warning(
+                "Failed to build group by buttons, falling back to text: %s", str(e)
+            )
+            dispatcher.utter_message(
+                text="Would you like to group the results by any field? (or type 'skip')"
+            )
+
+    def ask_for_chart_type(
+        self,
+        dispatcher: DispatcherLike,
+        tracker: TrackerLike,
+        domain: DomainDict,
+    ) -> None:
+        """Ask for chart type with button options."""
+        try:
+            chart_options = list(get_canonical_values("ChartType.yml"))
+            payload = _build_button_payload(
+                prompt="What type of chart would you like to visualize?",
+                slot_name="chart_type",
+                button_options=chart_options,
+            )
+            dispatcher.utter_message(json_message=payload)
+        except Exception as e:
+            logger.warning(
+                "Failed to build chart type buttons, falling back to text: %s", str(e)
+            )
+            dispatcher.utter_message(
+                text="What type of chart would you like to visualize? (or type 'skip')"
+            )
