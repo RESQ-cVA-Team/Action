@@ -4,6 +4,7 @@ import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, cast
+from uuid import uuid4
 
 from rasa_sdk.events import EventType  # type: ignore
 
@@ -55,7 +56,8 @@ def test_graphql(dispatcher: Any, tracker: Any, domain: Any, args: List[str], op
             action_server_token=action_server_token,
             target=graphql_target if isinstance(graphql_target, str) and graphql_target.strip() else "graphql",
         )
-        result = client.query(query_str=query_str, user_sub=user_sub)
+        trace_id = uuid4().hex
+        result = client.query(query_str=query_str, user_sub=user_sub, trace_id=trace_id)
 
         if result is None:
             dispatcher.utter_message(text="❌ GraphQL test request failed (no response or non-200). Check logs for details.")

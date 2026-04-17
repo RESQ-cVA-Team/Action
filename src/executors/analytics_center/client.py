@@ -1,4 +1,7 @@
+import json
 import logging
+import os
+import socket
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, TypedDict, cast
@@ -10,12 +13,17 @@ from src.util import env as env_util
 logger = logging.getLogger(__name__)
 
 
+def _runtime_instance_fields() -> tuple[int, str]:
+    return os.getpid(), socket.gethostname()
+
+
 @dataclass
 class AnalyticsCenterError(Exception):
     kind: str
     message: str
     status_code: Optional[int] = None
     transient: bool = False
+    details: Optional[Dict[str, Any]] = None
 
     def __str__(self) -> str:
         return self.message
@@ -28,7 +36,7 @@ class ProxyHttpRequestPayload(TypedDict):
 
 
 class ProxyRequestPayload(TypedDict):
-    userSub: str
+    senderId: str
     target: str
     request: ProxyHttpRequestPayload
 
@@ -42,6 +50,11 @@ class ProviderCollectionResult(TypedDict):
 
 class CountryCollectionResult(TypedDict):
     results: List[Dict[str, Any]]
+
+
+class MineScopeResult(TypedDict, total=False):
+    provider_id: int
+    provider_group_id: int
 
 
 class AnalyticsCenterClient:
@@ -70,21 +83,32 @@ class AnalyticsCenterClient:
         if delay > 0:
             time.sleep(delay)
 
+    @staticmethod
+    def _require_trace_id(trace_id: str, request_name: str) -> str:
+        token = (trace_id or "").strip()
+        if not token:
+            raise ValueError(f"trace_id is required for {request_name}")
+        return token
+
     def _request_via_proxy(
         self,
         user_sub: str,
         path: str,
         query: Dict[str, Any],
         request_name: str,
+        trace_id: str,
         raise_on_error: bool = False,
     ) -> Optional[Dict[str, Any]]:
+        trace_label = self._require_trace_id(trace_id, request_name)
         headers = {
             "Content-Type": "application/json",
             "x-action-server-token": self.action_server_token,
         }
+        headers["x-trace-id"] = trace_label
 
         request_payload: ProxyRequestPayload = {
-            "userSub": user_sub,
+            # Preserve the exact Rasa sender_id value for proxy token lookup.
+            "senderId": user_sub,
             "target": self.target,
             "request": {
                 "path": path,
@@ -96,13 +120,49 @@ class AnalyticsCenterClient:
         attempts_total = self.retry_attempts + 1
         last_error: Optional[AnalyticsCenterError] = None
 
+        def parse_error_payload() -> Dict[str, Any]:
+            try:
+                payload_any: Any = response.json()
+            except Exception:
+                return {}
+            if isinstance(payload_any, dict):
+                return cast(Dict[str, Any], payload_any)
+            return {}
+
         for attempt in range(attempts_total):
             try:
+                process_id, hostname = _runtime_instance_fields()
+                logger.debug(
+                    "[AnalyticsCenterClient] Outbound request %s (trace_id=%s, attempt=%s/%s, path=%s)",
+                    request_name,
+                    trace_label,
+                    attempt + 1,
+                    attempts_total,
+                    path,
+                )
+                logger.info(
+                    "[AnalyticsCenterClient] Proxy dispatch (trace_id=%s, pid=%s, host=%s, request=%s, user_sub=%r, path=%s, query=%s)",
+                    trace_label,
+                    process_id,
+                    hostname,
+                    request_name,
+                    user_sub,
+                    path,
+                    json.dumps(query, ensure_ascii=False, sort_keys=True, default=str),
+                )
                 response = requests.post(
                     self.proxy_url,
                     headers=headers,
                     json=request_payload,
                     timeout=self.timeout_seconds,
+                )
+                logger.info(
+                    "[AnalyticsCenterClient] Outbound response %s (trace_id=%s, attempt=%s/%s, status=%s)",
+                    request_name,
+                    trace_label,
+                    attempt + 1,
+                    attempts_total,
+                    response.status_code,
                 )
             except requests.Timeout as exc:
                 last_error = AnalyticsCenterError(
@@ -111,8 +171,9 @@ class AnalyticsCenterClient:
                     transient=True,
                 )
                 logger.warning(
-                    "[AnalyticsCenterClient] Timeout during %s (attempt=%s/%s): %s",
+                    "[AnalyticsCenterClient] Timeout during %s (trace_id=%s, attempt=%s/%s): %s",
                     request_name,
+                    trace_label,
                     attempt + 1,
                     attempts_total,
                     exc,
@@ -128,8 +189,9 @@ class AnalyticsCenterClient:
                     transient=True,
                 )
                 logger.warning(
-                    "[AnalyticsCenterClient] Request exception during %s (attempt=%s/%s): %s",
+                    "[AnalyticsCenterClient] Request exception during %s (trace_id=%s, attempt=%s/%s): %s",
                     request_name,
+                    trace_label,
                     attempt + 1,
                     attempts_total,
                     exc,
@@ -140,21 +202,46 @@ class AnalyticsCenterClient:
                 break
 
             if response.status_code != 200:
+                error_payload = parse_error_payload()
+                proxy_any = error_payload.get("proxy")
+                proxy_info = cast(Dict[str, Any], proxy_any) if isinstance(proxy_any, dict) else {}
+                proxy_reason_any = proxy_info.get("reason")
+                proxy_reason = proxy_reason_any.strip() if isinstance(proxy_reason_any, str) and proxy_reason_any.strip() else None
+
+                upstream_any = error_payload.get("upstream")
+                upstream_info = cast(Dict[str, Any], upstream_any) if isinstance(upstream_any, dict) else {}
+                upstream_body = upstream_info.get("body")
+                upstream_preview = ""
+                if upstream_body is not None:
+                    try:
+                        upstream_preview = json.dumps(upstream_body, ensure_ascii=False, default=str)[:400]
+                    except Exception:
+                        upstream_preview = str(upstream_body)[:400]
+
+                message_any = error_payload.get("message")
+                error_message = message_any.strip() if isinstance(message_any, str) and message_any.strip() else f"Proxy returned HTTP {response.status_code} during {request_name}"
+                if proxy_reason:
+                    error_message = f"{error_message}: {proxy_reason}"
+
                 logger.error(
-                    "[AnalyticsCenterClient] Proxy error %s during %s (attempt=%s/%s, target=%s, body_len=%s)",
+                    "[AnalyticsCenterClient] Proxy error %s during %s (trace_id=%s, attempt=%s/%s, target=%s, body_len=%s, proxy_reason=%s, upstream=%s)",
                     response.status_code,
                     request_name,
+                    trace_label,
                     attempt + 1,
                     attempts_total,
                     self.target,
                     len(response.text or ""),
+                    proxy_reason or "-",
+                    upstream_preview or "-",
                 )
                 transient = self._is_transient_status(response.status_code)
                 last_error = AnalyticsCenterError(
                     kind="http_error",
-                    message=f"Proxy returned HTTP {response.status_code} during {request_name}",
+                    message=error_message,
                     status_code=response.status_code,
                     transient=transient,
+                    details=error_payload or None,
                 )
                 if transient and attempt < self.retry_attempts:
                     self._sleep_before_retry(attempt)
@@ -170,7 +257,7 @@ class AnalyticsCenterClient:
                 message=f"Unexpected response format during {request_name}",
                 transient=False,
             )
-            logger.error("[AnalyticsCenterClient] Unexpected response shape during %s", request_name)
+            logger.error("[AnalyticsCenterClient] Unexpected response shape during %s (trace_id=%s)", request_name, trace_label)
             break
 
         if raise_on_error and last_error is not None:
@@ -180,6 +267,7 @@ class AnalyticsCenterClient:
     def list_providers(
         self,
         user_sub: str,
+        trace_id: str,
         limit: int = 50,
         offset: int = 0,
         country_code: Optional[str] = None,
@@ -206,6 +294,7 @@ class AnalyticsCenterClient:
             path="/api/rest/analytics-center/providers",
             query=query,
             request_name="list_providers",
+            trace_id=trace_id,
             raise_on_error=raise_on_error,
         )
         if payload_dict is None:
@@ -248,9 +337,69 @@ class AnalyticsCenterClient:
             )
             return None
 
+    def get_myself(self, user_sub: str, trace_id: str, raise_on_error: bool = False) -> Optional[Dict[str, Any]]:
+        """Retrieve details for the current authenticated user.
+
+        Mirrors analytics-center GET /myself.
+        """
+
+        return self._request_via_proxy(
+            user_sub=user_sub,
+            path="/api/rest/analytics-center/myself",
+            query={},
+            request_name="get_myself",
+            trace_id=trace_id,
+            raise_on_error=raise_on_error,
+        )
+
+    @staticmethod
+    def _as_int(value: Any) -> Optional[int]:
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            token = value.strip()
+            if token.isdigit():
+                return int(token)
+        return None
+
+    def resolve_my_default_scope(
+        self,
+        user_sub: str,
+        trace_id: str,
+        raise_on_error: bool = False,
+    ) -> Optional[MineScopeResult]:
+        """Resolve default scope for "mine" using analytics-center user settings.
+
+        Priority:
+        - settings.currentProvider.id
+        - settings.currentProviderGroup.id
+        """
+
+        myself = self.get_myself(user_sub=user_sub, trace_id=trace_id, raise_on_error=raise_on_error)
+        if not isinstance(myself, dict):
+            return None
+
+        settings_any = myself.get("settings")
+        settings = cast(Dict[str, Any], settings_any) if isinstance(settings_any, dict) else {}
+
+        provider_any = settings.get("currentProvider")
+        provider = cast(Dict[str, Any], provider_any) if isinstance(provider_any, dict) else {}
+        provider_id = self._as_int(provider.get("id"))
+        if provider_id is not None:
+            return {"provider_id": provider_id}
+
+        group_any = settings.get("currentProviderGroup")
+        group = cast(Dict[str, Any], group_any) if isinstance(group_any, dict) else {}
+        group_id = self._as_int(group.get("id"))
+        if group_id is not None:
+            return {"provider_group_id": group_id}
+
+        return None
+
     def list_countries(
         self,
         user_sub: str,
+        trace_id: str,
         limit: int = 300,
         offset: int = 0,
         code: Optional[str] = None,
@@ -268,6 +417,7 @@ class AnalyticsCenterClient:
             path="/api/rest/analytics-center/countries",
             query=query,
             request_name="list_countries",
+            trace_id=trace_id,
             raise_on_error=raise_on_error,
         )
         if payload_dict is None:
@@ -288,7 +438,14 @@ class AnalyticsCenterClient:
             )
             return None
 
-    def resolve_country_code(self, user_sub: str, country_input: str, raise_on_error: bool = False) -> Optional[str]:
+    def resolve_country_code(
+        self,
+        user_sub: str,
+        country_input: str,
+        trace_id: str,
+        raise_on_error: bool = False,
+    ) -> Optional[str]:
+        trace_id = self._require_trace_id(trace_id, "resolve_country_code")
         raw = (country_input or "").strip()
         if not raw:
             return None
@@ -314,7 +471,13 @@ class AnalyticsCenterClient:
         if normalized in aliases:
             return aliases[normalized]
 
-        countries_page = self.list_countries(user_sub=user_sub, limit=300, offset=0, raise_on_error=raise_on_error)
+        countries_page = self.list_countries(
+            user_sub=user_sub,
+            limit=300,
+            offset=0,
+            trace_id=trace_id,
+            raise_on_error=raise_on_error,
+        )
         if not countries_page:
             return None
 

@@ -1,9 +1,8 @@
 import logging
-from typing import Any, Dict, List, Text
+from typing import Any, Dict, List, Optional, Protocol, Text
+from uuid import uuid4
 
-from rasa_sdk import Action, Tracker  # type: ignore
-from rasa_sdk import types as rasa_types  # type: ignore
-from rasa_sdk.executor import CollectingDispatcher  # type: ignore
+from rasa_sdk import Action  # type: ignore
 
 from src.actions.error_messages import friendly_hospital_error
 from src.actions.utils.hospital import extract_hospital_filters
@@ -14,8 +13,46 @@ logger = logging.getLogger(__name__)
 
 _ECHO_INTERNAL_ERRORS = env_util.env_flag("ACTIONS_ECHO_INTERNAL_ERRORS", default=False)
 
+DomainDict = Dict[str, Any]
+RasaEventList = List[Dict[Text, Any]]
 
-class ActionListHospitals(Action):
+
+class DispatcherLike(Protocol):
+    def utter_message(self, text: Optional[str] = None, **kwargs: Any) -> None: ...
+
+
+class TrackerLike(Protocol):
+    sender_id: str
+    latest_message: Dict[str, Any]
+
+
+def _tracker_trace_id(tracker: TrackerLike) -> Optional[str]:
+    latest_any = getattr(tracker, "latest_message", None)
+    latest = latest_any if isinstance(latest_any, dict) else {}
+    metadata_any = latest.get("metadata") if isinstance(latest, dict) else None
+    metadata = metadata_any if isinstance(metadata_any, dict) else {}
+
+    for key in ("trace_id", "traceId", "x-trace-id", "x_trace_id"):
+        raw = metadata.get(key)
+        if raw is None:
+            continue
+        token = str(raw).strip()
+        if token:
+            return token
+
+    headers_any = metadata.get("headers")
+    headers = headers_any if isinstance(headers_any, dict) else {}
+    for key in ("x-trace-id", "x_trace_id", "trace_id", "traceId"):
+        raw = headers.get(key)
+        if raw is None:
+            continue
+        token = str(raw).strip()
+        if token:
+            return token
+    return None
+
+
+class ActionListHospitals(Action):  # pyright: ignore
     """List hospitals/providers available for comparison."""
 
     def name(self) -> str:
@@ -23,18 +60,25 @@ class ActionListHospitals(Action):
 
     async def run(
         self,
-        dispatcher: CollectingDispatcher,
-        tracker: Tracker,
-        domain: rasa_types.DomainDict,
-    ) -> List[Dict[Text, Any]]:
+        dispatcher: DispatcherLike,
+        tracker: TrackerLike,
+        domain: DomainDict,
+    ) -> RasaEventList:
         try:
-            user_sub = tracker.sender_id
+            user_sub = str(tracker.sender_id)
+            trace_id = _tracker_trace_id(tracker) or uuid4().hex
+            logger.info("Listing hospitals (trace_id=%s)", trace_id or "-")
             filters = extract_hospital_filters(tracker)
             client = get_analytics_center_client()
 
             raw_country = filters.get("country_code")
             if isinstance(raw_country, str) and raw_country.strip():
-                resolved_country = client.resolve_country_code(user_sub=user_sub, country_input=raw_country, raise_on_error=True)
+                resolved_country = client.resolve_country_code(
+                    user_sub=user_sub,
+                    country_input=raw_country,
+                    trace_id=trace_id,
+                    raise_on_error=True,
+                )
                 if resolved_country:
                     filters["country_code"] = resolved_country
                 else:
@@ -49,6 +93,7 @@ class ActionListHospitals(Action):
                 sort=filters.get("sort"),
                 user=filters.get("user_id"),
                 group=filters.get("group_id"),
+                trace_id=trace_id,
                 raise_on_error=True,
             )
             if not provider_page:

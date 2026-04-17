@@ -1,9 +1,7 @@
 import logging
-from typing import Any, Dict, List, Optional, Text, cast
+from typing import Any, Dict, List, Optional, Protocol, Text, cast
 
-from rasa_sdk import Action, Tracker  # type: ignore
-from rasa_sdk import types as rasa_types  # type: ignore
-from rasa_sdk.executor import CollectingDispatcher  # type: ignore
+from rasa_sdk import Action  # type: ignore
 
 from src.actions.error_messages import friendly_metric_error
 from src.actions.utils.metric import extract_kpi, pick_description, resolve_language, suggest_metrics
@@ -15,8 +13,19 @@ logger = logging.getLogger(__name__)
 _ECHO_INTERNAL_ERRORS = env_util.env_flag("ACTIONS_ECHO_INTERNAL_ERRORS", default=False)
 _METRIC_TEXT_LOOKUP = ssot_loader.get_metric_text_lookup()
 
+DomainDict = Dict[str, Any]
+RasaEventList = List[Dict[Text, Any]]
 
-class ActionExplainMetric(Action):
+
+class DispatcherLike(Protocol):
+    def utter_message(self, text: Optional[str] = None, **kwargs: Any) -> None: ...
+
+
+class TrackerLike(Protocol):
+    sender_id: str
+
+
+class ActionExplainMetric(Action):  # pyright: ignore
     """Explain a metric/KPI based on MetricType.yml and language.
 
     The metric is resolved from the latest user message `kpi` entity (or the
@@ -31,10 +40,10 @@ class ActionExplainMetric(Action):
 
     async def run(
         self,
-        dispatcher: CollectingDispatcher,
-        tracker: Tracker,
-        domain: rasa_types.DomainDict,
-    ) -> List[Dict[Text, Any]]:
+        dispatcher: DispatcherLike,
+        tracker: TrackerLike,
+        domain: DomainDict,
+    ) -> RasaEventList:
         try:
             language = resolve_language(tracker)
 

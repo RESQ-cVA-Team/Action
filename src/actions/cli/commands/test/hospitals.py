@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from rasa_sdk.events import EventType  # type: ignore
 
@@ -32,6 +33,7 @@ def _to_optional_int(value: Any) -> Optional[int]:
 @command("test_hospitals")
 def test_hospitals(dispatcher: Any, tracker: Any, domain: Any, args: List[str], opts: Dict[str, Any]) -> List[EventType]:
     user_sub = tracker.sender_id
+    trace_id = uuid4().hex
     client = get_analytics_center_client()
 
     country_code = opts.get("country") or opts.get("country_code") or opts.get("countryCode")
@@ -44,7 +46,7 @@ def test_hospitals(dispatcher: Any, tracker: Any, domain: Any, args: List[str], 
 
     resolved_country_code: Optional[str] = None
     if isinstance(country_code, str) and country_code.strip():
-        resolved_country_code = client.resolve_country_code(user_sub=user_sub, country_input=country_code.strip())
+        resolved_country_code = client.resolve_country_code(user_sub=user_sub, country_input=country_code.strip(), trace_id=trace_id)
         if not resolved_country_code:
             dispatcher.utter_message(text=f"❌ Unknown country filter '{country_code}'. Try a 2-letter code like ES, MX, DE.")
             return []
@@ -57,6 +59,7 @@ def test_hospitals(dispatcher: Any, tracker: Any, domain: Any, args: List[str], 
         sort=sort.strip() if isinstance(sort, str) and sort.strip() else None,
         user=user_id.strip() if isinstance(user_id, str) and user_id.strip() else None,
         group=group_id,
+        trace_id=trace_id,
     )
 
     if not page:

@@ -68,6 +68,59 @@ def _get_callback_config(tracker: Tracker) -> Optional[Tuple[str, str]]:
     return callback_url, token
 
 
+def _normalize_trace_id(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        token = value.strip()
+    else:
+        token = str(value).strip()
+    return token or None
+
+
+def _trace_id_from_metadata(metadata: Dict[str, Any]) -> Optional[str]:
+    for key in ("trace_id", "traceId", "x-trace-id", "x_trace_id"):
+        trace_id = _normalize_trace_id(metadata.get(key))
+        if trace_id:
+            return trace_id
+
+    headers_any = metadata.get("headers")
+    headers = cast(Dict[str, Any], headers_any) if isinstance(headers_any, dict) else {}
+    for key in ("x-trace-id", "x_trace_id", "trace_id", "traceId"):
+        trace_id = _normalize_trace_id(headers.get(key))
+        if trace_id:
+            return trace_id
+
+    return None
+
+
+def _trace_id_from_message(message: Dict[str, Any]) -> Optional[str]:
+    custom_any = message.get("custom")
+    custom = cast(Dict[str, Any], custom_any) if isinstance(custom_any, dict) else {}
+    for key in ("trace_id", "traceId", "x-trace-id", "x_trace_id"):
+        trace_id = _normalize_trace_id(custom.get(key))
+        if trace_id:
+            return trace_id
+    return None
+
+
+def _resolve_progress_trace_id(ctx: LongActionContext, message: Dict[str, Any]) -> Optional[str]:
+    message_trace_id = _trace_id_from_message(message)
+    if message_trace_id:
+        return message_trace_id
+
+    metadata_trace_id = _trace_id_from_metadata(ctx.metadata)
+    if metadata_trace_id:
+        return metadata_trace_id
+
+    for key in ("_visualization_trace_id", "_trace_id", "trace_id"):
+        trace_id = _normalize_trace_id(ctx.tracker_snapshot.get(key))
+        if trace_id:
+            return trace_id
+
+    return None
+
+
 class LongAction(Action, ABC):
     def __init__(self):
         registry.register(self)
@@ -113,7 +166,7 @@ class LongAction(Action, ABC):
         if callback_cfg is None:
             ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher)
             await self.work(ctx)
-            return immediate_events
+            return [*immediate_events, *ctx.pending_events]
 
         # Callback is configured: run the long task asynchronously and notify
         # the frontend via HTTP callback when finished. We do not schedule Rasa
@@ -136,7 +189,7 @@ class LongAction(Action, ABC):
                 )
             )
             await self.work(ctx)
-            return immediate_events
+            return [*immediate_events, *ctx.pending_events]
 
         ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot)
 
@@ -184,24 +237,32 @@ class LongAction(Action, ABC):
             "senderId": ctx.sender_id,
             "messages": [message],
         }
+        trace_id = _resolve_progress_trace_id(ctx, message)
+        headers: Dict[str, str] = {
+            "Content-Type": "application/json",
+            "x-action-server-token": callback_token,
+        }
+        if isinstance(trace_id, str) and trace_id.strip():
+            headers["x-trace-id"] = trace_id.strip()
 
         try:
             resp = requests.post(
                 callback_url,
-                headers={
-                    "Content-Type": "application/json",
-                    "x-action-server-token": callback_token,
-                },
+                headers=headers,
                 data=json.dumps(payload, default=str),
                 timeout=10,
             )
             if _LOG_CALLBACK_STATUS:
-                logger.debug("LongAction callback posted (status=%s)", getattr(resp, "status_code", None))
+                logger.debug(
+                    "LongAction callback posted (status=%s, trace_id=%s)",
+                    getattr(resp, "status_code", None),
+                    trace_id or "-",
+                )
         except Exception:
             # Swallow errors from the callback endpoint; they should not
             # break the long-running job.
             if _LOG_CALLBACK_ERRORS:
-                logger.debug("LongAction callback post failed", exc_info=True)
+                logger.debug("LongAction callback post failed (trace_id=%s)", trace_id or "-", exc_info=True)
 
     def _run_work(self, ctx: LongActionContext, job_id: str, callback_url: str, callback_token: str) -> None:
         try:

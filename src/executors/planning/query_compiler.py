@@ -226,55 +226,58 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
             uniq_groups.append(g)
     dims: List[Dimension] = [Dimension(g) for g in uniq_groups]
 
-    server_dims: List[Optional[Dimension]] = [d for d in dims if d.is_canonical()]
-    if not server_dims:
-        server_dims = [None]
+    canonical_dims: List[Dimension] = [d for d in dims if d.is_canonical()]
+    server_dim: Optional[Dimension] = canonical_dims[0] if canonical_dims else None
 
-    batches: List[CompiledBatch] = []
-    for server_dim in server_dims:
-        filter_dims_all: List[Dimension] = [d for d in dims if d is not server_dim]
+    filter_dims_all: List[Dimension] = [d for d in dims if d is not server_dim]
 
-        time_dims: List[Dimension] = [d for d in filter_dims_all if isinstance(d.spec, GroupByTime)]
-        batched_time_periods: List[TimePeriod] = []
-        batched_time_enabled = len(time_dims) == 1
-        batched_time_dim: Optional[Dimension] = time_dims[0] if batched_time_enabled else None
-        if batched_time_enabled and batched_time_dim is not None:
-            for cat in batched_time_dim.categories():
-                try:
-                    start, end = cat
-                    batched_time_periods.append(TimePeriod(startDate=start.isoformat(), endDate=end.isoformat()))
-                except Exception:
-                    continue
-        if batched_time_enabled and not batched_time_periods:
-            batched_time_enabled = False
-            batched_time_dim = None
+    time_dims: List[Dimension] = [d for d in filter_dims_all if isinstance(d.spec, GroupByTime)]
+    batched_time_periods: List[TimePeriod] = []
+    batched_time_enabled = len(time_dims) == 1
+    batched_time_dim: Optional[Dimension] = time_dims[0] if batched_time_enabled else None
+    if batched_time_enabled and batched_time_dim is not None:
+        for cat in batched_time_dim.categories():
+            try:
+                start, end = cat
+                batched_time_periods.append(TimePeriod(startDate=start.isoformat(), endDate=end.isoformat()))
+            except Exception:
+                continue
+    if batched_time_enabled and not batched_time_periods:
+        batched_time_enabled = False
+        batched_time_dim = None
 
-        filter_dims: List[Dimension]
-        if batched_time_enabled and batched_time_dim is not None:
-            filter_dims = [d for d in filter_dims_all if d is not batched_time_dim]
-        else:
-            filter_dims = filter_dims_all
+    filter_dims: List[Dimension]
+    if batched_time_enabled and batched_time_dim is not None:
+        filter_dims = [d for d in filter_dims_all if d is not batched_time_dim]
+    else:
+        filter_dims = filter_dims_all
 
-        filter_categories: List[Sequence[Any]] = []
-        for d in filter_dims:
-            cats = d.categories()
-            if cats:
-                filter_categories.append(cats)
+    effective_filter_dims: List[Dimension] = []
+    filter_categories: List[Sequence[Any]] = []
+    for d in filter_dims:
+        cats = d.categories()
+        if not cats:
+            continue
+        sample_filter = d.filter_for(cats[0])
+        if sample_filter is None:
+            continue
+        effective_filter_dims.append(d)
+        filter_categories.append(cats)
 
-        if not filter_categories:
-            combos_list: List[Tuple[Any, ...]] = [tuple()]
-        else:
-            combos_list = list(product(*filter_categories))
+    if not filter_categories:
+        combos_list: List[Tuple[Any, ...]] = [tuple()]
+    else:
+        combos_list = list(product(*filter_categories))
 
-        batches.append(
-            CompiledBatch(
-                server_groupby=server_dim.canonical_field() if server_dim is not None else None,
-                filter_dims=filter_dims,
-                combos_list=combos_list,
-                batched_time_enabled=batched_time_enabled,
-                batched_time_periods=batched_time_periods,
-            )
+    batches: List[CompiledBatch] = [
+        CompiledBatch(
+            server_groupby=server_dim.canonical_field() if server_dim is not None else None,
+            filter_dims=effective_filter_dims,
+            combos_list=combos_list,
+            batched_time_enabled=batched_time_enabled,
+            batched_time_periods=batched_time_periods,
         )
+    ]
 
     return CompiledChartGrouping(dimensions=dims, batches=batches)
 

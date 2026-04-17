@@ -36,7 +36,10 @@ _DEFAULT_PROVIDER_IDS = _parse_int_csv(env_util.get_env("EXECUTOR_DEFAULT_PROVID
 _INCLUDE_GENERAL_STATS = env_util.env_flag("EXECUTOR_INCLUDE_GENERAL_STATS", default=True)
 
 
-def _build_data_origin() -> DataOrigin:
+def _build_data_origin(override: Optional[DataOrigin] = None) -> DataOrigin:
+    if override is not None:
+        return override
+
     provider_group_ids = list(_DEFAULT_PROVIDER_GROUP_IDS)
     provider_ids = list(_DEFAULT_PROVIDER_IDS)
     if not provider_group_ids and not provider_ids:
@@ -126,6 +129,7 @@ def build_primary_request_specs(
     batched_time_periods: List[TimePeriod],
     include_metric_alias: bool,
     group_by_field: Optional[str],
+    data_origin: Optional[DataOrigin] = None,
 ) -> tuple[List[RequestSpec], List[ComboContext]]:
     specs: List[RequestSpec] = []
     combo_contexts: List[ComboContext] = []
@@ -143,7 +147,7 @@ def build_primary_request_specs(
         req = GraphQLQueryRequest(
             metrics=metric_requests,
             timePeriod=req_time_period,
-            dataOrigin=_build_data_origin(),
+            dataOrigin=_build_data_origin(data_origin),
             includeGeneralStats=_INCLUDE_GENERAL_STATS,
             caseFilter=case_filter,
             groupBy=(GroupByType(group_by_field) if group_by_field else None),
@@ -174,6 +178,7 @@ def build_fallback_request_specs(
     metric_requests: List[MetricRequest],
     combo_contexts: List[ComboContext],
     batched_time_periods: List[TimePeriod],
+    data_origin: Optional[DataOrigin] = None,
 ) -> List[RequestSpec]:
     specs: List[RequestSpec] = []
 
@@ -184,7 +189,7 @@ def build_fallback_request_specs(
             req = GraphQLQueryRequest(
                 metrics=metric_requests,
                 timePeriod=period,
-                dataOrigin=_build_data_origin(),
+                dataOrigin=_build_data_origin(data_origin),
                 includeGeneralStats=_INCLUDE_GENERAL_STATS,
                 caseFilter=context.case_filter,
                 groupBy=(GroupByType(context.group_by_field) if context.group_by_field else None),
