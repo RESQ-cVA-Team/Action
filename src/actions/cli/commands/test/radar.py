@@ -33,7 +33,7 @@ def test_radar(dispatcher: Any, tracker: Any, domain: Any, args: List[str], opts
             ChartPoint(x="IQ", y=7),
         ],
     )
-    metadata = ChartMetadata(title="Test Radar", description="Two-series radar across five axes")
+    metadata = ChartMetadata(title="Test Radar")
     chart = RadarChart(metadata=metadata, series=[series_a, series_b], axes=axes)
     dispatcher.utter_message(json_message={"charts": [chart.model_dump(exclude_none=True)]})
     return []

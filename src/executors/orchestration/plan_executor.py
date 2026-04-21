@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, cast
+from uuid import uuid4
 
 from src.domain.dto.analytics import StatisticalTestResult
 from src.domain.dto.charts.types import ChartAxis, ChartSeries
@@ -134,18 +135,6 @@ def _build_default_data_origin() -> DataOrigin:
     return DataOrigin(**kwargs)
 
 
-def _data_origin_from_plan(plan: AnalysisPlan) -> Optional[DataOrigin]:
-    metadata = getattr(plan, "metadata", None)
-    override_any = getattr(metadata, "data_origin_override", None) if metadata is not None else None
-    if not isinstance(override_any, dict) or not override_any:
-        return None
-    try:
-        return DataOrigin.model_validate(override_any)
-    except Exception:
-        logger.warning("[plan_executor] Ignoring invalid data_origin_override in plan metadata", exc_info=True)
-        return None
-
-
 def _collect_date_bounds(filter_obj: Optional[Any]) -> tuple[Optional[str], Optional[str]]:
     if filter_obj is None:
         return None, None
@@ -220,9 +209,8 @@ def _execute_mann_whitney_test(test: StatisticalTestSpec, user_sub: str, trace_i
     cohort_split = _cohort_split_from_groupby(test.group_by)
     if cohort_split is None:
         logger.warning(
-            "[plan_executor] Skipping MANN_WHITNEY_U_TEST (trace_id=%s) due to missing/unsupported two-cohort group_by in test '%s'",
+            "[plan_executor] Skipping MANN_WHITNEY_U_TEST (trace_id=%s) due to missing/unsupported two-cohort group_by",
             trace_id or "-",
-            test.title or "(untitled)",
         )
         return []
 
@@ -306,8 +294,7 @@ query MannWhitney($metric: [StatisticsMetricEnum!]!, $cohortA: CohortFilterInput
                 test_type="MANN_WHITNEY_U_TEST",
                 p_value=p_value,
                 passed=significant,
-                title=test.title or f"Mann-Whitney U Test: {metric_label}",
-                description=test.description,
+                title=f"Mann-Whitney U Test: {metric_label}",
                 details={
                     "trace_id": trace_id,
                     "metric": metric_label,
@@ -534,7 +521,7 @@ def execute_plan(plan: AnalysisPlan, user_sub: str) -> VisualizationResponse:
     - If no event loop is running, run the coroutine directly with asyncio.run.
     - If an event loop is already running, offload to a new thread and run a fresh loop there.
     """
-    trace_id = plan.metadata.trace_id if getattr(plan, "metadata", None) is not None else None
+    trace_id = uuid4().hex
     coro = execute_plan_async(plan, user_sub, max_concurrency=_EXECUTOR_SYNC_MAX_CONCURRENCY, trace_id=trace_id)
     try:
         asyncio.get_running_loop()
@@ -657,8 +644,6 @@ async def execute_plan_async(
     - Limits concurrency via a semaphore to avoid overloading the proxy/backend.
     - Produces one chart per canonical GroupBy (or one overall if none), matching sync behavior.
     """
-    if not trace_id and getattr(plan, "metadata", None) is not None:
-        trace_id = plan.metadata.trace_id
     trace_id_resolved = (trace_id or "").strip()
     if not trace_id_resolved:
         raise ValueError("trace_id is required for execute_plan_async")
@@ -680,10 +665,9 @@ async def execute_plan_async(
         progress_cb=progress_cb,
         log_graphql_query=_LOG_GRAPHQL_QUERY,
     )
-    data_origin_override = _data_origin_from_plan(plan)
 
     for planChart in plan_charts:
-        metric_requests, derived_axes = build_metric_requests(
+        metric_requests, derived_axes, metric_data_origins = build_metric_requests(
             plan_chart=planChart,
             derive_defaults_fn=_derive_distribution_defaults,
             axis_from_meta_fn=_axis_from_meta,
@@ -699,14 +683,29 @@ async def execute_plan_async(
             batched_time_periods = batch.batched_time_periods
             combos_list = batch.combos_list
 
-            total_requests = batch.request_count
             gb_field = batch.server_groupby
-            actual_queries += total_requests
             fallback_specs: List[RequestSpec] = []
+            include_metric_alias = len(planChart.metrics) > 1
+
+            chart_filter = to_gql_filter(coalesce(planChart.filters, None))
+
+            primary_specs, combo_contexts = build_primary_request_specs(
+                metric_requests=metric_requests,
+                metric_data_origins=metric_data_origins,
+                chart_filter=chart_filter,
+                filter_dims=filter_dims,
+                combos_list=combos_list,
+                batched_time_enabled=batched_time_enabled,
+                batched_time_periods=batched_time_periods,
+                include_metric_alias=include_metric_alias,
+                group_by_field=gb_field,
+            )
+            total_requests = max(1, len(primary_specs))
+            actual_queries += total_requests
 
             summary_batches.append(
                 make_batch_summary(
-                    chart_title=planChart.title or "",
+                    chart_title=f"{(planChart.chart_type or 'CHART').upper()} chart",
                     chart_type=planChart.chart_type,
                     server_groupby=gb_field,
                     filter_dimensions=[d.kind.__name__ for d in filter_dims],
@@ -719,31 +718,17 @@ async def execute_plan_async(
                 _emit_compiler_diagnostics(
                     progress_cb,
                     {
-                        "chart_title": planChart.title or "",
+                        "chart_title": f"{(planChart.chart_type or 'CHART').upper()} chart",
                         "chart_type": planChart.chart_type,
                         "server_groupby": gb_field,
                         "batched_time_enabled": batched_time_enabled,
                         "batched_time_period_count": len(batched_time_periods),
                         "filter_dimensions": [d.kind.__name__ for d in filter_dims],
-                        "query_count_estimate": total_requests,
+                        "query_count_estimate": batch.request_count,
+                        "query_count_planned": total_requests,
                     },
                     trace_id=trace_id_resolved,
                 )
-            include_metric_alias = len(planChart.metrics) > 1
-
-            chart_filter = to_gql_filter(coalesce(planChart.filters, None))
-
-            primary_specs, combo_contexts = build_primary_request_specs(
-                metric_requests=metric_requests,
-                chart_filter=chart_filter,
-                filter_dims=filter_dims,
-                combos_list=combos_list,
-                batched_time_enabled=batched_time_enabled,
-                batched_time_periods=batched_time_periods,
-                include_metric_alias=include_metric_alias,
-                group_by_field=gb_field,
-                data_origin=data_origin_override,
-            )
 
             all_series = await _execute_specs_concurrent(
                 specs=primary_specs,
@@ -774,10 +759,8 @@ async def execute_plan_async(
                 all_series = []
 
                 fallback_specs = build_fallback_request_specs(
-                    metric_requests=metric_requests,
                     combo_contexts=combo_contexts,
                     batched_time_periods=batched_time_periods,
-                    data_origin=data_origin_override,
                 )
 
                 retry_count = max(1, len(fallback_specs))
@@ -800,7 +783,7 @@ async def execute_plan_async(
             if not all_series:
                 logger.warning(
                     "[plan_executor] No series generated for chart '%s'%s (trace_id=%s). This often indicates a backend error or empty results.",
-                    planChart.title or "Chart",
+                    planChart.chart_type or "Chart",
                     "",
                     trace_id_resolved,
                 )
@@ -822,7 +805,6 @@ async def execute_plan_async(
         payload = make_execution_summary(
             trace_id=trace_id_resolved,
             chart_count=len(plan_charts),
-            requested_visual_layout=plan.metadata.requested_visual_layout if getattr(plan, "metadata", None) is not None else None,
             estimated_queries=estimated_queries,
             actual_queries=actual_queries,
             batches=summary_batches,

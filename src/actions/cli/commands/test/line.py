@@ -16,7 +16,7 @@ def test_line(dispatcher: Any, tracker: Any, domain: Any, args: List[str], opts:
     today = date.today()
     points = [ChartPoint(x=(today - timedelta(days=2 - i)).isoformat(), y=float(i)) for i in range(3)]
     series = ChartSeries(name="L", data=points)
-    metadata = ChartMetadata(title="Test Line", description="Simple line chart", x_axis=ChartAxis(label="Date", type=ChartAxis.AxisType.TIME))
+    metadata = ChartMetadata(title="Test Line", x_axis=ChartAxis(label="Date", type=ChartAxis.AxisType.TIME))
     chart = LineChart(metadata=metadata, series=[series])
     dispatcher.utter_message(json_message={"charts": [chart.model_dump(exclude_none=True)]})
     return []

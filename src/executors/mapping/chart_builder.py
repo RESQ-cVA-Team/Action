@@ -251,6 +251,91 @@ def _metric_unit(metric_code: str) -> Optional[str]:
     return None
 
 
+def _title_case_token(value: str) -> str:
+    token = (value or "").strip()
+    if not token:
+        return ""
+    if token.isupper() and len(token) <= 5:
+        return token
+    return token[:1].upper() + token[1:].lower()
+
+
+def _axis_label_for_dimension(dimension: Dimension) -> str:
+    if isinstance(dimension.spec, GroupByTime):
+        grain = str(getattr(dimension.spec, "grain", "TIME") or "TIME").strip().upper()
+        label_map = {
+            "DAY": "Day",
+            "WEEK": "Week",
+            "BIWEEK": "Biweek",
+            "MONTH": "Month",
+            "QUARTER": "Quarter",
+            "YEAR": "Year",
+        }
+        return label_map.get(grain, _title_case_token(grain))
+    if isinstance(dimension.spec, GroupBySex):
+        return "Sex"
+    if isinstance(dimension.spec, GroupByStrokeType):
+        return "Stroke Type"
+    if isinstance(dimension.spec, GroupByNIHSS):
+        return get_canonical_display_name("ADMISSION_NIHSS")
+    if isinstance(dimension.spec, GroupByAge):
+        return get_canonical_display_name("AGE")
+    if isinstance(dimension.spec, GroupByCanonicalField):
+        field = str(getattr(dimension.spec, "field", "") or "").strip().upper()
+        return get_canonical_display_name(field) if field else "Category"
+    return "Category"
+
+
+def _axis_type_for_dimension(dimension: Dimension) -> ChartAxis.AxisType:
+    if isinstance(dimension.spec, GroupByTime):
+        return ChartAxis.AxisType.TIME
+    return ChartAxis.AxisType.CATEGORY
+
+
+def _primary_dimension_for_axes(dimensions: List[Dimension]) -> Optional[Dimension]:
+    for dimension in dimensions:
+        if isinstance(dimension.spec, GroupByTime):
+            return dimension
+    return dimensions[0] if dimensions else None
+
+
+def _metric_value_axis_label(plan_chart: S.ChartSpec) -> str:
+    metric_codes = _metric_codes(plan_chart)
+    if len(metric_codes) != 1:
+        return "Metric Value"
+
+    metric_code = metric_codes[0]
+    display = get_metric_display_name(metric_code)
+    unit = _metric_unit(metric_code)
+    return f"{display} ({unit})" if unit else display
+
+
+def _derive_axes_from_dimensions(
+    plan_chart: S.ChartSpec,
+    dimensions: List[Dimension],
+    chart_type_upper: str,
+) -> tuple[Optional[ChartAxis], Optional[ChartAxis]]:
+    if chart_type_upper in {ChartType.PIE.value, ChartType.RADAR.value}:
+        return None, None
+
+    primary = _primary_dimension_for_axes(dimensions)
+    if primary is not None:
+        x_axis = ChartAxis(
+            label=_axis_label_for_dimension(primary),
+            type=_axis_type_for_dimension(primary),
+        )
+    else:
+        x_axis = ChartAxis(label="Category", type=ChartAxis.AxisType.CATEGORY)
+
+    if chart_type_upper == ChartType.HISTOGRAM.value:
+        y_axis_label = "Cases"
+    else:
+        y_axis_label = _metric_value_axis_label(plan_chart)
+
+    y_axis = ChartAxis(label=y_axis_label, type=ChartAxis.AxisType.LINEAR)
+    return x_axis, y_axis
+
+
 def _fallback_across(plan_chart: S.ChartSpec, metric_codes: List[str]) -> str:
     chart_type = (plan_chart.chart_type or "").upper()
     if chart_type == ChartType.PIE.value:
@@ -328,16 +413,21 @@ def build_chart_dto(
     sampled_period_override: Optional[str] = None,
 ) -> ChartDTO:
     title_text = _derive_title(plan_chart, dimensions, sampled_period_override=sampled_period_override)
+    chart_type_upper = (plan_chart.chart_type or "").upper()
 
     x_axis: Optional[ChartAxis] = None
     y_axis: Optional[ChartAxis] = None
     if derived_axes is not None:
         x_axis, y_axis = derived_axes
+    else:
+        x_axis, y_axis = _derive_axes_from_dimensions(
+            plan_chart=plan_chart,
+            dimensions=dimensions,
+            chart_type_upper=chart_type_upper,
+        )
 
-    chart_type_upper = (plan_chart.chart_type or "").upper()
     metadata = ChartMetadata(
         title=title_text,
-        description=plan_chart.description,
         x_axis=x_axis,
         y_axis=y_axis,
     )

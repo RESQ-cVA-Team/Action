@@ -13,7 +13,7 @@ from langchain.prompts import ChatPromptTemplate
 from pydantic import ValidationError
 
 from src.domain.graphql.ssot_enums import MetricType
-from src.domain.langchain.schema import AnalysisPlan, ChartSpec, ChartType, MetricSpec, PlanMetadata
+from src.domain.langchain.schema import AnalysisPlan, ChartSpec, ChartType, MetricSpec
 from src.planners.langchain.examples import get_few_shot_examples
 from src.planners.langchain.llm_factory import create_chat_llm, get_llm_provider
 from src.util import env
@@ -63,28 +63,6 @@ _INTENT_KEYWORDS: Dict[str, List[str]] = {
 
 _SUPPORTED_STAT_TESTS_RAW = env.get_env("EXECUTOR_SUPPORTED_STAT_TESTS", default="MANN_WHITNEY_U_TEST") or "MANN_WHITNEY_U_TEST"
 _SUPPORTED_STAT_TESTS = [token.strip().upper() for token in _SUPPORTED_STAT_TESTS_RAW.split(",") if token.strip()]
-
-_SINGLE_CHART_HINTS = [
-    "one graph",
-    "one chart",
-    "single chart",
-    "single graph",
-    "single visual",
-    "in one graph",
-    "in one chart",
-    "same graph",
-    "same chart",
-]
-_MULTI_CHART_HINTS = [
-    "separate charts",
-    "separate chart",
-    "multiple charts",
-    "multiple visuals",
-    "two charts",
-    "three charts",
-    "as separate visuals",
-    "as separate charts",
-]
 
 _planner_timeout_raw = env.get_env("PLANNER_REQUEST_TIMEOUT_SECONDS", default="30") or "30"
 _planner_timeout_seconds = 30.0
@@ -191,7 +169,7 @@ def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
 
 def get_schema_description(model: Type[Any]) -> str:
     """
-    Recursively extract field descriptions from a Pydantic model as a readable schema spec (Pydantic v2 compatible).
+    Recursively extract field names/types from a Pydantic model as a readable schema spec (Pydantic v2 compatible).
     """
     from typing import get_args, get_origin
 
@@ -199,9 +177,8 @@ def get_schema_description(model: Type[Any]) -> str:
         lines: List[str] = []
         if hasattr(model, "model_fields"):
             for name, field in model.model_fields.items():
-                desc = field.description or field.title or ""
                 typ = str(field.annotation)
-                lines.append(" " * indent + f"- {name} ({typ}): {desc}")
+                lines.append(" " * indent + f"- {name} ({typ})")
                 # Recurse for nested models
                 outer = get_origin(field.annotation)
                 inner = get_args(field.annotation)
@@ -233,10 +210,6 @@ _plan_cache_misses = 0
 _plan_cache_expired = 0
 _PLAN_CACHE_STATS_LOCK = Lock()
 _LAST_CACHE_EVENT: ContextVar[Optional[bool]] = ContextVar("planner_last_cache_event", default=None)
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _invoke_with_timeout(chain: Any, inputs: Dict[str, Any], label: str) -> Any:
@@ -271,46 +244,11 @@ def _iter_entity_values(value: Any) -> List[str]:
     return []
 
 
-def _with_plan_metadata(
-    plan: AnalysisPlan,
-    trace_id: Optional[str],
-    requested_visual_layout: Optional[str] = None,
-    fallback_used: bool = False,
-    fallback_reason: Optional[str] = None,
-) -> AnalysisPlan:
-    current = plan.metadata if isinstance(getattr(plan, "metadata", None), PlanMetadata) else PlanMetadata()
-    metadata = PlanMetadata(
-        trace_id=trace_id or current.trace_id,
-        planner_provider=current.planner_provider or LLM_PROVIDER,
-        planner_model=current.planner_model or (_LLM_MODEL or None),
-        planner_version=current.planner_version or "pipeline-v2",
-        requested_visual_layout=current.requested_visual_layout or requested_visual_layout,
-        fallback_used=bool(current.fallback_used or fallback_used),
-        fallback_reason=current.fallback_reason or fallback_reason,
-        generated_at_utc=current.generated_at_utc or _utc_now_iso(),
-    )
-    return plan.model_copy(update={"metadata": metadata})
-
-
-def _infer_requested_visual_layout(question: str) -> Optional[str]:
-    lowered = (question or "").strip().lower()
-    if not lowered:
-        return None
-
-    if any(token in lowered for token in _MULTI_CHART_HINTS):
-        return "multi_chart"
-    if any(token in lowered for token in _SINGLE_CHART_HINTS):
-        return "single_chart"
-    return None
-
-
 def _plan_for_cache(plan: AnalysisPlan) -> AnalysisPlan:
-    current = plan.metadata if isinstance(getattr(plan, "metadata", None), PlanMetadata) else PlanMetadata()
-    metadata = current.model_copy(update={"trace_id": None})
-    return plan.model_copy(update={"metadata": metadata})
+    return plan.model_copy(deep=True)
 
 
-def _build_timeout_fallback_plan(question: str, entities: Dict[str, Any], language: str, trace_id: Optional[str]) -> Optional[AnalysisPlan]:
+def _build_timeout_fallback_plan(question: str, entities: Dict[str, Any], language: str) -> Optional[AnalysisPlan]:
     metric_allowed = {v.upper() for v in _enum_allowed_values(MetricType)}
     chart_allowed = {v.upper() for v in ChartType}
 
@@ -346,21 +284,13 @@ def _build_timeout_fallback_plan(question: str, entities: Dict[str, Any], langua
     plan = AnalysisPlan(
         charts=[
             ChartSpec(
-                title=f"{chosen_metric} Overview",
-                description=f"Fallback plan generated for '{(language or 'auto').lower()}' after planner timeout.",
                 chart_type=chosen_chart,
                 metrics=[MetricSpec(metric=chosen_metric)],
             )
         ],
         statistical_tests=None,
     )
-    return _with_plan_metadata(
-        plan,
-        trace_id=trace_id,
-        requested_visual_layout=_infer_requested_visual_layout(question),
-        fallback_used=True,
-        fallback_reason="planner_timeout",
-    )
+    return plan
 
 
 def _cache_key(question: str, entities: Dict[str, Any], language: str) -> str:
@@ -519,7 +449,7 @@ def _intent_features(text: str) -> set[str]:
 def _match_score(question: str, entities: Dict[str, Any], example: Dict[str, str]) -> float:
     query_text = f"{question}\n{json.dumps(entities, ensure_ascii=False, sort_keys=True)}"
     query_tokens = _tokenize(query_text)
-    ex_text = f"{example.get('description', '')}\n{example.get('user', '')}"
+    ex_text = example.get("user", "")
     ex_tokens = _tokenize(ex_text)
 
     if not _ENABLE_WEIGHTED_FEW_SHOT_RANKING:
@@ -567,7 +497,6 @@ def _build_few_shots_text(examples: List[Dict[str, str]]) -> str:
             "\n".join(
                 [
                     f"EXAMPLE {idx}:",
-                    f"Description: {ex['description']}",
                     "User Message:",
                     ex["user"],
                     "Assistant Plan JSON:",
@@ -585,11 +514,10 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
         (
             "system",
             "You are a planner. Interface language: {language}. Produce ONLY a valid AnalysisPlan JSON according to the schema. "
-            "All 'title' and 'description' fields MUST be written in the interface language ({language}). "
             "Keep enum-like codes (metric, chart_type, test_type, stroke categories, sex categories) in their canonical uppercase English forms. "
             "Use the reasoning and prior examples. Place detected entities into metrics (group_by / filters). "
+            "When comparing multiple provider scopes (hospital/group) in one chart, use separate metric entries with metric-level dataOrigin. "
             "Prefer LINE/BAR for trends or comparisons; BOX/VIOLIN/HISTOGRAM for distributions. "
-            "Title guidance: Avoid phrases like 'Over Time' unless there is an explicit temporal grouping. If no time/canonical grouping is specified and a LINE chart is used for a distribution, prefer '<METRIC> Distribution' for the title. "
             "Chart intent guidance: If user asks for one graph/one chart/single visual with multiple splits, prefer one chart with multiple group_by dimensions. If user asks for separate charts/multiple visuals, produce multiple chart specs. "
             "Statistical test guidance: Only use test types listed in SUPPORTED_STAT_TESTS_JSON; otherwise omit statistical_tests and return charts.",
         ),
@@ -680,8 +608,6 @@ def generate_analysis_plan(
     if not language:
         language = "auto"
 
-    requested_visual_layout = _infer_requested_visual_layout(question)
-
     _record_cache_event(None)
 
     cache_key: Optional[str] = None
@@ -694,7 +620,7 @@ def generate_analysis_plan(
                 progress_cb("Using cached plan.")
             if _LOG_PROMPTS:
                 logger.debug("[Planner] plan cache hit")
-            return _with_plan_metadata(cached_plan, trace_id=trace_id, requested_visual_layout=requested_visual_layout)
+            return cached_plan
         _record_cache_event(False)
 
     # High-level notification that planning has started.
@@ -709,11 +635,11 @@ def generate_analysis_plan(
             max_items=_MAX_FEW_SHOTS,
         )
     if _LOG_PROMPTS:
-        selected_descriptions = [ex.get("description", "") for ex in selected_examples]
+        selected_examples_preview = [ex.get("user", "") for ex in selected_examples]
         logger.debug(
             "[Planner] Selected %s few-shot example(s): %s",
             len(selected_examples),
-            selected_descriptions,
+            selected_examples_preview,
         )
     few_shots_text = _build_few_shots_text(selected_examples)
 
@@ -808,11 +734,7 @@ def generate_analysis_plan(
                     "response": raw_result,
                 }
             )
-            result: AnalysisPlan = _with_plan_metadata(
-                _coerce_analysis_plan(raw_result),
-                trace_id=trace_id,
-                requested_visual_layout=requested_visual_layout,
-            )
+            result: AnalysisPlan = _coerce_analysis_plan(raw_result)
 
             if debug:
                 debug_payload: GeneratePlanDebug = {
@@ -844,7 +766,6 @@ def generate_analysis_plan(
                     question=question,
                     entities=entities,
                     language=language,
-                    trace_id=trace_id,
                 )
                 if fallback is not None:
                     if progress_cb is not None:
@@ -919,11 +840,7 @@ def generate_analysis_plan(
             critique_chain: Any = critique_prompt_obj | llm
             try:
                 critique_raw_response: Any = _invoke_with_timeout(critique_chain, critique_inputs, label="critique_chain")
-                critique_response: AnalysisPlan = _with_plan_metadata(
-                    _coerce_analysis_plan(critique_raw_response),
-                    trace_id=trace_id,
-                    requested_visual_layout=requested_visual_layout,
-                )
+                critique_response: AnalysisPlan = _coerce_analysis_plan(critique_raw_response)
             except Exception as critique_exc:
                 logger.warning("[Planner] Correction step failed on attempt %s: %s", attempt + 1, critique_exc)
                 steps.append(

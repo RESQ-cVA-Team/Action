@@ -14,7 +14,7 @@ from .. import command
 def test_scatter(dispatcher: Any, tracker: Any, domain: Any, args: List[str], opts: Dict[str, Any]) -> List[EventType]:
     pts = [ChartPoint(x=1, y=2), ChartPoint(x=2, y=3)]
     series = ChartSeries(name="pts", data=pts)
-    metadata = ChartMetadata(title="Test Scatter", description="Simple scatter plot")
+    metadata = ChartMetadata(title="Test Scatter")
     chart = ScatterPlot(metadata=metadata, series=[series])
     dispatcher.utter_message(json_message={"charts": [chart.model_dump(exclude_none=True)]})
     return []

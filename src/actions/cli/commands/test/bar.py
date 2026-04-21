@@ -14,7 +14,7 @@ from .. import command
 def test_bar(dispatcher: Any, tracker: Any, domain: Any, args: List[str], opts: Dict[str, Any]) -> List[EventType]:
     points = [ChartPoint(x=i, y=float(i)) for i in range(3)]
     series = ChartSeries(name="Bars", data=points)
-    metadata = ChartMetadata(title="Test Bar", description="Simple bar chart")
+    metadata = ChartMetadata(title="Test Bar")
     chart = BarChart(metadata=metadata, series=[series])
     dispatcher.utter_message(json_message={"charts": [chart.model_dump(exclude_none=True)]})
     return []

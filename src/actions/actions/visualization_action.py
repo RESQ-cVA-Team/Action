@@ -9,7 +9,12 @@ from rasa_sdk.events import FollowupAction, SlotSet  # type: ignore
 from src.actions.error_messages import visualization_error_payload
 from src.actions.long_action.long_action import LongAction, PreworkResult
 from src.actions.long_action.long_action_context import LongActionContext
-from src.actions.utils.visualization import extract_entities_from_latest_message, format_execution_summary, resolve_override_language
+from src.actions.utils.visualization import (
+    extract_entities_from_latest_message,
+    format_execution_summary,
+    resolve_override_language,
+    serialize_plan_for_frontend,
+)
 from src.domain.langchain import schema as lang_schema
 from src.executors import execute_plan_async
 from src.planners.langchain import pipeline as lang_pipeline
@@ -424,7 +429,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                 json_message={
                     "type": "visualization_plan",
                     "trace_id": trace_id,
-                    "plan": cast(Any, plan_obj).model_dump(mode="json", exclude_none=True),
+                    "plan": serialize_plan_for_frontend(plan_obj),
                 }
             )
 

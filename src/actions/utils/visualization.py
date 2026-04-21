@@ -305,6 +305,38 @@ def resolve_override_language(metadata: Dict[str, Any], slots: Dict[str, Any]) -
     return None
 
 
+def _strip_text_fields(value: Any) -> Any:
+    """Drop user-facing free-text fields to prevent LLM prose from reaching clients."""
+
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for key, child in value.items():
+            if isinstance(key, str) and key in {"title", "description"}:
+                continue
+            out[key] = _strip_text_fields(child)
+        return out
+    if isinstance(value, list):
+        return [_strip_text_fields(item) for item in value]
+    return value
+
+
+def serialize_plan_for_frontend(plan: Any) -> Dict[str, Any]:
+    """Serialize planner output for frontend consumption without mutating it."""
+
+    if hasattr(plan, "model_dump") and callable(getattr(plan, "model_dump")):
+        payload_any = plan.model_dump(mode="json", by_alias=True, exclude_none=True)
+    elif isinstance(plan, dict):
+        payload_any = dict(plan)
+    else:
+        return {}
+
+    if not isinstance(payload_any, dict):
+        return {}
+
+    sanitized_any = _strip_text_fields(payload_any)
+    return cast(Dict[str, Any], sanitized_any) if isinstance(sanitized_any, dict) else {}
+
+
 def format_execution_summary(
     summary: Dict[str, Any] | Any,
     show_normalization: bool = True,
@@ -318,7 +350,6 @@ def format_execution_summary(
     estimated = summary.get("estimated_queries")
     actual = summary.get("actual_queries")
     chart_count = summary.get("chart_count")
-    requested_visual_layout = summary.get("requested_visual_layout")
     trace_id = summary.get("trace_id")
     normalization_any = summary.get("normalization")
     normalization = cast(Dict[str, Any], normalization_any) if isinstance(normalization_any, dict) else None
@@ -329,10 +360,6 @@ def format_execution_summary(
 
     if isinstance(trace_id, str) and trace_id.strip():
         lines.append(f"Trace ID: {trace_id.strip()}")
-
-    if isinstance(requested_visual_layout, str) and requested_visual_layout:
-        layout_label = requested_visual_layout.replace("_", " ")
-        lines.append(f"Requested layout: {layout_label}.")
 
     if isinstance(chart_count, int):
         if chart_count == 1:

@@ -127,7 +127,7 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
     """Return metadata for metrics keyed by canonical value.
 
     Structure and compatibility:
-    - Always returns common top-level keys when present: synonyms, description, data_type, properties.
+    - Always returns common top-level keys when present: synonyms, data_type, properties.
     - Supports type-specific nested sections for cleanliness in SSOT YAML:
         • For Numeric metrics: a nested "numeric" block may contain unit, range_min, range_max, distribution_default_buckets.
         • For Enum metrics: a nested "enum" block may contain labels.
@@ -143,7 +143,7 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
         meta: Dict[str, Any] = {}
 
         # Common fields
-        for key in ("synonyms", "description", "data_type", "properties"):
+        for key in ("synonyms", "data_type", "properties"):
             val = item.get(key)
             if val is not None:
                 meta[key] = val
@@ -229,7 +229,7 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
                         human_label = key.replace("_", " ").title()
                         syns = [human_label]
                         opt["synonyms"] = syns
-                    option_map[key] = {k: v for k, v in opt.items() if k in ("synonyms", "value", "description")}
+                    option_map[key] = {k: v for k, v in opt.items() if k in ("synonyms", "value")}
                     option_keys.append(key)
                     derived_labels.append(cast(str, syns[0]))
                 # Attach raw options map for downstream richer usage
@@ -266,7 +266,7 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
                     fabricated = key.replace("_", " ").title()
                     syns = [fabricated]
                     entry["synonyms"] = syns
-                option_map[key] = {k: v for k, v in entry.items() if k in ("synonyms", "value", "description")}
+                option_map[key] = {k: v for k, v in entry.items() if k in ("synonyms", "value")}
                 option_keys.append(key)
                 labels.append(cast(str, syns[0]))
             if option_keys:

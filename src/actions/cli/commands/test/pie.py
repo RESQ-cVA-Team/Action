@@ -13,7 +13,7 @@ from .. import command
 @command("test_pie")
 def test_pie(dispatcher: Any, tracker: Any, domain: Any, args: List[str], opts: Dict[str, Any]) -> List[EventType]:
     slices = [PieSlice(label="A", value=40), PieSlice(label="B", value=60)]
-    metadata = ChartMetadata(title="Test Pie", description="Simple pie chart")
+    metadata = ChartMetadata(title="Test Pie")
     chart = PieChart(metadata=metadata, data=slices)
     dispatcher.utter_message(json_message={"charts": [chart.model_dump(exclude_none=True)]})
     return []

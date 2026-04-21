@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Set, Union, cast
+from typing import Any, Dict, List, Optional, Set, Union, cast
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.domain.graphql.ssot_enums import (
     BooleanPropertyType as BooleanType,
@@ -482,6 +482,35 @@ GroupBySpec = Union[
 ]
 
 
+class DataOriginSpec(BaseModel):
+    """Data origin scope for a metric/chart query."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    provider_id: Optional[List[int]] = Field(default=None, alias="providerId", description="Provider IDs to query.")
+    provider_group_id: Optional[List[int]] = Field(default=None, alias="providerGroupId", description="Provider group IDs to query.")
+
+    @field_validator("provider_id", "provider_group_id")
+    def validate_positive_ids(cls, v: Optional[List[int]]) -> Optional[List[int]]:
+        if v is None:
+            return v
+        out: List[int] = []
+        for item in v:
+            value = int(item)
+            if value <= 0:
+                raise ValueError("Data origin IDs must be positive integers.")
+            out.append(value)
+        return out
+
+    from pydantic import model_validator as _model_validator  # type: ignore
+
+    @_model_validator(mode="after")
+    def validate_origin(self) -> "DataOriginSpec":
+        if not self.provider_id and not self.provider_group_id:
+            raise ValueError("DataOriginSpec requires providerId or providerGroupId.")
+        return self
+
+
 class DistributionSpec(BaseModel):
     """
     Specification for a distribution to be computed.
@@ -502,16 +531,15 @@ class MetricSpec(BaseModel):
     Specification for a metric to be analyzed or visualized.
 
     Attributes:
-        title: Optional title for the metric.
-        description: Optional description for the metric.
         metric: The metric type (must be in MetricType).
         distribution: Optional distribution specification for this metric.
     """
 
-    title: Optional[str] = None
-    description: Optional[str] = None
     metric: str  # Should be a value from MetricType
     distribution: Optional[DistributionSpec] = None
+    data_origin: Optional[DataOriginSpec] = Field(default=None, alias="dataOrigin")
+
+    model_config = ConfigDict(populate_by_name=True)
 
     @field_validator("metric")
     def validate_metric_type(cls, v: str) -> str:
@@ -533,16 +561,12 @@ class ChartSpec(BaseModel):
     Specification for a chart to be generated.
 
     Attributes:
-        title: Optional title for the chart.
-        description: Optional description for the chart.
         chart_type: The chart type (must be in ChartType).
         filters: Optional chart-level filters applied to all metrics/series.
         group_by: Optional chart-level groupings applied to all metrics/series.
         metrics: List of metrics to include in the chart.
     """
 
-    title: Optional[str] = None
-    description: Optional[str] = None
     chart_type: str  # Should be a value from ChartType
     filters: Optional[FilterNode] = None
     group_by: Optional[List[GroupBySpec]] = None
@@ -625,14 +649,10 @@ class StatisticalTestSpec(BaseModel):
     Specification for a statistical test to be performed.
 
     Attributes:
-        title: Optional title for the test.
-        description: Optional description for the test.
         test_type: The statistical test type (must be in StatisticalTestType).
         metrics: List of metrics to include in the test.
     """
 
-    title: Optional[str] = None
-    description: Optional[str] = None
     test_type: str  # Should be a value from StatisticalTestType
     metrics: List[MetricSpec]
     group_by: Optional[List[GroupBySpec]] = None
@@ -699,19 +719,6 @@ class StatisticalTestSpec(BaseModel):
         return self
 
 
-class PlanMetadata(BaseModel):
-    trace_id: Optional[str] = None
-    planner_provider: Optional[str] = None
-    planner_model: Optional[str] = None
-    planner_version: str = "pipeline-v2"
-    request_mode: Optional[Literal["freeform", "guided"]] = None
-    requested_visual_layout: Optional[Literal["single_chart", "multi_chart"]] = None
-    data_origin_override: Optional[Dict[str, Any]] = None
-    fallback_used: bool = False
-    fallback_reason: Optional[str] = None
-    generated_at_utc: Optional[str] = None
-
-
 class AnalysisPlan(BaseModel):
     """
     The top-level plan object returned by the planner.
@@ -723,4 +730,3 @@ class AnalysisPlan(BaseModel):
 
     charts: Optional[List[ChartSpec]] = None
     statistical_tests: Optional[List[StatisticalTestSpec]] = None
-    metadata: PlanMetadata = Field(default_factory=PlanMetadata)

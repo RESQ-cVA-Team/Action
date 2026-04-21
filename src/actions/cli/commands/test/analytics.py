@@ -22,7 +22,6 @@ def test_analytics(dispatcher: Any, tracker: Any, domain: Any, args: List[str], 
     chart = LineChart(
         metadata=ChartMetadata(
             title="Quadratic Growth",
-            description="y = x^2 for x in [0..4]",
             x_axis=ChartAxis(label="x", type=ChartAxis.AxisType.LINEAR),
             y_axis=ChartAxis(label="y", type=ChartAxis.AxisType.LINEAR),
         ),
@@ -38,7 +37,6 @@ def test_analytics(dispatcher: Any, tracker: Any, domain: Any, args: List[str], 
             significance_level=0.05,
             passed=True,
             title="Two-sample t-test",
-            description="Difference in means is statistically significant at alpha=0.05.",
         )
     ]
 

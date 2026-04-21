@@ -48,6 +48,26 @@ def merge_series_by_name(series: List[ChartSeries]) -> List[ChartSeries]:
     return [merged[name] for name in ordered_names]
 
 
+def _origin_label_from_kpi_group(kpi_group: Any) -> Optional[str]:
+    origin = getattr(kpi_group, "data_origin", None)
+    if origin is None:
+        return None
+
+    provider_id = getattr(origin, "provider_id", None)
+    if isinstance(provider_id, int):
+        return f"Provider {provider_id}"
+
+    provider_group_id = getattr(origin, "provider_group_id", None)
+    if isinstance(provider_group_id, int):
+        return f"Group {provider_group_id}"
+
+    custom_group_name = getattr(origin, "custom_group_name", None)
+    if isinstance(custom_group_name, str) and custom_group_name.strip():
+        return custom_group_name.strip()
+
+    return None
+
+
 def map_metrics_payload_to_series(
     metrics_payload: Dict[str, Any],
     label_parts: List[str],
@@ -60,6 +80,7 @@ def map_metrics_payload_to_series(
     for metric_name, metric in metrics_payload.items():
         for kpi in metric.kpi_group:
             server_label = kpi.grouped_by.group_item_name if kpi.grouped_by else None
+            origin_label = _origin_label_from_kpi_group(kpi)
 
             is_grouped_or_time = bool(group_by_field) or add_time_period_labels
             if is_grouped_or_time:
@@ -101,6 +122,8 @@ def map_metrics_payload_to_series(
                 if include_metric_alias:
                     name_parts.append(metric_label_from_alias(metric_name))
                 name_parts.extend([part for part in label_parts if part])
+                if origin_label:
+                    name_parts.append(origin_label)
                 if not name_parts:
                     name_parts.append(metric_label_from_alias(metric_name))
                 series_name = " — ".join(name_parts)
@@ -119,6 +142,8 @@ def map_metrics_payload_to_series(
             if include_metric_alias:
                 parts.append(metric_label_from_alias(metric_name))
             parts.extend([part for part in label_parts if part])
+            if origin_label:
+                parts.append(origin_label)
             if server_label:
                 mapped = get_enum_option_label(group_by_field, server_label) if group_by_field else None
                 parts.append(mapped or server_label)

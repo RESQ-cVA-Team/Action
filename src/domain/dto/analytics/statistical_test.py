@@ -17,4 +17,3 @@ class StatisticalTestResult(BaseModel):
     passed: Optional[bool] = None
     details: Optional[Dict[str, Any]] = None  # Arbitrary per-test payload (e.g., coefficients, tables)
     title: Optional[str] = None
-    description: Optional[str] = None

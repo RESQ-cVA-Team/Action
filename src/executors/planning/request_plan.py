@@ -59,6 +59,8 @@ class ComboContext:
     label_parts: List[str]
     include_metric_alias: bool
     group_by_field: Optional[str]
+    metric_requests: List[MetricRequest]
+    data_origin: Optional[DataOrigin]
 
 
 @dataclass
@@ -122,6 +124,7 @@ def _build_case_filter(chart_filter: Optional[Any], filter_dims: List[Dimension]
 
 def build_primary_request_specs(
     metric_requests: List[MetricRequest],
+    metric_data_origins: Optional[List[Optional[DataOrigin]]],
     chart_filter: Optional[Any],
     filter_dims: List[Dimension],
     combos_list: List[tuple[Any, ...]],
@@ -133,6 +136,7 @@ def build_primary_request_specs(
 ) -> tuple[List[RequestSpec], List[ComboContext]]:
     specs: List[RequestSpec] = []
     combo_contexts: List[ComboContext] = []
+    per_metric_data_origin = any(origin is not None for origin in (metric_data_origins or []))
 
     for combo in combos_list:
         case_filter, label_parts = _build_case_filter(chart_filter, filter_dims, combo)
@@ -144,41 +148,73 @@ def build_primary_request_specs(
             start_bound, end_bound = _collect_date_bounds(case_filter)
             req_time_period = TimePeriod(startDate=start_bound, endDate=end_bound)
 
-        req = GraphQLQueryRequest(
-            metrics=metric_requests,
-            timePeriod=req_time_period,
-            dataOrigin=_build_data_origin(data_origin),
-            includeGeneralStats=_INCLUDE_GENERAL_STATS,
-            caseFilter=case_filter,
-            groupBy=(GroupByType(group_by_field) if group_by_field else None),
-        )
+        if per_metric_data_origin:
+            for idx, metric_request in enumerate(metric_requests):
+                metric_origin = (metric_data_origins[idx] if metric_data_origins and idx < len(metric_data_origins) else None) or data_origin
+                req = GraphQLQueryRequest(
+                    metrics=[metric_request],
+                    timePeriod=req_time_period,
+                    dataOrigin=_build_data_origin(metric_origin),
+                    includeGeneralStats=_INCLUDE_GENERAL_STATS,
+                    caseFilter=case_filter,
+                    groupBy=(GroupByType(group_by_field) if group_by_field else None),
+                )
 
-        specs.append(
-            RequestSpec(
-                req=req,
-                label_parts=label_parts,
-                include_metric_alias=include_metric_alias,
-                group_by_field=group_by_field,
-                add_time_period_labels=batched_time_enabled,
+                specs.append(
+                    RequestSpec(
+                        req=req,
+                        label_parts=label_parts,
+                        include_metric_alias=include_metric_alias,
+                        group_by_field=group_by_field,
+                        add_time_period_labels=batched_time_enabled,
+                    )
+                )
+                combo_contexts.append(
+                    ComboContext(
+                        case_filter=case_filter,
+                        label_parts=label_parts,
+                        include_metric_alias=include_metric_alias,
+                        group_by_field=group_by_field,
+                        metric_requests=[metric_request],
+                        data_origin=metric_origin,
+                    )
+                )
+        else:
+            req = GraphQLQueryRequest(
+                metrics=metric_requests,
+                timePeriod=req_time_period,
+                dataOrigin=_build_data_origin(data_origin),
+                includeGeneralStats=_INCLUDE_GENERAL_STATS,
+                caseFilter=case_filter,
+                groupBy=(GroupByType(group_by_field) if group_by_field else None),
             )
-        )
-        combo_contexts.append(
-            ComboContext(
-                case_filter=case_filter,
-                label_parts=label_parts,
-                include_metric_alias=include_metric_alias,
-                group_by_field=group_by_field,
+
+            specs.append(
+                RequestSpec(
+                    req=req,
+                    label_parts=label_parts,
+                    include_metric_alias=include_metric_alias,
+                    group_by_field=group_by_field,
+                    add_time_period_labels=batched_time_enabled,
+                )
             )
-        )
+            combo_contexts.append(
+                ComboContext(
+                    case_filter=case_filter,
+                    label_parts=label_parts,
+                    include_metric_alias=include_metric_alias,
+                    group_by_field=group_by_field,
+                    metric_requests=list(metric_requests),
+                    data_origin=data_origin,
+                )
+            )
 
     return specs, combo_contexts
 
 
 def build_fallback_request_specs(
-    metric_requests: List[MetricRequest],
     combo_contexts: List[ComboContext],
     batched_time_periods: List[TimePeriod],
-    data_origin: Optional[DataOrigin] = None,
 ) -> List[RequestSpec]:
     specs: List[RequestSpec] = []
 
@@ -187,9 +223,9 @@ def build_fallback_request_specs(
             period_label = period_to_label(period)
             retry_label_parts = [*context.label_parts, period_label]
             req = GraphQLQueryRequest(
-                metrics=metric_requests,
+                metrics=context.metric_requests,
                 timePeriod=period,
-                dataOrigin=_build_data_origin(data_origin),
+                dataOrigin=_build_data_origin(context.data_origin),
                 includeGeneralStats=_INCLUDE_GENERAL_STATS,
                 caseFilter=context.case_filter,
                 groupBy=(GroupByType(context.group_by_field) if context.group_by_field else None),

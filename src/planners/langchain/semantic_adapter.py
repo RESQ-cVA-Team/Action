@@ -8,13 +8,6 @@ from src.domain.langchain import schema as S
 from src.shared.ssot_loader import resolve_chart_type, resolve_groupby_canonical
 
 
-def _clean_text(value: str | None) -> str | None:
-    if value is None:
-        return None
-    cleaned = value.strip()
-    return cleaned if cleaned else None
-
-
 def _normalize_chart_type(chart_type: str | None) -> tuple[str, bool, bool]:
     raw = (chart_type or "").strip()
     resolved = resolve_chart_type(raw)
@@ -87,20 +80,11 @@ def to_semantic_plan_with_diagnostics(plan: S.AnalysisPlan) -> tuple[SemanticPla
             if code != (metric.metric or ""):
                 diagnostics.normalized_metric_codes += 1
 
-            title = _clean_text(metric.title)
-            if title != metric.title:
-                diagnostics.normalized_text_fields += 1
-
-            description = _clean_text(metric.description)
-            if description != metric.description:
-                diagnostics.normalized_text_fields += 1
-
             normalized_metrics.append(
                 SemanticMetric(
                     metric=code,
-                    title=title,
-                    description=description,
                     distribution=metric.distribution,
+                    data_origin=metric.data_origin,
                 )
             )
 
@@ -122,20 +106,10 @@ def to_semantic_plan_with_diagnostics(plan: S.AnalysisPlan) -> tuple[SemanticPla
         if chart_type_fallback:
             diagnostics.fallback_chart_type_count += 1
 
-        title = _clean_text(chart.title)
-        if title != chart.title:
-            diagnostics.normalized_text_fields += 1
-
-        description = _clean_text(chart.description)
-        if description != chart.description:
-            diagnostics.normalized_text_fields += 1
-
         charts.append(
             SemanticChart(
                 chart_type=normalized_chart_type,
                 metrics=normalized_metrics,
-                title=title,
-                description=description,
                 filters=chart.filters,
                 group_by=group_by,
             )
@@ -144,7 +118,7 @@ def to_semantic_plan_with_diagnostics(plan: S.AnalysisPlan) -> tuple[SemanticPla
     diagnostics.metrics_out = sum(len(c.metrics) for c in charts)
     diagnostics.charts_out = len(charts)
 
-    return SemanticPlan(charts=charts, statistical_tests=plan.statistical_tests, metadata=plan.metadata), diagnostics
+    return SemanticPlan(charts=charts, statistical_tests=plan.statistical_tests), diagnostics
 
 
 def to_analysis_plan(plan: SemanticPlan) -> S.AnalysisPlan:
@@ -154,10 +128,9 @@ def to_analysis_plan(plan: SemanticPlan) -> S.AnalysisPlan:
         for m in chart.metrics:
             metrics.append(
                 S.MetricSpec(
-                    title=m.title,
-                    description=m.description,
                     metric=m.metric,
                     distribution=m.distribution,
+                    data_origin=m.data_origin,
                 )
             )
 
@@ -166,8 +139,6 @@ def to_analysis_plan(plan: SemanticPlan) -> S.AnalysisPlan:
 
         charts.append(
             S.ChartSpec(
-                title=chart.title,
-                description=chart.description,
                 chart_type=_normalize_chart_type(chart.chart_type)[0],
                 filters=chart.filters,
                 group_by=chart.group_by or None,
@@ -175,7 +146,7 @@ def to_analysis_plan(plan: SemanticPlan) -> S.AnalysisPlan:
             )
         )
 
-    return S.AnalysisPlan(charts=charts or None, statistical_tests=plan.statistical_tests, metadata=plan.metadata)
+    return S.AnalysisPlan(charts=charts or None, statistical_tests=plan.statistical_tests)
 
 
 def normalize_analysis_plan(plan: S.AnalysisPlan) -> S.AnalysisPlan:

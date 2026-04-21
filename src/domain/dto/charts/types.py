@@ -54,7 +54,6 @@ class ChartMetadata(BaseModel):
     """Common chart metadata"""
 
     title: str
-    description: Optional[str] = None
     x_axis: Optional[ChartAxis] = None
     y_axis: Optional[ChartAxis] = None
     legend: bool = True

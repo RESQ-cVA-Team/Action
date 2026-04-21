@@ -21,7 +21,7 @@ from src.actions.guided_visualization_validation import (
     validate_optional_catalog_slot,
     validate_required_metric,
 )
-from src.actions.utils.visualization import format_execution_summary
+from src.actions.utils.visualization import format_execution_summary, serialize_plan_for_frontend
 from src.executors import execute_plan_async
 from src.util import env as env_util
 
@@ -99,7 +99,7 @@ class ActionGuidedGenerateVisualization(Action):  # pyright: ignore
                 json_message={
                     "type": "visualization_plan",
                     "trace_id": trace_id,
-                    "plan": cast(Any, plan_obj).model_dump(mode="json", exclude_none=True),
+                    "plan": serialize_plan_for_frontend(plan_obj),
                 }
             )
 

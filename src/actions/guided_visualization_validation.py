@@ -10,7 +10,6 @@ from uuid import uuid4
 from src.actions.ssot_lookup import normalize_text, resolve_catalog_candidates, resolve_metric_candidates
 from src.domain.langchain import schema as S
 from src.executors.analytics_center.client import AnalyticsCenterError, get_analytics_center_client
-from src.shared.ssot_loader import get_canonical_display_name, get_metric_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -509,7 +508,7 @@ def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[s
     sex = _optional_slot_value(slots, "sex")
     guided_scope = parse_guided_scope(slots.get("guided_hospital_scope"))
     resolved_trace_id = str(trace_id or "").strip() or uuid4().hex
-    data_origin_override = resolve_scope_to_data_origin(guided_scope or {}, user_sub=user_sub, trace_id=resolved_trace_id) if guided_scope else None
+    metric_scope_data_origin = resolve_scope_to_data_origin(guided_scope or {}, user_sub=user_sub, trace_id=resolved_trace_id) if guided_scope else None
 
     filters: List[S.FilterNode] = []
     if isinstance(stroke_type, str) and stroke_type.strip():
@@ -527,31 +526,20 @@ def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[s
     if isinstance(group_by, str) and group_by.strip():
         group_specs.append(S.GroupByCanonicalField(field=group_by.strip().upper()))
 
-    metric_label = get_metric_display_name(metric)
-    title = metric_label
-    if group_specs and isinstance(group_by, str) and group_by.strip():
-        title = f"{metric_label} by {get_canonical_display_name(group_by.strip().upper())}"
-
-    metadata = S.PlanMetadata(
-        trace_id=trace_id,
-        request_mode="guided",
-        requested_visual_layout="single_chart",
-        data_origin_override=data_origin_override,
-    )
+    metric_data_origin: Optional[S.DataOriginSpec] = None
+    if isinstance(metric_scope_data_origin, dict) and metric_scope_data_origin:
+        metric_data_origin = S.DataOriginSpec.model_validate(metric_scope_data_origin)
 
     return S.AnalysisPlan(
         charts=[
             S.ChartSpec(
-                title=title,
-                description="Guided visualization request.",
                 chart_type=chart_type,
                 filters=filter_node,
                 group_by=group_specs or None,
-                metrics=[S.MetricSpec(metric=metric)],
+                metrics=[S.MetricSpec(metric=metric, data_origin=metric_data_origin)],
             )
         ],
         statistical_tests=None,
-        metadata=metadata,
     )
 
 

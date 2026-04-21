@@ -14,7 +14,7 @@ from .. import command
 def test_area(dispatcher: Any, tracker: Any, domain: Any, args: List[str], opts: Dict[str, Any]) -> List[EventType]:
     pts = [ChartPoint(x=i, y=float(i)) for i in range(4)]
     series = ChartSeries(name="area", data=pts)
-    metadata = ChartMetadata(title="Test Area", description="Simple area chart")
+    metadata = ChartMetadata(title="Test Area")
     chart = AreaChart(metadata=metadata, series=[series])
     dispatcher.utter_message(json_message={"charts": [chart.model_dump(exclude_none=True)]})
     return []
