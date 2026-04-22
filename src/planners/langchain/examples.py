@@ -1,7 +1,18 @@
 import json
 from typing import Dict, List, Tuple
 
-from src.domain.langchain.schema import AnalysisPlan, ChartSpec, GroupByCanonicalField, GroupBySex, GroupByStrokeType, GroupByTime, MetricSpec, StatisticalTestSpec, TimeWindow
+from src.domain.langchain.schema import (
+    AnalysisPlan,
+    ChartSpec,
+    GroupByCanonicalField,
+    GroupBySex,
+    GroupByStrokeType,
+    GroupByTime,
+    MetricSpec,
+    OriginScopeSpec,
+    StatisticalTestSpec,
+    TimeWindow,
+)
 
 
 def example_dtn_by_sex() -> Tuple[str, str]:
@@ -185,9 +196,81 @@ def example_statistical_test_dtn_by_sex() -> Tuple[str, str]:
     return user, assistant
 
 
+def example_dtn_my_hospital_vs_country_average() -> Tuple[str, str]:
+    detected_entities = {
+        "metric": ["DTN"],
+        "chart_type": ["BAR"],
+        "scope": ["mine", "country_average"],
+        "country": ["IT"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="BAR",
+                group_by=None,
+                metrics=[
+                    MetricSpec(
+                        metric="DTN",
+                        origin_scope=OriginScopeSpec(scopeType="mine", label="My hospital"),
+                    ),
+                    MetricSpec(
+                        metric="DTN",
+                        origin_scope=OriginScopeSpec(
+                            scopeType="country_average",
+                            countryCode="IT",
+                            label="Italy national average",
+                        ),
+                    ),
+                ],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = "USER_UTTERANCE:\nCompare DTN for my hospital against the Italy national average\n\nENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
+def example_dtn_my_hospital_vs_provider_group_name() -> Tuple[str, str]:
+    detected_entities = {
+        "metric": ["DTN"],
+        "chart_type": ["BAR"],
+        "scope": ["mine", "provider_group_name"],
+        "provider_group_name": ["Nordic Stroke Network"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="BAR",
+                group_by=None,
+                metrics=[
+                    MetricSpec(
+                        metric="DTN",
+                        origin_scope=OriginScopeSpec(scopeType="mine", label="My hospital"),
+                    ),
+                    MetricSpec(
+                        metric="DTN",
+                        origin_scope=OriginScopeSpec(
+                            scopeType="provider_group_name",
+                            value="Nordic Stroke Network",
+                            label="Nordic Stroke Network",
+                        ),
+                    ),
+                ],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = "USER_UTTERANCE:\nShow DTN for my hospital versus provider group Nordic Stroke Network\n\nENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
 def get_few_shot_examples() -> List[Dict[str, str]]:
     examples: List[Dict[str, str]] = []
     for user, assistant in [
+        example_dtn_my_hospital_vs_country_average(),
+        example_dtn_my_hospital_vs_provider_group_name(),
         example_one_graph_cross_split(),
         example_two_separate_charts(),
         example_dtn_last_6_months_by_sex(),

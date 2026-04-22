@@ -48,6 +48,13 @@ class ProviderCollectionResult(TypedDict):
     offset: int
 
 
+class ProviderGroupCollectionResult(TypedDict):
+    results: List[Dict[str, Any]]
+    count: int
+    limit: int
+    offset: int
+
+
 class CountryCollectionResult(TypedDict):
     results: List[Dict[str, Any]]
 
@@ -333,6 +340,70 @@ class AnalyticsCenterClient:
             raise AnalyticsCenterError(
                 kind="invalid_response",
                 message="Unexpected providers response format",
+                transient=False,
+            )
+            return None
+
+    def list_provider_groups(
+        self,
+        user_sub: str,
+        trace_id: str,
+        limit: int = 50,
+        offset: int = 0,
+        country: Optional[str] = None,
+        raise_on_error: bool = False,
+    ) -> Optional[ProviderGroupCollectionResult]:
+        query: Dict[str, Any] = {
+            "limit": limit,
+            "offset": offset,
+        }
+        if isinstance(country, str) and country.strip():
+            query["country"] = country.strip().upper()
+
+        payload_dict = self._request_via_proxy(
+            user_sub=user_sub,
+            path="/api/rest/analytics-center/provider-groups",
+            query=query,
+            request_name="list_provider_groups",
+            trace_id=trace_id,
+            raise_on_error=raise_on_error,
+        )
+        if payload_dict is None:
+            return None
+
+        results_any = payload_dict.get("results")
+        if isinstance(results_any, list):
+            results_list = cast(List[Any], results_any)
+            groups: List[Dict[str, Any]] = [cast(Dict[str, Any], r) for r in results_list if isinstance(r, dict)]
+
+            pagination_any = payload_dict.get("pagination")
+            count = len(groups)
+            out_limit = limit
+            out_offset = offset
+            if isinstance(pagination_any, dict):
+                pagination_dict = cast(Dict[str, Any], pagination_any)
+                c_any = pagination_dict.get("count")
+                l_any = pagination_dict.get("limit")
+                o_any = pagination_dict.get("offset")
+                if isinstance(c_any, int) and c_any >= 0:
+                    count = c_any
+                if isinstance(l_any, int) and l_any >= 0:
+                    out_limit = l_any
+                if isinstance(o_any, int) and o_any >= 0:
+                    out_offset = o_any
+
+            return {
+                "results": groups,
+                "count": count,
+                "limit": out_limit,
+                "offset": out_offset,
+            }
+
+        logger.error("[AnalyticsCenterClient] Unexpected response format from provider-groups list")
+        if raise_on_error:
+            raise AnalyticsCenterError(
+                kind="invalid_response",
+                message="Unexpected provider-groups response format",
                 transient=False,
             )
             return None

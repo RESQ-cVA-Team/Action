@@ -511,6 +511,58 @@ class DataOriginSpec(BaseModel):
         return self
 
 
+class OriginScopeSpec(BaseModel):
+    """Semantic data-origin reference resolved at execution time.
+
+    This allows planner outputs to remain user-intent oriented (e.g., "mine",
+    "country code", "hospital name") while execution resolves concrete IDs.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    scope_type: str = Field(alias="scopeType")
+    value: Optional[Any] = None
+    label: Optional[str] = None
+    country_code: Optional[str] = Field(default=None, alias="countryCode")
+
+    @field_validator("scope_type")
+    def validate_scope_type(cls, v: str) -> str:
+        raw = (v or "").strip().lower().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "hospital_name": "provider_name",
+            "provider": "provider_name",
+            "group_id": "provider_group_id",
+            "group_name": "provider_group_name",
+            "country": "country_code",
+            "all": "all_accessible",
+        }
+        normalized = aliases.get(raw, raw)
+        allowed = {
+            "mine",
+            "provider_id",
+            "provider_name",
+            "provider_group_id",
+            "provider_group_name",
+            "country_code",
+            "country_average",
+            "all_accessible",
+        }
+        if normalized not in allowed:
+            raise ValueError(f"{v} is not a valid OriginScopeSpec.scopeType. Allowed: {sorted(allowed)}")
+        return normalized
+
+    @field_validator("country_code")
+    def validate_country_code(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        token = v.strip().upper()
+        if not token:
+            return None
+        if len(token) != 2 or not token.isalpha():
+            raise ValueError("countryCode must be a 2-letter ISO country code")
+        return token
+
+
 class DistributionSpec(BaseModel):
     """
     Specification for a distribution to be computed.
@@ -538,6 +590,7 @@ class MetricSpec(BaseModel):
     metric: str  # Should be a value from MetricType
     distribution: Optional[DistributionSpec] = None
     data_origin: Optional[DataOriginSpec] = Field(default=None, alias="dataOrigin")
+    origin_scope: Optional[OriginScopeSpec] = Field(default=None, alias="originScope")
 
     model_config = ConfigDict(populate_by_name=True)
 

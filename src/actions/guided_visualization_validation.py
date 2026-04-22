@@ -507,8 +507,6 @@ def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[s
     stroke_type = _optional_slot_value(slots, "stroke_type")
     sex = _optional_slot_value(slots, "sex")
     guided_scope = parse_guided_scope(slots.get("guided_hospital_scope"))
-    resolved_trace_id = str(trace_id or "").strip() or uuid4().hex
-    metric_scope_data_origin = resolve_scope_to_data_origin(guided_scope or {}, user_sub=user_sub, trace_id=resolved_trace_id) if guided_scope else None
 
     filters: List[S.FilterNode] = []
     if isinstance(stroke_type, str) and stroke_type.strip():
@@ -526,9 +524,12 @@ def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[s
     if isinstance(group_by, str) and group_by.strip():
         group_specs.append(S.GroupByCanonicalField(field=group_by.strip().upper()))
 
-    metric_data_origin: Optional[S.DataOriginSpec] = None
-    if isinstance(metric_scope_data_origin, dict) and metric_scope_data_origin:
-        metric_data_origin = S.DataOriginSpec.model_validate(metric_scope_data_origin)
+    metric_origin_scope: Optional[S.OriginScopeSpec] = None
+    if isinstance(guided_scope, dict) and guided_scope:
+        try:
+            metric_origin_scope = S.OriginScopeSpec.model_validate(guided_scope)
+        except Exception:
+            metric_origin_scope = None
 
     return S.AnalysisPlan(
         charts=[
@@ -536,7 +537,7 @@ def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[s
                 chart_type=chart_type,
                 filters=filter_node,
                 group_by=group_specs or None,
-                metrics=[S.MetricSpec(metric=metric, data_origin=metric_data_origin)],
+                metrics=[S.MetricSpec(metric=metric, origin_scope=metric_origin_scope)],
             )
         ],
         statistical_tests=None,

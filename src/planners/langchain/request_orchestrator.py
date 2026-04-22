@@ -52,6 +52,24 @@ except Exception:
 _ORCHESTRATOR_TEMPERATURE = _orchestrator_temperature_value
 
 _ORCHESTRATOR_FAIL_OPEN = env_util.env_flag("ACTIONS_LLM_REQUEST_ORCHESTRATOR_FAIL_OPEN", default=False)
+_ASSUME_DEFAULT_TIME_SCOPE = env_util.env_flag("ACTIONS_ASSUME_DEFAULT_TIME_SCOPE", default=True)
+
+_TEMPORAL_MISSING_FIELDS = {
+    "time",
+    "time_scope",
+    "time_range",
+    "time_window",
+    "time_period",
+    "date",
+    "date_range",
+    "date_window",
+    "date_period",
+    "period",
+    "timeframe",
+    "time_frame",
+    "window",
+    "range",
+}
 
 _DECISION_PROMPT = ChatPromptTemplate.from_messages(  # type: ignore
     [
@@ -243,6 +261,38 @@ def _coerce_options(raw: Any) -> List[str]:
     return out
 
 
+def _normalize_missing_field(value: str) -> str:
+    token = (value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    while "__" in token:
+        token = token.replace("__", "_")
+    return token.strip("_")
+
+
+def _is_temporal_missing_field(value: str) -> bool:
+    token = _normalize_missing_field(value)
+    if not token:
+        return False
+    if token in _TEMPORAL_MISSING_FIELDS:
+        return True
+    return token.startswith("time_") or token.startswith("date_")
+
+
+def _should_assume_default_time_scope(stage1: VisualizationRequestOutcome) -> bool:
+    if stage1.decision != "clarify":
+        return False
+
+    fields: List[str] = []
+    fields.extend(stage1.missing_fields)
+    if stage1.clarification_type:
+        fields.append(stage1.clarification_type)
+
+    normalized = [_normalize_missing_field(field) for field in fields if _normalize_missing_field(field)]
+    if not normalized:
+        return False
+
+    return all(_is_temporal_missing_field(field) for field in normalized)
+
+
 def _decision_stage(
     question: str,
     entities: Dict[str, Any],
@@ -364,6 +414,13 @@ def orchestrate_visualization_request(
             return stage1
 
         if stage1.decision == "clarify":
+            if _ASSUME_DEFAULT_TIME_SCOPE and _should_assume_default_time_scope(stage1):
+                logger.info("Assuming default time scope; skipping clarification")
+                return VisualizationRequestOutcome(
+                    decision="proceed",
+                    reason="default_time_scope_assumed",
+                )
+
             report("Generating clarification question")
             return _clarification_stage(
                 question=question,

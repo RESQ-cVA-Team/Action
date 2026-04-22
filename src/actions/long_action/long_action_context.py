@@ -195,8 +195,20 @@ class LongActionContext:
         return list(self._pending_events)
 
     def add_event(self, event: Dict[str, Any]) -> None:
-        if isinstance(event, dict):
-            self._pending_events.append(event)
+        self._pending_events.append(event)
+
+        # Keep local slot snapshot coherent for the active action turn.
+        if event.get("event") == "slot":
+            slot_name_any = event.get("name")
+            if isinstance(slot_name_any, str) and slot_name_any.strip():
+                slots_any = self.tracker_snapshot.get("slots")
+                slots: Dict[str, Any]
+                if isinstance(slots_any, dict):
+                    slots = cast(Dict[str, Any], slots_any)
+                else:
+                    slots = {}
+                    self.tracker_snapshot["slots"] = slots
+                slots[slot_name_any.strip()] = event.get("value")
 
     def add_events(self, events: List[Dict[str, Any]]) -> None:
         for event in events:

@@ -85,6 +85,7 @@ def to_semantic_plan_with_diagnostics(plan: S.AnalysisPlan) -> tuple[SemanticPla
                     metric=code,
                     distribution=metric.distribution,
                     data_origin=metric.data_origin,
+                    origin_scope=metric.origin_scope,
                 )
             )
 
@@ -131,6 +132,7 @@ def to_analysis_plan(plan: SemanticPlan) -> S.AnalysisPlan:
                     metric=m.metric,
                     distribution=m.distribution,
                     data_origin=m.data_origin,
+                    origin_scope=m.origin_scope,
                 )
             )
 

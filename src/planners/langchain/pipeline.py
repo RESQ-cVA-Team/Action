@@ -516,7 +516,11 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
             "You are a planner. Interface language: {language}. Produce ONLY a valid AnalysisPlan JSON according to the schema. "
             "Keep enum-like codes (metric, chart_type, test_type, stroke categories, sex categories) in their canonical uppercase English forms. "
             "Use the reasoning and prior examples. Place detected entities into metrics (group_by / filters). "
-            "When comparing multiple provider scopes (hospital/group) in one chart, use separate metric entries with metric-level dataOrigin. "
+            "When scope is semantic (my hospital, hospital name, provider-group name, country average, all accessible), prefer metric-level originScope instead of dataOrigin. "
+            "Use originScope.scopeType from: mine, provider_name, provider_group_name, country_code, country_average, all_accessible, provider_id, provider_group_id. "
+            "Put human references in originScope.value and ISO country in originScope.countryCode when available. "
+            "Only use dataOrigin when explicit numeric provider/group IDs are directly provided by the user. "
+            "When comparing multiple scopes in one chart, use separate metric entries with metric-level originScope/dataOrigin. "
             "Prefer LINE/BAR for trends or comparisons; BOX/VIOLIN/HISTOGRAM for distributions. "
             "Chart intent guidance: If user asks for one graph/one chart/single visual with multiple splits, prefer one chart with multiple group_by dimensions. If user asks for separate charts/multiple visuals, produce multiple chart specs. "
             "Statistical test guidance: Only use test types listed in SUPPORTED_STAT_TESTS_JSON; otherwise omit statistical_tests and return charts.",

@@ -9,6 +9,7 @@ class SemanticMetric:
     metric: str
     distribution: Optional[S.DistributionSpec] = None
     data_origin: Optional[S.DataOriginSpec] = None
+    origin_scope: Optional[S.OriginScopeSpec] = None
 
 
 @dataclass

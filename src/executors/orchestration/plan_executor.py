@@ -21,6 +21,7 @@ from src.executors.mapping.filter_mapper import to_gql_filter
 from src.executors.mapping.series_mapper import merge_series_by_name
 from src.executors.mapping.summary_builder import make_batch_summary, make_execution_summary
 from src.executors.planning.metric_request_factory import build_metric_requests
+from src.executors.planning.origin_scope_resolver import OriginScopeResolutionError, resolve_plan_metric_origins
 from src.executors.planning.query_compiler import Dimension, compile_chart_grouping, estimate_query_count_for_plan
 from src.executors.planning.request_plan import RequestSpec, build_fallback_request_specs, build_primary_request_specs, should_retry_unbatched_time
 from src.executors.transport.request_runner import run_graphql_request
@@ -342,12 +343,16 @@ class VisualizationExecutionError(RuntimeError):
         reason: str = "unknown",
         code: str = "EXEC_UNKNOWN",
         trace_id: Optional[str] = None,
+        clarification_type: Optional[str] = None,
+        clarification_options: Optional[List[str]] = None,
     ):
         super().__init__(user_message)
         self.user_message = user_message
         self.reason = reason
         self.code = code
         self.trace_id = trace_id
+        self.clarification_type = clarification_type
+        self.clarification_options = list(clarification_options or [])
 
 
 def _to_execution_error(failure_reasons: List[str], trace_id: Optional[str] = None) -> VisualizationExecutionError:
@@ -651,6 +656,18 @@ async def execute_plan_async(
     logger.info("[plan_executor] execute_plan_async start (trace_id=%s)", trace_id_resolved)
 
     plan, normalization_summary = normalize_analysis_plan_with_diagnostics(plan)
+    try:
+        plan = resolve_plan_metric_origins(plan=plan, user_sub=user_sub, trace_id=trace_id_resolved)
+    except OriginScopeResolutionError as exc:
+        raise VisualizationExecutionError(
+            user_message=str(exc),
+            reason="origin_scope_resolution",
+            code="EXEC_ORIGIN_SCOPE",
+            trace_id=trace_id_resolved,
+            clarification_type=exc.clarification_type,
+            clarification_options=exc.clarification_options,
+        ) from exc
+
     plan_charts = coalesce(plan.charts, [])
     response: VisualizationResponse = VisualizationResponse(trace_id=trace_id_resolved)
     estimated_queries = estimate_query_count_for_plan(plan)
