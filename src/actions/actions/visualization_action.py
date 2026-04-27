@@ -7,6 +7,7 @@ from rasa_sdk import Action  # type: ignore
 from rasa_sdk.events import FollowupAction, SlotSet  # type: ignore
 
 from src.actions.error_messages import visualization_error_payload
+from src.actions.i18n import resolve_language, translate
 from src.actions.long_action.long_action import LongAction, PreworkResult
 from src.actions.long_action.long_action_context import LongActionContext
 from src.actions.utils.visualization import (
@@ -166,6 +167,8 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
         domain: DomainDict,
     ) -> RasaEventList:
         trace_id = uuid4().hex
+        metadata: Dict[str, Any] = {}
+        slots: Dict[str, Any] = {}
         try:
             fallback_limit = 12
             latest_msg = tracker.latest_message
@@ -181,6 +184,7 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
             slots_any = tracker.current_state().get("slots", {})
             slots = cast(Dict[str, Any], slots_any) if isinstance(slots_any, dict) else {}
             override_language = resolve_override_language(metadata, slots)
+            language = resolve_language(metadata=metadata, slots=slots, tracker=tracker)
 
             events = tracker.events
             conversation_history = _collect_visualization_thread_messages(events, fallback_limit=fallback_limit)
@@ -212,11 +216,11 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
             )
 
             if outcome.decision == "clarify":
-                dispatcher.utter_message(text=outcome.message or "I need a bit more detail before I can generate a visualization.")
+                dispatcher.utter_message(text=outcome.message or translate("action.visualization.clarify_default", language=language))
                 return [SlotSet("awaiting_visualization_clarification", True)]
 
             if outcome.decision == "reject":
-                dispatcher.utter_message(text=outcome.message or "This request is outside the visualization flow.")
+                dispatcher.utter_message(text=outcome.message or translate("action.visualization.reject_default", language=language))
                 return [SlotSet("awaiting_visualization_clarification", False)]
 
             return [
@@ -225,7 +229,8 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
             ]
         except Exception as e:
             logger.exception("Error routing visualization request (trace_id=%s)", trace_id)
-            payload = visualization_error_payload(e, trace_id=trace_id)
+            language = resolve_language(metadata=metadata, slots=slots, tracker=tracker)
+            payload = visualization_error_payload(e, trace_id=trace_id, language=language)
             dispatcher.utter_message(
                 json_message={
                     "type": "visualization_error",
@@ -235,9 +240,25 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                     "message": payload.get("message"),
                 }
             )
-            dispatcher.utter_message(text=f"❌ {payload.get('message')} (Error code: {payload.get('code')}, Trace ID: {payload.get('trace_id')})")
+            dispatcher.utter_message(
+                text=translate(
+                    "action.common.error_with_context",
+                    language=language,
+                    params={
+                        "message": payload.get("message") or "",
+                        "code": payload.get("code") or "-",
+                        "trace_id": payload.get("trace_id") or "-",
+                    },
+                )
+            )
             if _ECHO_INTERNAL_ERRORS:
-                dispatcher.utter_message(text=f"Error routing visualization request: {str(e)}")
+                dispatcher.utter_message(
+                    text=translate(
+                        "action.visualization.internal_error_routing",
+                        language=language,
+                        params={"error": str(e)},
+                    )
+                )
             return []
 
 
@@ -247,6 +268,7 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
     latest_msg = cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
     extracted_entities = extract_entities_from_latest_message(latest_msg)
     override_language = resolve_override_language(latest_meta, ctx.slots)
+    language = resolve_language(metadata=latest_meta, slots=ctx.slots)
     conversation_history = _collect_visualization_thread_messages(ctx.events, fallback_limit=12)
     planner_question = "\n".join([m for m in conversation_history if m.strip()]).strip() or ctx.text
     return {
@@ -257,6 +279,7 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
         "latest_msg": latest_msg,
         "extracted_entities": extracted_entities,
         "override_language": override_language,
+        "language": language,
         "conversation_history": conversation_history,
     }
 
@@ -360,7 +383,8 @@ class ActionOneShotGenerateVisualization(LongAction):
             # intent, always send a user-facing response instead of returning
             # nothing and leaving the conversation hanging.
             if intent_name and intent_name not in _VISUALIZATION_CONTINUATION_INTENTS and not _is_guided_visualization_request(ctx.slots):
-                ctx.say(text=("I can help with visualization requests. Try asking to generate a chart, or ask to update the current chart."))
+                language = resolve_language(metadata=ctx.metadata, slots=ctx.slots)
+                ctx.say(text=translate("action.visualization.non_visualization_intent", language=language))
                 return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=False)
 
             request_ctx = _extract_request_context(ctx)
@@ -375,6 +399,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                 progress_cb=None,
             )
             decision_name = str(outcome.decision or "").strip().lower()
+            language = cast(str, request_ctx.get("language") or "en")
             if decision_name == "clarify":
                 ctx.say(
                     json_message={
@@ -387,7 +412,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         "message": outcome.message,
                     }
                 )
-                ctx.say(text=(outcome.message or "I need a bit more detail before I can generate a visualization."))
+                ctx.say(text=outcome.message or translate("action.visualization.clarify_default", language=language))
                 return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", True)], proceed=False)
             if decision_name == "reject":
                 ctx.say(
@@ -401,7 +426,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         "message": outcome.message,
                     }
                 )
-                ctx.say(text=(outcome.message or "This request is outside the visualization flow."))
+                ctx.say(text=outcome.message or translate("action.visualization.reject_default", language=language))
                 return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=False)
 
             planner_question = str(request_ctx.get("planner_question") or request_ctx.get("user_message") or "")
@@ -453,7 +478,8 @@ class ActionOneShotGenerateVisualization(LongAction):
             return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=True)
         except Exception as e:
             logger.exception("Error generating visualization (prework, trace_id=%s)", trace_id)
-            payload = visualization_error_payload(e, trace_id=trace_id)
+            language = resolve_language(metadata=ctx.metadata, slots=ctx.slots)
+            payload = visualization_error_payload(e, trace_id=trace_id, language=language)
             ctx.say(
                 json_message={
                     "type": "visualization_error",
@@ -463,9 +489,25 @@ class ActionOneShotGenerateVisualization(LongAction):
                     "message": payload.get("message"),
                 }
             )
-            ctx.say(text=f"❌ {payload.get('message')} (Error code: {payload.get('code')}, Trace ID: {payload.get('trace_id')})")
+            ctx.say(
+                text=translate(
+                    "action.common.error_with_context",
+                    language=language,
+                    params={
+                        "message": payload.get("message") or "",
+                        "code": payload.get("code") or "-",
+                        "trace_id": payload.get("trace_id") or "-",
+                    },
+                )
+            )
             if _ECHO_INTERNAL_ERRORS:
-                ctx.say(text=f"Error generating visualization: {str(e)}")
+                ctx.say(
+                    text=translate(
+                        "action.visualization.internal_error_generating",
+                        language=language,
+                        params={"error": str(e)},
+                    )
+                )
             return PreworkResult(events=[], proceed=False)
 
     async def work(self, ctx: LongActionContext) -> Any:
@@ -473,10 +515,12 @@ class ActionOneShotGenerateVisualization(LongAction):
         execution_summary: Optional[Any] = None
         planner_diagnostics: Optional[Dict[str, Any]] = None
         trace_id = _ensure_context_trace_id(ctx)
+        language = resolve_language(metadata=ctx.metadata, slots=ctx.slots)
         try:
             request_ctx = _extract_request_context(ctx)
             user_message = cast(str, request_ctx["user_message"])
             user_sub = cast(str, request_ctx["user_sub"])
+            language = cast(str, request_ctx.get("language") or "en")
 
             if _LOG_USER_TEXT:
                 logger.info("Processing visualization request (trace_id=%s): '%s'", trace_id, user_message)
@@ -576,7 +620,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                 return None
 
             logger.exception("Error generating visualization (trace_id=%s)", trace_id)
-            payload = visualization_error_payload(e, trace_id=trace_id)
+            payload = visualization_error_payload(e, trace_id=trace_id, language=language)
             ctx.say(
                 json_message={
                     "type": "visualization_error",
@@ -586,9 +630,25 @@ class ActionOneShotGenerateVisualization(LongAction):
                     "message": payload.get("message"),
                 }
             )
-            ctx.say(text=f"❌ {payload.get('message')} (Error code: {payload.get('code')}, Trace ID: {payload.get('trace_id')})")
+            ctx.say(
+                text=translate(
+                    "action.common.error_with_context",
+                    language=language,
+                    params={
+                        "message": payload.get("message") or "",
+                        "code": payload.get("code") or "-",
+                        "trace_id": payload.get("trace_id") or "-",
+                    },
+                )
+            )
             if _ECHO_INTERNAL_ERRORS:
-                ctx.say(text=f"Error generating visualization: {str(e)}")
+                ctx.say(
+                    text=translate(
+                        "action.visualization.internal_error_generating",
+                        language=language,
+                        params={"error": str(e)},
+                    )
+                )
         finally:
             if completed_successfully:
                 if _SHOW_EXECUTION_SUMMARY and execution_summary is not None:
@@ -597,9 +657,10 @@ class ActionOneShotGenerateVisualization(LongAction):
                             execution_summary,
                             show_normalization=_SHOW_NORMALIZATION_SUMMARY,
                             planner_diagnostics=planner_diagnostics,
+                            language=language,
                         )
                     )
                 else:
-                    ctx.say(text="✅ Visualization generation complete.")
+                    ctx.say(text=translate("action.visualization.success_complete", language=language))
             ctx.done()
         return None

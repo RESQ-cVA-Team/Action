@@ -1,0 +1,94 @@
+{
+  "action": {
+    "common": {
+      "error_with_context": "❌ {message} (Kód chyby: {code}, Trace ID: {trace_id})"
+    },
+    "visualization": {
+      "clarify_default": "Potřebuji ještě trochu více detailů, než mohu vygenerovat vizualizaci.",
+      "reject_default": "Tento požadavek je mimo tok vizualizace.",
+      "non_visualization_intent": "Mohu pomoci s požadavky na vizualizaci. Zkuste požádat o vytvoření grafu nebo o aktualizaci aktuálního grafu.",
+      "success_complete": "✅ Generování vizualizace dokončeno.",
+      "internal_error_routing": "Chyba při směrování požadavku na vizualizaci: {error}",
+      "internal_error_generating": "Chyba při generování vizualizace: {error}",
+      "internal_error_guided": "Chyba při generování řízené vizualizace: {error}"
+    },
+    "errors": {
+      "visualization_timeout": "Generování vizualizace vypršelo. Zkuste to prosím znovu.",
+      "visualization_generic": "Chyba při generování vizualizace.",
+      "hospital_auth_unavailable": "Vaše analytická relace není pro action server právě dostupná. Zkuste to znovu po opětovném přihlášení nebo zadejte nemocnici ručně.",
+      "hospital_timeout": "Požadavek na adresář poskytovatelů vypršel. Zkuste to prosím znovu.",
+      "hospital_service_unavailable": "Služba adresáře poskytovatelů je dočasně nedostupná. Zkuste to prosím za chvíli.",
+      "hospital_generic": "Nyní se nepodařilo načíst data nemocnic. Zkuste to prosím znovu.",
+      "hospital_action_generic": "Chyba při výpisu nemocnic.",
+      "metric_definitions_unavailable": "Definice metrik jsou dočasně nedostupné. Zkuste to prosím znovu.",
+      "metric_timeout": "Vyhledání metriky vypršelo. Zkuste to prosím znovu.",
+      "metric_generic": "Chyba při vysvětlení metriky."
+    },
+    "hospitals": {
+      "country_not_matched": "Nepodařilo se mi přiřadit zemi '{country}'. Zkuste dvoupísmenný kód jako ES, MX, DE nebo FR.",
+      "none_available": "Nenašel jsem žádné nemocnice, které byste mohli porovnávat.",
+      "no_matches": "Nenašel jsem žádné nemocnice odpovídající vašim filtrům.",
+      "no_matches_with_hint": "Nenašel jsem žádné nemocnice odpovídající vašim filtrům. Zkuste kratší nebo méně specifický název.",
+      "summary_with_name_filter": "Na této stránce jsem našel {matched_count} odpovídajících nemocnic (search='{search}', offset={offset}, limit={limit}); celkový počet poskytovatelů před filtrem názvu: {total_count}.",
+      "summary_general": "Našel jsem {total_count} nemocnic{criteria_text}; zobrazuji {shown_start}-{shown_end}.",
+      "criteria_country": "země={country}",
+      "criteria_sort": "řazení={sort}",
+      "more_in_page": " (+{more_count} dalších na této stránce)",
+      "internal_error": "Chyba při výpisu nemocnic: {error}"
+    },
+    "metric": {
+      "missing_metric": "Ve vašem požadavku jsem nenašel žádnou metriku.",
+      "metric_not_understood": "Nerozuměl jsem metrice, na kterou se ptáte.",
+      "metric_unknown_with_suggestions": "Tuto metriku neznám. Některé metriky, které mohu popsat: {suggestions}.",
+      "metric_unknown": "Tuto metriku neznám.",
+      "description_not_configured": "Tato metrika je známá, ale její popis zatím není nakonfigurován.",
+      "data_type_with_unit": "Typ dat: {data_type} ({unit}).",
+      "data_type": "Typ dat: {data_type}.",
+      "internal_error": "Chyba při vysvětlení metriky: {error}"
+    },
+    "guided": {
+      "validate_metric_ambiguous": "Našel jsem více možných metrik pro tento požadavek. Zadejte prosím konkrétnější kód nebo název metriky.",
+      "validate_metric_invalid": "Nepodařilo se mi tuto metriku přiřadit k platné SSOT metrice. Zadejte platnou metriku, například DTN, DIDO nebo ADMISSION_NIHSS.",
+      "mine_scope_auth_unavailable": "Teď nemohu vyřešit 'mine', protože action server nemá přístup k vaší analytické relaci. Zadejte nemocnici ručně nebo požádejte backend tým o opravu action-server analytics auth bridge.",
+      "mine_scope_unknown": "Právě se mi nepodařilo určit váš výchozí rozsah nemocnice. Zadejte název nemocnice, kód země nebo group ID.",
+      "mine_scope_not_found": "Nepodařilo se mi určit váš výchozí rozsah nemocnice z 'mine'. Zadejte název nemocnice, kód země nebo group ID.",
+      "hospital_name_ambiguous": "Našel jsem více nemocnic odpovídajících tomuto názvu. Buďte prosím konkrétnější.",
+      "hospital_scope_invalid": "Nepodařilo se mi určit rozsah nemocnice. Uveďte kód země, název nemocnice, group ID nemocnice nebo řekněte all hospitals.",
+      "all_hospitals_label": "Všechny nemocnice",
+      "prompt_stroke_type": "Nepodařilo se mi přiřadit tento typ mrtvice. Zadejte platný typ mrtvice nebo krok přeskočte.",
+      "prompt_sex": "Nepodařilo se mi přiřadit tuto hodnotu pohlaví. Zadejte platnou hodnotu nebo krok přeskočte.",
+      "prompt_group_by": "Nepodařilo se mi přiřadit toto seskupení. Zadejte platné pole pro seskupení nebo krok přeskočte.",
+      "prompt_chart_type": "Nepodařilo se mi přiřadit tento typ grafu. Zadejte platný typ grafu nebo krok přeskočte."
+    },
+    "summary": {
+      "complete": "✅ Generování vizualizace dokončeno.",
+      "trace_id": "Trace ID: {trace_id}",
+      "plan_produced_one_chart": "Plán vytvořil 1 graf.",
+      "plan_produced_many_charts": "Plán vytvořil {chart_count} grafů.",
+      "planner_cache_hit": "Cache plánovače: hit (znovupoužit dříve vytvořený plán).",
+      "planner_cache_miss": "Cache plánovače: miss (vygenerován nový plán).",
+      "queried_once": "Analytickou službu jsem dotázal jednou.",
+      "queried_many": "Analytickou službu jsem dotázal {actual}krát.",
+      "planner_estimate": "Odhad plánovače byl {estimated} požadavek(y).",
+      "plan_normalization": "Normalizace plánu:",
+      "charts_transition": "Grafy: {charts_in} -> {charts_out}",
+      "detail_dropped_charts": "odebráno {dropped_charts} prázdných grafů",
+      "detail_metrics_transition": "metriky {metrics_in} -> {metrics_out}",
+      "detail_dropped_metrics": "odebráno {dropped_metrics} prázdných metrik",
+      "detail_normalized_metric_codes": "normalizováno {metric_code_norm} kódů metrik",
+      "detail_normalized_chart_types": "normalizováno {chart_type_norm} typů grafů",
+      "detail_applied_chart_fallback": "aplikováno {chart_type_fallback} fallback typů grafu",
+      "detail_removed_groupby_duplicates": "odebráno {deduped_groupby} duplicitních položek group-by",
+      "detail_normalized_groupby_fields": "normalizováno {normalized_groupby_fields} kanonických polí group-by",
+      "detail_dropped_groupby_fields": "odebráno {dropped_groupby_fields} neplatných polí group-by",
+      "detail_cleaned_text_fields": "vyčištěno {normalized_text} textových polí",
+      "no_structural_changes": "Nebyly potřeba žádné strukturální změny.",
+      "what_i_queried": "Co jsem dotazoval:",
+      "request_count": "{query_count} požadavek(y)",
+      "grouped_by": "seskupeno podle {groupby}",
+      "across_periods": "napříč {periods} časovým(i) obdobím(i)",
+      "split_by": "rozděleno podle {filters}",
+      "remaining_batches": "... a ještě {remaining} dalších dávkových dotazů"
+    }
+  }
+}

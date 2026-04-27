@@ -1,0 +1,94 @@
+{
+  "action": {
+    "common": {
+      "error_with_context": "❌ {message} (Κωδικός σφάλματος: {code}, Trace ID: {trace_id})"
+    },
+    "visualization": {
+      "clarify_default": "Χρειάζομαι λίγο περισσότερες λεπτομέρειες πριν δημιουργήσω την οπτικοποίηση.",
+      "reject_default": "Αυτό το αίτημα είναι εκτός της ροής οπτικοποίησης.",
+      "non_visualization_intent": "Μπορώ να βοηθήσω με αιτήματα οπτικοποίησης. Ζητήστε να δημιουργηθεί ένα γράφημα ή να ενημερωθεί το τρέχον γράφημα.",
+      "success_complete": "✅ Η δημιουργία οπτικοποίησης ολοκληρώθηκε.",
+      "internal_error_routing": "Σφάλμα δρομολόγησης αιτήματος οπτικοποίησης: {error}",
+      "internal_error_generating": "Σφάλμα δημιουργίας οπτικοποίησης: {error}",
+      "internal_error_guided": "Σφάλμα δημιουργίας καθοδηγούμενης οπτικοποίησης: {error}"
+    },
+    "errors": {
+      "visualization_timeout": "Η δημιουργία οπτικοποίησης έληξε χρονικά. Παρακαλώ δοκιμάστε ξανά.",
+      "visualization_generic": "Σφάλμα κατά τη δημιουργία οπτικοποίησης.",
+      "hospital_auth_unavailable": "Η συνεδρία analytics δεν είναι διαθέσιμη στον action server αυτή τη στιγμή. Δοκιμάστε ξανά αφού συνδεθείτε εκ νέου ή δώστε χειροκίνητα νοσοκομείο.",
+      "hospital_timeout": "Το αίτημα καταλόγου παρόχων έληξε χρονικά. Παρακαλώ δοκιμάστε ξανά.",
+      "hospital_service_unavailable": "Η υπηρεσία καταλόγου παρόχων δεν είναι προσωρινά διαθέσιμη. Παρακαλώ δοκιμάστε ξανά σε λίγο.",
+      "hospital_generic": "Δεν ήταν δυνατή η ανάκτηση δεδομένων νοσοκομείων αυτή τη στιγμή. Παρακαλώ δοκιμάστε ξανά.",
+      "hospital_action_generic": "Σφάλμα κατά την εμφάνιση νοσοκομείων.",
+      "metric_definitions_unavailable": "Οι ορισμοί των μετρικών δεν είναι προσωρινά διαθέσιμοι. Παρακαλώ δοκιμάστε ξανά.",
+      "metric_timeout": "Η αναζήτηση μετρικής έληξε χρονικά. Παρακαλώ δοκιμάστε ξανά.",
+      "metric_generic": "Σφάλμα κατά την επεξήγηση μετρικής."
+    },
+    "hospitals": {
+      "country_not_matched": "Δεν μπόρεσα να αντιστοιχίσω τη χώρα '{country}'. Δοκιμάστε κωδικό 2 γραμμάτων όπως ES, MX, DE ή FR.",
+      "none_available": "Δεν βρήκα νοσοκομεία για σύγκριση.",
+      "no_matches": "Δεν βρήκα νοσοκομεία που να ταιριάζουν με τα φίλτρα σας.",
+      "no_matches_with_hint": "Δεν βρήκα νοσοκομεία που να ταιριάζουν με τα φίλτρα σας. Δοκιμάστε πιο σύντομο ή λιγότερο συγκεκριμένο όνομα.",
+      "summary_with_name_filter": "Βρήκα {matched_count} νοσοκομεία που ταιριάζουν σε αυτή τη σελίδα (αναζήτηση='{search}', offset={offset}, limit={limit}); σύνολο παρόχων πριν από το φίλτρο ονόματος: {total_count}.",
+      "summary_general": "Βρήκα {total_count} νοσοκομεία{criteria_text}; εμφανίζονται {shown_start}-{shown_end}.",
+      "criteria_country": "χώρα={country}",
+      "criteria_sort": "ταξινόμηση={sort}",
+      "more_in_page": " (+{more_count} ακόμη σε αυτή τη σελίδα)",
+      "internal_error": "Σφάλμα κατά την εμφάνιση νοσοκομείων: {error}"
+    },
+    "metric": {
+      "missing_metric": "Δεν βρήκα μετρική στο αίτημά σας.",
+      "metric_not_understood": "Δεν κατάλαβα τη μετρική που ζητήσατε.",
+      "metric_unknown_with_suggestions": "Δεν αναγνωρίζω αυτή τη μετρική. Μερικές μετρικές που μπορώ να περιγράψω είναι: {suggestions}.",
+      "metric_unknown": "Δεν αναγνωρίζω αυτή τη μετρική.",
+      "description_not_configured": "Αυτή είναι γνωστή μετρική, αλλά η περιγραφή της δεν έχει ρυθμιστεί ακόμη.",
+      "data_type_with_unit": "Τύπος δεδομένων: {data_type} ({unit}).",
+      "data_type": "Τύπος δεδομένων: {data_type}.",
+      "internal_error": "Σφάλμα κατά την επεξήγηση μετρικής: {error}"
+    },
+    "guided": {
+      "validate_metric_ambiguous": "Βρήκα πολλαπλές πιθανές μετρικές για αυτό το αίτημα. Παρακαλώ εισάγετε πιο συγκεκριμένο κωδικό ή όνομα μετρικής.",
+      "validate_metric_invalid": "Δεν μπόρεσα να αντιστοιχίσω αυτή τη μετρική σε έγκυρη SSOT μετρική. Εισάγετε έγκυρη μετρική όπως DTN, DIDO ή ADMISSION_NIHSS.",
+      "mine_scope_auth_unavailable": "Δεν μπορώ να επιλύσω το 'mine' τώρα επειδή ο action server δεν έχει πρόσβαση στη συνεδρία analytics σας. Δώστε νοσοκομείο χειροκίνητα ή ζητήστε από την ομάδα backend να διορθώσει το action-server analytics auth bridge.",
+      "mine_scope_unknown": "Δεν μπόρεσα να προσδιορίσω το προεπιλεγμένο scope νοσοκομείου σας αυτή τη στιγμή. Δώστε όνομα νοσοκομείου, κωδικό χώρας ή group ID.",
+      "mine_scope_not_found": "Δεν μπόρεσα να προσδιορίσω το προεπιλεγμένο scope νοσοκομείου σας από το 'mine'. Δώστε όνομα νοσοκομείου, κωδικό χώρας ή group ID.",
+      "hospital_name_ambiguous": "Βρήκα πολλαπλά νοσοκομεία που ταιριάζουν με αυτό το όνομα. Παρακαλώ γίνετε πιο συγκεκριμένοι.",
+      "hospital_scope_invalid": "Δεν μπόρεσα να προσδιορίσω το scope νοσοκομείου. Δώστε κωδικό χώρας, όνομα νοσοκομείου, group ID νοσοκομείου ή πείτε all hospitals.",
+      "all_hospitals_label": "Όλα τα νοσοκομεία",
+      "prompt_stroke_type": "Δεν μπόρεσα να αντιστοιχίσω αυτόν τον τύπο εγκεφαλικού. Εισάγετε έγκυρο τύπο ή παραλείψτε.",
+      "prompt_sex": "Δεν μπόρεσα να αντιστοιχίσω αυτήν την τιμή φύλου. Εισάγετε έγκυρη τιμή ή παραλείψτε.",
+      "prompt_group_by": "Δεν μπόρεσα να αντιστοιχίσω αυτό το grouping. Εισάγετε έγκυρο πεδίο grouping ή παραλείψτε.",
+      "prompt_chart_type": "Δεν μπόρεσα να αντιστοιχίσω αυτόν τον τύπο γραφήματος. Εισάγετε έγκυρο τύπο γραφήματος ή παραλείψτε."
+    },
+    "summary": {
+      "complete": "✅ Η δημιουργία οπτικοποίησης ολοκληρώθηκε.",
+      "trace_id": "Trace ID: {trace_id}",
+      "plan_produced_one_chart": "Το πλάνο παρήγαγε 1 γράφημα.",
+      "plan_produced_many_charts": "Το πλάνο παρήγαγε {chart_count} γραφήματα.",
+      "planner_cache_hit": "Cache planner: hit (επαναχρησιμοποίηση προηγούμενου πλάνου).",
+      "planner_cache_miss": "Cache planner: miss (δημιουργήθηκε νέο πλάνο).",
+      "queried_once": "Έκανα ένα ερώτημα στην υπηρεσία analytics.",
+      "queried_many": "Έκανα {actual} ερωτήματα στην υπηρεσία analytics.",
+      "planner_estimate": "Η εκτίμηση του planner ήταν {estimated} αίτημα(τα).",
+      "plan_normalization": "Κανονικοποίηση πλάνου:",
+      "charts_transition": "Γραφήματα: {charts_in} -> {charts_out}",
+      "detail_dropped_charts": "αφαιρέθηκαν {dropped_charts} κενό(ά) γράφημα(τα)",
+      "detail_metrics_transition": "μετρικές {metrics_in} -> {metrics_out}",
+      "detail_dropped_metrics": "αφαιρέθηκαν {dropped_metrics} κενή(ές) μετρική(ές)",
+      "detail_normalized_metric_codes": "κανονικοποιήθηκαν {metric_code_norm} κωδικοί μετρικών",
+      "detail_normalized_chart_types": "κανονικοποιήθηκαν {chart_type_norm} τύποι γραφημάτων",
+      "detail_applied_chart_fallback": "εφαρμόστηκαν {chart_type_fallback} fallback τύπου γραφήματος",
+      "detail_removed_groupby_duplicates": "αφαιρέθηκαν {deduped_groupby} διπλές εγγραφές group-by",
+      "detail_normalized_groupby_fields": "κανονικοποιήθηκαν {normalized_groupby_fields} πεδία canonical group-by",
+      "detail_dropped_groupby_fields": "αφαιρέθηκαν {dropped_groupby_fields} μη έγκυρα πεδία group-by",
+      "detail_cleaned_text_fields": "καθαρίστηκαν {normalized_text} πεδία κειμένου",
+      "no_structural_changes": "Δεν χρειάστηκαν δομικές αλλαγές.",
+      "what_i_queried": "Τι ερωτήματα έστειλα:",
+      "request_count": "{query_count} αίτημα(τα)",
+      "grouped_by": "ομαδοποίηση κατά {groupby}",
+      "across_periods": "σε {periods} χρονική(ές) περίοδο(ους)",
+      "split_by": "διαχωρισμός κατά {filters}",
+      "remaining_batches": "... και {remaining} ακόμα batch(es) ερωτημάτων"
+    }
+  }
+}

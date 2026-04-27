@@ -5,6 +5,7 @@ from uuid import uuid4
 from rasa_sdk import Action  # type: ignore
 
 from src.actions.error_messages import friendly_hospital_error
+from src.actions.i18n import resolve_language_from_tracker, translate
 from src.actions.utils.hospital import extract_hospital_filters
 from src.executors.analytics_center.client import get_analytics_center_client
 from src.util import env as env_util
@@ -66,6 +67,7 @@ class ActionListHospitals(Action):  # pyright: ignore
     ) -> RasaEventList:
         try:
             user_sub = str(tracker.sender_id)
+            language = resolve_language_from_tracker(tracker)
             trace_id = _tracker_trace_id(tracker) or uuid4().hex
             logger.info("Listing hospitals (trace_id=%s)", trace_id or "-")
             filters = extract_hospital_filters(tracker)
@@ -82,7 +84,13 @@ class ActionListHospitals(Action):  # pyright: ignore
                 if resolved_country:
                     filters["country_code"] = resolved_country
                 else:
-                    dispatcher.utter_message(text=f"I couldn't match country '{raw_country}'. Please try a 2-letter code like ES, MX, DE, or FR.")
+                    dispatcher.utter_message(
+                        text=translate(
+                            "action.hospitals.country_not_matched",
+                            language=language,
+                            params={"country": raw_country},
+                        )
+                    )
                     return []
 
             provider_page = client.list_providers(
@@ -97,7 +105,7 @@ class ActionListHospitals(Action):  # pyright: ignore
                 raise_on_error=True,
             )
             if not provider_page:
-                dispatcher.utter_message(text="I couldn't find any hospitals you can compare against.")
+                dispatcher.utter_message(text=translate("action.hospitals.none_available", language=language))
                 return []
 
             providers = provider_page["results"]
@@ -117,9 +125,7 @@ class ActionListHospitals(Action):  # pyright: ignore
                 names = [n for n in names if needle in n.lower()]
 
             if not names:
-                no_match_msg = "I couldn't find any hospitals matching your filters."
-                if isinstance(name_filter, str) and name_filter.strip():
-                    no_match_msg += " Try a shorter or less specific name."
+                no_match_msg = translate("action.hospitals.no_matches_with_hint", language=language) if isinstance(name_filter, str) and name_filter.strip() else translate("action.hospitals.no_matches", language=language)
                 dispatcher.utter_message(text=no_match_msg)
                 return []
 
@@ -129,25 +135,72 @@ class ActionListHospitals(Action):  # pyright: ignore
             country_code = filters.get("country_code")
             sort = filters.get("sort")
             if isinstance(country_code, str) and country_code.strip():
-                criteria.append(f"country={country_code.strip().upper()}")
+                criteria.append(
+                    translate(
+                        "action.hospitals.criteria_country",
+                        language=language,
+                        params={"country": country_code.strip().upper()},
+                    )
+                )
             if isinstance(sort, str) and sort.strip():
-                criteria.append(f"sort={sort.strip()}")
+                criteria.append(
+                    translate(
+                        "action.hospitals.criteria_sort",
+                        language=language,
+                        params={"sort": sort.strip()},
+                    )
+                )
 
             criteria_text = f" ({', '.join(criteria)})" if criteria else ""
 
             if isinstance(name_filter, str) and name_filter.strip():
-                prefix = f"I found {len(names)} matching hospitals on this page (search='{name_filter.strip()}', offset={offset}, limit={limit}); total providers before name filter: {total_count}."
+                prefix = translate(
+                    "action.hospitals.summary_with_name_filter",
+                    language=language,
+                    params={
+                        "matched_count": len(names),
+                        "search": name_filter.strip(),
+                        "offset": offset,
+                        "limit": limit,
+                        "total_count": total_count,
+                    },
+                )
             else:
                 shown_start = offset + 1 if names else 0
                 shown_end = offset + len(names)
-                prefix = f"I found {total_count} hospitals{criteria_text}; showing {shown_start}-{shown_end}."
+                prefix = translate(
+                    "action.hospitals.summary_general",
+                    language=language,
+                    params={
+                        "total_count": total_count,
+                        "criteria_text": criteria_text,
+                        "shown_start": shown_start,
+                        "shown_end": shown_end,
+                    },
+                )
 
-            text_message = prefix + f" {preview}." + (f" (+{more_count} more in this page)" if more_count else "")
+            more_suffix = (
+                translate(
+                    "action.hospitals.more_in_page",
+                    language=language,
+                    params={"more_count": more_count},
+                )
+                if more_count
+                else ""
+            )
+            text_message = prefix + f" {preview}." + more_suffix
             dispatcher.utter_message(text=text_message)
             return []
         except Exception as exc:
             logger.exception("Error listing hospitals")
-            dispatcher.utter_message(text=f"❌ {friendly_hospital_error(exc)}")
+            language = resolve_language_from_tracker(tracker)
+            dispatcher.utter_message(text=f"❌ {friendly_hospital_error(exc, language=language)}")
             if _ECHO_INTERNAL_ERRORS:
-                dispatcher.utter_message(text=f"Error listing hospitals: {str(exc)}")
+                dispatcher.utter_message(
+                    text=translate(
+                        "action.hospitals.internal_error",
+                        language=language,
+                        params={"error": str(exc)},
+                    )
+                )
             return []

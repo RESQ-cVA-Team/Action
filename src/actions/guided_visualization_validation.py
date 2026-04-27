@@ -7,6 +7,7 @@ import socket
 from typing import Any, Dict, List, Optional, Protocol, cast
 from uuid import uuid4
 
+from src.actions.i18n import resolve_language_from_tracker, translate
 from src.actions.ssot_lookup import normalize_text, resolve_catalog_candidates, resolve_metric_candidates
 from src.domain.langchain import schema as S
 from src.executors.analytics_center.client import AnalyticsCenterError, get_analytics_center_client
@@ -249,6 +250,7 @@ def is_skip_signal(slot_value: Any, tracker: Optional[TrackerLike] = None) -> bo
 
 
 def validate_required_metric(slot_value: Any, dispatcher: DispatcherLike, tracker: TrackerLike) -> Dict[str, Any]:
+    language = resolve_language_from_tracker(tracker)
     entities = _latest_entities(tracker)
     source = entities.get("metric") if entities.get("metric") is not None else slot_value
     raw = source if isinstance(source, str) else str(source or "")
@@ -256,9 +258,9 @@ def validate_required_metric(slot_value: Any, dispatcher: DispatcherLike, tracke
     if len(candidates) == 1:
         return {"metric": candidates[0]}
     if len(candidates) > 1:
-        _utter_invalid(dispatcher, "I found multiple possible metrics for that request. Please enter a more specific metric code or name.")
+        _utter_invalid(dispatcher, translate("action.guided.validate_metric_ambiguous", language=language))
         return {"metric": None}
-    _utter_invalid(dispatcher, "I couldn't match that metric to a valid SSOT metric. Please enter a valid metric like DTN, DIDO, or ADMISSION_NIHSS.")
+    _utter_invalid(dispatcher, translate("action.guided.validate_metric_invalid", language=language))
     return {"metric": None}
 
 
@@ -287,6 +289,7 @@ def validate_optional_catalog_slot(
 
 
 def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, tracker: TrackerLike) -> Dict[str, Any]:
+    language = resolve_language_from_tracker(tracker)
     user_sub = tracker.sender_id
     trace_id = _trace_id_from_tracker(tracker) or uuid4().hex
     client = get_analytics_center_client()
@@ -296,7 +299,13 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
     if isinstance(scope_ref_any, str) and scope_ref_any.strip():
         scope_ref_norm = normalize_text(scope_ref_any)
         if scope_ref_norm in ALL_SCOPE_TOKENS:
-            return {"guided_hospital_scope": _json_scope("all", "all", label="All hospitals")}
+            return {
+                "guided_hospital_scope": _json_scope(
+                    "all",
+                    "all",
+                    label=translate("action.guided.all_hospitals_label", language=language),
+                )
+            }
         if scope_ref_norm in MINE_SCOPE_TOKENS:
             process_id, hostname = _runtime_instance_fields()
             logger.info(
@@ -320,20 +329,20 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
                 if exc.status_code == 401 or "cached user access token" in reason.lower() or "user token unavailable" in reason.lower():
                     _utter_invalid(
                         dispatcher,
-                        "I can't resolve 'mine' right now because the action server cannot access your analytics session. Please provide a hospital manually, or ask the backend team to fix the action-server analytics auth bridge.",
+                        translate("action.guided.mine_scope_auth_unavailable", language=language),
                     )
                     return {"guided_hospital_scope": None}
 
                 _utter_invalid(
                     dispatcher,
-                    "I couldn't determine your default hospital scope right now. Please provide a hospital name, country code, or group ID.",
+                    translate("action.guided.mine_scope_unknown", language=language),
                 )
                 return {"guided_hospital_scope": None}
             if mine_scope is not None:
                 return {"guided_hospital_scope": mine_scope}
             _utter_invalid(
                 dispatcher,
-                "I couldn't determine your default hospital scope from 'mine'. Please provide a hospital name, country code, or group ID.",
+                translate("action.guided.mine_scope_not_found", language=language),
             )
             return {"guided_hospital_scope": None}
 
@@ -374,7 +383,7 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
                 return {"guided_hospital_scope": _json_scope("provider_id", provider_id, label=label)}
             return {"guided_hospital_scope": _json_scope("hospital_name", label or hospital_any.strip(), label=label or hospital_any.strip())}
         if len(matches) > 1:
-            _utter_invalid(dispatcher, "I found multiple hospitals matching that name. Please be more specific.")
+            _utter_invalid(dispatcher, translate("action.guided.hospital_name_ambiguous", language=language))
             return {"guided_hospital_scope": None}
 
     group_any = entities.get("group_id") or entities.get("group") or slot_value
@@ -386,9 +395,15 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
     raw_source = scope_ref_any if scope_ref_any is not None else slot_value
     raw = raw_source if isinstance(raw_source, str) else str(raw_source or "")
     if normalize_text(raw) in ALL_SCOPE_TOKENS:
-        return {"guided_hospital_scope": _json_scope("all", "all", label="All hospitals")}
+        return {
+            "guided_hospital_scope": _json_scope(
+                "all",
+                "all",
+                label=translate("action.guided.all_hospitals_label", language=language),
+            )
+        }
 
-    _utter_invalid(dispatcher, "I couldn't determine the hospital scope. Please provide a country code, hospital name, hospital group ID, or say all hospitals.")
+    _utter_invalid(dispatcher, translate("action.guided.hospital_scope_invalid", language=language))
     return {"guided_hospital_scope": None}
 
 

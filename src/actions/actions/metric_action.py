@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Protocol, Text, cast
 from rasa_sdk import Action  # type: ignore
 
 from src.actions.error_messages import friendly_metric_error
+from src.actions.i18n import translate
 from src.actions.utils.metric import extract_kpi, pick_description, resolve_language, suggest_metrics
 from src.shared import ssot_loader
 from src.util import env as env_util
@@ -49,21 +50,27 @@ class ActionExplainMetric(Action):  # pyright: ignore
 
             raw_kpi = extract_kpi(tracker)
             if not raw_kpi:
-                dispatcher.utter_message(text="I couldn't find any metric in your request.")
+                dispatcher.utter_message(text=translate("action.metric.missing_metric", language=language))
                 return []
 
             norm_key = ssot_loader.normalize_metric_text_key(raw_kpi)
             if not norm_key:
-                dispatcher.utter_message(text="I couldn't understand the metric you asked about.")
+                dispatcher.utter_message(text=translate("action.metric.metric_not_understood", language=language))
                 return []
 
             record = _METRIC_TEXT_LOOKUP.get(norm_key)
             if not record:
                 suggestions = suggest_metrics(_METRIC_TEXT_LOOKUP, max_items=5)
                 if suggestions:
-                    dispatcher.utter_message(text=("I don't recognise that metric. " + "Here are a few metrics I can describe: " + ", ".join(suggestions) + "."))
+                    dispatcher.utter_message(
+                        text=translate(
+                            "action.metric.metric_unknown_with_suggestions",
+                            language=language,
+                            params={"suggestions": ", ".join(suggestions)},
+                        )
+                    )
                 else:
-                    dispatcher.utter_message(text="I don't recognise that metric.")
+                    dispatcher.utter_message(text=translate("action.metric.metric_unknown", language=language))
                 return []
 
             canonical = cast(str, record.get("canonical") or "")
@@ -80,7 +87,7 @@ class ActionExplainMetric(Action):  # pyright: ignore
                         break
 
             if not canonical or not description_text:
-                dispatcher.utter_message(text="This is a known metric, but its description is not configured yet.")
+                dispatcher.utter_message(text=translate("action.metric.description_not_configured", language=language))
                 return []
 
             display_name = ssot_loader.get_metric_display_name(canonical)
@@ -94,15 +101,34 @@ class ActionExplainMetric(Action):  # pyright: ignore
             parts: List[str] = [header, description_text]
             if data_type:
                 if unit:
-                    parts.append(f"Data type: {data_type} ({unit}).")
+                    parts.append(
+                        translate(
+                            "action.metric.data_type_with_unit",
+                            language=language,
+                            params={"data_type": data_type, "unit": unit},
+                        )
+                    )
                 else:
-                    parts.append(f"Data type: {data_type}.")
+                    parts.append(
+                        translate(
+                            "action.metric.data_type",
+                            language=language,
+                            params={"data_type": data_type},
+                        )
+                    )
 
             dispatcher.utter_message(text=" ".join(parts))
             return []
         except Exception as e:
             logger.exception("Error explaining metric")
-            dispatcher.utter_message(text=f"❌ {friendly_metric_error(e)}")
+            language = resolve_language(tracker)
+            dispatcher.utter_message(text=f"❌ {friendly_metric_error(e, language=language)}")
             if _ECHO_INTERNAL_ERRORS:
-                dispatcher.utter_message(text=f"Error explaining metric: {str(e)}")
+                dispatcher.utter_message(
+                    text=translate(
+                        "action.metric.internal_error",
+                        language=language,
+                        params={"error": str(e)},
+                    )
+                )
             return []

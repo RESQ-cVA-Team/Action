@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Literal, Optional, TypedDict, cast
 
 from langchain.prompts import ChatPromptTemplate
 
+from src.actions.i18n import translate
 from src.planners.langchain.llm_factory import create_chat_llm
 from src.shared import ssot_loader
 from src.util import env as env_util
@@ -341,11 +342,15 @@ def format_execution_summary(
     summary: Dict[str, Any] | Any,
     show_normalization: bool = True,
     planner_diagnostics: Optional[Dict[str, Any]] = None,
+    language: Optional[str] = None,
 ) -> str:
+    def t(key: str, default: str, params: Optional[Dict[str, Any]] = None) -> str:
+        return translate(key, language=language, params=params, default=default)
+
     if hasattr(summary, "model_dump") and callable(getattr(summary, "model_dump")):
         summary = cast(Dict[str, Any], summary.model_dump())
     elif not isinstance(summary, dict):
-        return "✅ Visualization generation complete."
+        return t("action.summary.complete", "✅ Visualization generation complete.")
 
     estimated = summary.get("estimated_queries")
     actual = summary.get("actual_queries")
@@ -356,16 +361,16 @@ def format_execution_summary(
     batches_any = summary.get("batches")
     batches: List[Any] = cast(List[Any], batches_any) if isinstance(batches_any, list) else []
 
-    lines: List[str] = ["✅ Visualization generation complete."]
+    lines: List[str] = [t("action.summary.complete", "✅ Visualization generation complete.")]
 
     if isinstance(trace_id, str) and trace_id.strip():
-        lines.append(f"Trace ID: {trace_id.strip()}")
+        lines.append(t("action.summary.trace_id", "Trace ID: {trace_id}", {"trace_id": trace_id.strip()}))
 
     if isinstance(chart_count, int):
         if chart_count == 1:
-            lines.append("Plan produced 1 chart.")
+            lines.append(t("action.summary.plan_produced_one_chart", "Plan produced 1 chart."))
         else:
-            lines.append(f"Plan produced {chart_count} charts.")
+            lines.append(t("action.summary.plan_produced_many_charts", "Plan produced {chart_count} charts.", {"chart_count": chart_count}))
 
     if isinstance(planner_diagnostics, dict):
         cache_hit = planner_diagnostics.get("last_call_cache_hit")
@@ -378,9 +383,9 @@ def format_execution_summary(
         key_version = planner_diagnostics.get("key_version")
 
         if cache_hit is True:
-            lines.append("Planner cache: hit (reused a previously generated plan).")
+            lines.append(t("action.summary.planner_cache_hit", "Planner cache: hit (reused a previously generated plan)."))
         elif cache_hit is False:
-            lines.append("Planner cache: miss (generated a fresh plan).")
+            lines.append(t("action.summary.planner_cache_miss", "Planner cache: miss (generated a fresh plan)."))
 
         stats: List[str] = []
         if isinstance(total_hits, int) and isinstance(total_misses, int):
@@ -399,12 +404,12 @@ def format_execution_summary(
 
     if isinstance(actual, int):
         if actual == 1:
-            lines.append("I queried the analytics service once.")
+            lines.append(t("action.summary.queried_once", "I queried the analytics service once."))
         else:
-            lines.append(f"I queried the analytics service {actual} times.")
+            lines.append(t("action.summary.queried_many", "I queried the analytics service {actual} times.", {"actual": actual}))
 
         if isinstance(estimated, int) and estimated != actual:
-            lines.append(f"Planner estimate was {estimated} request(s).")
+            lines.append(t("action.summary.planner_estimate", "Planner estimate was {estimated} request(s).", {"estimated": estimated}))
 
     if show_normalization and normalization is not None:
         charts_in = normalization.get("charts_in")
@@ -422,38 +427,105 @@ def format_execution_summary(
         normalized_text = normalization.get("normalized_text_fields")
 
         if isinstance(charts_in, int) and isinstance(charts_out, int):
-            lines.append("Plan normalization:")
-            lines.append(f" - Charts: {charts_in} → {charts_out}")
+            lines.append(t("action.summary.plan_normalization", "Plan normalization:"))
+            lines.append(
+                " - "
+                + t(
+                    "action.summary.charts_transition",
+                    "Charts: {charts_in} -> {charts_out}",
+                    {"charts_in": charts_in, "charts_out": charts_out},
+                )
+            )
 
             details: List[str] = []
             if isinstance(dropped_charts, int) and dropped_charts > 0:
-                details.append(f"dropped {dropped_charts} empty chart(s)")
+                details.append(
+                    t(
+                        "action.summary.detail_dropped_charts",
+                        "dropped {dropped_charts} empty chart(s)",
+                        {"dropped_charts": dropped_charts},
+                    )
+                )
             if isinstance(metrics_in, int) and isinstance(metrics_out, int) and metrics_in != metrics_out:
-                details.append(f"metrics {metrics_in} → {metrics_out}")
+                details.append(
+                    t(
+                        "action.summary.detail_metrics_transition",
+                        "metrics {metrics_in} -> {metrics_out}",
+                        {"metrics_in": metrics_in, "metrics_out": metrics_out},
+                    )
+                )
             if isinstance(dropped_metrics, int) and dropped_metrics > 0:
-                details.append(f"dropped {dropped_metrics} empty metric(s)")
+                details.append(
+                    t(
+                        "action.summary.detail_dropped_metrics",
+                        "dropped {dropped_metrics} empty metric(s)",
+                        {"dropped_metrics": dropped_metrics},
+                    )
+                )
             if isinstance(metric_code_norm, int) and metric_code_norm > 0:
-                details.append(f"normalized {metric_code_norm} metric code(s)")
+                details.append(
+                    t(
+                        "action.summary.detail_normalized_metric_codes",
+                        "normalized {metric_code_norm} metric code(s)",
+                        {"metric_code_norm": metric_code_norm},
+                    )
+                )
             if isinstance(chart_type_norm, int) and chart_type_norm > 0:
-                details.append(f"normalized {chart_type_norm} chart type(s)")
+                details.append(
+                    t(
+                        "action.summary.detail_normalized_chart_types",
+                        "normalized {chart_type_norm} chart type(s)",
+                        {"chart_type_norm": chart_type_norm},
+                    )
+                )
             if isinstance(chart_type_fallback, int) and chart_type_fallback > 0:
-                details.append(f"applied {chart_type_fallback} chart type fallback(s)")
+                details.append(
+                    t(
+                        "action.summary.detail_applied_chart_fallback",
+                        "applied {chart_type_fallback} chart type fallback(s)",
+                        {"chart_type_fallback": chart_type_fallback},
+                    )
+                )
             if isinstance(deduped_groupby, int) and deduped_groupby > 0:
-                details.append(f"removed {deduped_groupby} duplicate group-by entries")
+                details.append(
+                    t(
+                        "action.summary.detail_removed_groupby_duplicates",
+                        "removed {deduped_groupby} duplicate group-by entries",
+                        {"deduped_groupby": deduped_groupby},
+                    )
+                )
             if isinstance(normalized_groupby_fields, int) and normalized_groupby_fields > 0:
-                details.append(f"normalized {normalized_groupby_fields} canonical group-by field(s)")
+                details.append(
+                    t(
+                        "action.summary.detail_normalized_groupby_fields",
+                        "normalized {normalized_groupby_fields} canonical group-by field(s)",
+                        {"normalized_groupby_fields": normalized_groupby_fields},
+                    )
+                )
             if isinstance(dropped_groupby_fields, int) and dropped_groupby_fields > 0:
-                details.append(f"dropped {dropped_groupby_fields} invalid group-by field(s)")
+                details.append(
+                    t(
+                        "action.summary.detail_dropped_groupby_fields",
+                        "dropped {dropped_groupby_fields} invalid group-by field(s)",
+                        {"dropped_groupby_fields": dropped_groupby_fields},
+                    )
+                )
             if isinstance(normalized_text, int) and normalized_text > 0:
-                details.append(f"cleaned {normalized_text} text field(s)")
+                details.append(
+                    t(
+                        "action.summary.detail_cleaned_text_fields",
+                        "cleaned {normalized_text} text field(s)",
+                        {"normalized_text": normalized_text},
+                    )
+                )
 
             if details:
                 lines.append(" - " + "; ".join(details))
             else:
-                lines.append(" - No structural changes were needed.")
+                lines.append(" - " + t("action.summary.no_structural_changes", "No structural changes were needed."))
 
     if batches:
-        lines.append("What I queried:")
+        lines.append(t("action.summary.what_i_queried", "What I queried:"))
         max_batches = 4
         for idx, batch_any in enumerate(batches[:max_batches], start=1):
             if not isinstance(batch_any, dict):
@@ -469,18 +541,31 @@ def format_execution_summary(
 
             parts: List[str] = [f"{idx})"]
             if isinstance(query_count, int):
-                parts.append(f"{query_count} request(s)")
+                parts.append(t("action.summary.request_count", "{query_count} request(s)", {"query_count": query_count}))
             if isinstance(groupby, str) and groupby:
-                parts.append(f"grouped by {groupby}")
+                parts.append(t("action.summary.grouped_by", "grouped by {groupby}", {"groupby": groupby}))
             if isinstance(periods, int) and periods > 0:
-                parts.append(f"across {periods} time period(s)")
+                parts.append(t("action.summary.across_periods", "across {periods} time period(s)", {"periods": periods}))
             if filter_names:
-                parts.append("split by " + ", ".join(filter_names))
+                parts.append(
+                    t(
+                        "action.summary.split_by",
+                        "split by {filters}",
+                        {"filters": ", ".join(filter_names)},
+                    )
+                )
 
             lines.append(" - " + " | ".join(parts))
 
         remaining = len(batches) - max_batches
         if remaining > 0:
-            lines.append(f" - ... and {remaining} more query batch(es)")
+            lines.append(
+                " - "
+                + t(
+                    "action.summary.remaining_batches",
+                    "... and {remaining} more query batch(es)",
+                    {"remaining": remaining},
+                )
+            )
 
     return "\n".join(lines)

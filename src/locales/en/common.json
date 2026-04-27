@@ -1,0 +1,94 @@
+{
+  "action": {
+    "common": {
+      "error_with_context": "❌ {message} (Error code: {code}, Trace ID: {trace_id})"
+    },
+    "visualization": {
+      "clarify_default": "I need a bit more detail before I can generate a visualization.",
+      "reject_default": "This request is outside the visualization flow.",
+      "non_visualization_intent": "I can help with visualization requests. Try asking to generate a chart, or ask to update the current chart.",
+      "success_complete": "✅ Visualization generation complete.",
+      "internal_error_routing": "Error routing visualization request: {error}",
+      "internal_error_generating": "Error generating visualization: {error}",
+      "internal_error_guided": "Error generating guided visualization: {error}"
+    },
+    "errors": {
+      "visualization_timeout": "Visualization generation timed out. Please try again.",
+      "visualization_generic": "Error generating visualization.",
+      "hospital_auth_unavailable": "Your analytics session is not available to the action server right now. Please try again after signing in again, or provide a hospital manually.",
+      "hospital_timeout": "The provider directory request timed out. Please try again.",
+      "hospital_service_unavailable": "The provider directory service is temporarily unavailable. Please try again in a moment.",
+      "hospital_generic": "Could not retrieve hospital data right now. Please try again.",
+      "hospital_action_generic": "Error listing hospitals.",
+      "metric_definitions_unavailable": "Metric definitions are temporarily unavailable. Please try again.",
+      "metric_timeout": "Metric lookup timed out. Please try again.",
+      "metric_generic": "Error explaining metric."
+    },
+    "hospitals": {
+      "country_not_matched": "I couldn't match country '{country}'. Please try a 2-letter code like ES, MX, DE, or FR.",
+      "none_available": "I couldn't find any hospitals you can compare against.",
+      "no_matches": "I couldn't find any hospitals matching your filters.",
+      "no_matches_with_hint": "I couldn't find any hospitals matching your filters. Try a shorter or less specific name.",
+      "summary_with_name_filter": "I found {matched_count} matching hospitals on this page (search='{search}', offset={offset}, limit={limit}); total providers before name filter: {total_count}.",
+      "summary_general": "I found {total_count} hospitals{criteria_text}; showing {shown_start}-{shown_end}.",
+      "criteria_country": "country={country}",
+      "criteria_sort": "sort={sort}",
+      "more_in_page": " (+{more_count} more in this page)",
+      "internal_error": "Error listing hospitals: {error}"
+    },
+    "metric": {
+      "missing_metric": "I couldn't find any metric in your request.",
+      "metric_not_understood": "I couldn't understand the metric you asked about.",
+      "metric_unknown_with_suggestions": "I don't recognise that metric. Here are a few metrics I can describe: {suggestions}.",
+      "metric_unknown": "I don't recognise that metric.",
+      "description_not_configured": "This is a known metric, but its description is not configured yet.",
+      "data_type_with_unit": "Data type: {data_type} ({unit}).",
+      "data_type": "Data type: {data_type}.",
+      "internal_error": "Error explaining metric: {error}"
+    },
+    "guided": {
+      "validate_metric_ambiguous": "I found multiple possible metrics for that request. Please enter a more specific metric code or name.",
+      "validate_metric_invalid": "I couldn't match that metric to a valid SSOT metric. Please enter a valid metric like DTN, DIDO, or ADMISSION_NIHSS.",
+      "mine_scope_auth_unavailable": "I can't resolve 'mine' right now because the action server cannot access your analytics session. Please provide a hospital manually, or ask the backend team to fix the action-server analytics auth bridge.",
+      "mine_scope_unknown": "I couldn't determine your default hospital scope right now. Please provide a hospital name, country code, or group ID.",
+      "mine_scope_not_found": "I couldn't determine your default hospital scope from 'mine'. Please provide a hospital name, country code, or group ID.",
+      "hospital_name_ambiguous": "I found multiple hospitals matching that name. Please be more specific.",
+      "hospital_scope_invalid": "I couldn't determine the hospital scope. Please provide a country code, hospital name, hospital group ID, or say all hospitals.",
+      "all_hospitals_label": "All hospitals",
+      "prompt_stroke_type": "I couldn't match that stroke type. Please enter a valid stroke type or skip.",
+      "prompt_sex": "I couldn't match that sex value. Please enter a valid value or skip.",
+      "prompt_group_by": "I couldn't match that grouping. Please enter a valid grouping field or skip.",
+      "prompt_chart_type": "I couldn't match that chart type. Please enter a valid chart type or skip."
+    },
+    "summary": {
+      "complete": "✅ Visualization generation complete.",
+      "trace_id": "Trace ID: {trace_id}",
+      "plan_produced_one_chart": "Plan produced 1 chart.",
+      "plan_produced_many_charts": "Plan produced {chart_count} charts.",
+      "planner_cache_hit": "Planner cache: hit (reused a previously generated plan).",
+      "planner_cache_miss": "Planner cache: miss (generated a fresh plan).",
+      "queried_once": "I queried the analytics service once.",
+      "queried_many": "I queried the analytics service {actual} times.",
+      "planner_estimate": "Planner estimate was {estimated} request(s).",
+      "plan_normalization": "Plan normalization:",
+      "charts_transition": "Charts: {charts_in} -> {charts_out}",
+      "detail_dropped_charts": "dropped {dropped_charts} empty chart(s)",
+      "detail_metrics_transition": "metrics {metrics_in} -> {metrics_out}",
+      "detail_dropped_metrics": "dropped {dropped_metrics} empty metric(s)",
+      "detail_normalized_metric_codes": "normalized {metric_code_norm} metric code(s)",
+      "detail_normalized_chart_types": "normalized {chart_type_norm} chart type(s)",
+      "detail_applied_chart_fallback": "applied {chart_type_fallback} chart type fallback(s)",
+      "detail_removed_groupby_duplicates": "removed {deduped_groupby} duplicate group-by entries",
+      "detail_normalized_groupby_fields": "normalized {normalized_groupby_fields} canonical group-by field(s)",
+      "detail_dropped_groupby_fields": "dropped {dropped_groupby_fields} invalid group-by field(s)",
+      "detail_cleaned_text_fields": "cleaned {normalized_text} text field(s)",
+      "no_structural_changes": "No structural changes were needed.",
+      "what_i_queried": "What I queried:",
+      "request_count": "{query_count} request(s)",
+      "grouped_by": "grouped by {groupby}",
+      "across_periods": "across {periods} time period(s)",
+      "split_by": "split by {filters}",
+      "remaining_batches": "... and {remaining} more query batch(es)"
+    }
+  }
+}
