@@ -19,7 +19,6 @@ from src.actions.long_action.long_action_context import LongActionContext
 from src.domain.langchain import schema as lang_schema
 from src.executors import execute_plan_async
 from src.executors.orchestration.plan_executor import VisualizationExecutionError
-from src.executors.planning.origin_scope_resolver import OriginScopeResolutionError, resolve_plan_metric_origins
 from src.planners.langchain import pipeline as lang_pipeline
 from src.planners.langchain.request_orchestrator import orchestrate_visualization_request
 from src.util import env as env_util
@@ -41,19 +40,8 @@ _VISUALIZATION_THREAD_INTENTS = {
 _VISUALIZATION_PLAN_TYPE = "visualization_plan"
 _VISUALIZATION_RESPONSE_SCHEMA_VERSION = 1
 
-_planner_retries_raw = env_util.get_env("ACTIONS_PLANNER_MAX_RETRIES", default="2") or "2"
-try:
-    _planner_max_retries = max(0, int(_planner_retries_raw))
-except Exception:
-    _planner_max_retries = 2
-_PLANNER_MAX_RETRIES = _planner_max_retries
-
-_executor_concurrency_raw = env_util.get_env("ACTIONS_EXECUTOR_MAX_CONCURRENCY", default="4") or "4"
-try:
-    _executor_max_concurrency = max(1, int(_executor_concurrency_raw))
-except Exception:
-    _executor_max_concurrency = 4
-_EXECUTOR_MAX_CONCURRENCY = _executor_max_concurrency
+_PLANNER_MAX_RETRIES = 2
+_EXECUTOR_MAX_CONCURRENCY = 4
 
 DomainDict = Dict[str, Any]
 RasaEventList = List[Any]
@@ -547,7 +535,6 @@ class ActionOneShotGenerateVisualization(LongAction):
             planner_question = str(request_ctx.get("planner_question") or request_ctx.get("user_message") or "")
             extracted_entities = cast(Dict[str, Any], request_ctx.get("extracted_entities") or {})
             override_language = cast(Optional[str], request_ctx.get("override_language"))
-            user_sub = str(request_ctx.get("user_sub") or ctx.sender_id)
 
             prepared_plan = lang_pipeline.generate_analysis_plan(
                 question=planner_question,
@@ -558,23 +545,6 @@ class ActionOneShotGenerateVisualization(LongAction):
                 trace_id=trace_id,
                 progress_cb=None,
             )
-
-            try:
-                prepared_plan = resolve_plan_metric_origins(plan=prepared_plan, user_sub=user_sub, trace_id=trace_id)
-            except OriginScopeResolutionError as exc:
-                ctx.say(
-                    json_message={
-                        "type": "visualization_query_decision",
-                        "trace_id": trace_id,
-                        "decision": "clarify",
-                        "reason": "origin_scope_resolution",
-                        "clarification_type": exc.clarification_type,
-                        "clarification_options": exc.clarification_options,
-                        "message": str(exc),
-                    }
-                )
-                ctx.say(text=str(exc))
-                return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", True)], proceed=False)
 
             ctx.tracker_snapshot[_INTERNAL_PREPARED_PLAN_KEY] = prepared_plan
             ctx.tracker_snapshot[_INTERNAL_PLANNER_DIAGNOSTICS_KEY] = lang_pipeline.get_plan_cache_diagnostics()
@@ -686,17 +656,6 @@ class ActionOneShotGenerateVisualization(LongAction):
                     trace_id=trace_id,
                     progress_cb=progress,
                 )
-                try:
-                    plan_obj = resolve_plan_metric_origins(plan=plan_obj, user_sub=user_sub, trace_id=trace_id)
-                except OriginScopeResolutionError as exc:
-                    raise VisualizationExecutionError(
-                        user_message=str(exc),
-                        reason="origin_scope_resolution",
-                        code="EXEC_ORIGIN_SCOPE",
-                        trace_id=trace_id,
-                        clarification_type=exc.clarification_type,
-                        clarification_options=exc.clarification_options,
-                    ) from exc
                 planner_diagnostics = lang_pipeline.get_plan_cache_diagnostics()
 
             ctx.say(

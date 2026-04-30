@@ -10,6 +10,7 @@ from src.domain.langchain.schema import (
     GroupByTime,
     MetricSpec,
     OriginScopeSpec,
+    SexFilter,
     StatisticalTestSpec,
     TimeWindow,
 )
@@ -74,6 +75,42 @@ def example_dtn_distribution_line() -> Tuple[str, str]:
         statistical_tests=None,
     )
     user = "USER_UTTERANCE:\nShow me a line graph of DTN\n\nENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
+def example_dtn_males_only_filter() -> Tuple[str, str]:
+    detected_entities = {"sex": ["MALE"], "metric": ["DTN"], "chart_type": ["LINE"]}
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="LINE",
+                filters=SexFilter(value="MALE"),
+                group_by=None,
+                metrics=[MetricSpec(metric="DTN")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = "USER_UTTERANCE:\nShow me a line graph of DTN for males only\n\nENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
+def example_dtn_females_only_filter() -> Tuple[str, str]:
+    detected_entities = {"sex": ["FEMALE"], "metric": ["DTN"], "chart_type": ["LINE"]}
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="LINE",
+                filters=SexFilter(value="FEMALE"),
+                group_by=None,
+                metrics=[MetricSpec(metric="DTN")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = "USER_UTTERANCE:\nShow me a line graph of DTN for females only\n\nENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
     assistant = plan.model_dump_json(indent=2)
     return user, assistant
 
@@ -275,6 +312,8 @@ def get_few_shot_examples() -> List[Dict[str, str]]:
         example_two_separate_charts(),
         example_dtn_last_6_months_by_sex(),
         example_dtn_distribution_line(),
+        example_dtn_males_only_filter(),
+        example_dtn_females_only_filter(),
         example_dtn_by_first_contact_place(),
         example_dtn_by_sex(),
         example_dtn_by_sex_and_stroke(),
