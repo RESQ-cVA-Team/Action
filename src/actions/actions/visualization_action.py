@@ -7,15 +7,15 @@ from rasa_sdk import Action  # type: ignore
 from rasa_sdk.events import FollowupAction, SlotSet  # type: ignore
 
 from src.actions.error_messages import visualization_error_payload
-from src.actions.i18n import resolve_language, translate
-from src.actions.long_action.long_action import LongAction, PreworkResult
-from src.actions.long_action.long_action_context import LongActionContext
-from src.actions.utils.visualization import (
+from src.actions.helpers.visualization import (
     extract_entities_from_latest_message,
     format_execution_summary,
     resolve_override_language,
     serialize_plan_for_frontend,
 )
+from src.actions.i18n import resolve_language, translate
+from src.actions.long_action.long_action import LongAction, PreworkResult
+from src.actions.long_action.long_action_context import LongActionContext
 from src.domain.langchain import schema as lang_schema
 from src.executors import execute_plan_async
 from src.executors.orchestration.plan_executor import VisualizationExecutionError
@@ -38,6 +38,8 @@ _VISUALIZATION_THREAD_INTENTS = {
     "update_visualization",
     "clarify_visualization",
 }
+_VISUALIZATION_PLAN_TYPE = "visualization_plan"
+_VISUALIZATION_RESPONSE_SCHEMA_VERSION = 1
 
 _planner_retries_raw = env_util.get_env("ACTIONS_PLANNER_MAX_RETRIES", default="2") or "2"
 try:
@@ -138,22 +140,124 @@ def _collect_visualization_thread_messages(events: List[Dict[str, Any]], fallbac
     if not user_events:
         return recent_messages
 
-    start_idx = 0
-    for idx in range(len(user_events) - 1, -1, -1):
-        _, intent_name = user_events[idx]
-        if intent_name and intent_name not in _VISUALIZATION_THREAD_INTENTS:
-            start_idx = idx + 1
-            break
-
-    thread_slice = user_events[start_idx:]
-    has_visual_signal = any(intent_name in _VISUALIZATION_THREAD_INTENTS for _, intent_name in thread_slice)
-    if not has_visual_signal:
+    anchor_user_idx = _find_latest_visualization_anchor_user_ordinal(events)
+    if anchor_user_idx < 0:
         return recent_messages
 
+    thread_slice = user_events[anchor_user_idx:]
     thread_messages = [text for text, _ in thread_slice]
     if len(thread_messages) > fallback_limit:
         thread_messages = thread_messages[-fallback_limit:]
     return thread_messages or recent_messages
+
+
+def _extract_bot_custom_payload(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    custom_any = event.get("custom")
+    if isinstance(custom_any, dict):
+        return cast(Dict[str, Any], custom_any)
+
+    data_any = event.get("data")
+    data = cast(Dict[str, Any], data_any) if isinstance(data_any, dict) else {}
+    nested_custom_any = data.get("custom")
+    if isinstance(nested_custom_any, dict):
+        return cast(Dict[str, Any], nested_custom_any)
+
+    return None
+
+
+def _is_visualization_payload(payload: Dict[str, Any]) -> bool:
+    payload_type_any = payload.get("type")
+    if isinstance(payload_type_any, str) and payload_type_any.strip() == _VISUALIZATION_PLAN_TYPE:
+        return True
+
+    schema_version_any = payload.get("schema_version")
+    charts_any = payload.get("charts")
+    return schema_version_any == _VISUALIZATION_RESPONSE_SCHEMA_VERSION and isinstance(charts_any, list)
+
+
+def _event_has_visualization_signal(event: Dict[str, Any]) -> bool:
+    event_name_any = event.get("event")
+    event_name = event_name_any.strip() if isinstance(event_name_any, str) else ""
+    if event_name == "user":
+        return _extract_intent_name_from_user_event(event) in _VISUALIZATION_THREAD_INTENTS
+
+    if event_name == "bot":
+        payload = _extract_bot_custom_payload(event)
+        if payload is not None and _is_visualization_payload(payload):
+            return True
+
+    return False
+
+
+def _find_latest_visualization_anchor_user_ordinal(events: List[Dict[str, Any]]) -> int:
+    signal_idx = -1
+    for idx in range(len(events) - 1, -1, -1):
+        if _event_has_visualization_signal(events[idx]):
+            signal_idx = idx
+            break
+
+    if signal_idx < 0:
+        return -1
+
+    user_ordinal = -1
+    for idx, event in enumerate(events):
+        if event.get("event") == "user":
+            user_ordinal += 1
+        if idx == signal_idx:
+            break
+
+    for idx in range(signal_idx, -1, -1):
+        ev = events[idx]
+        if ev.get("event") != "user":
+            continue
+
+        text_any = ev.get("text")
+        if isinstance(text_any, str) and text_any.strip():
+            return user_ordinal
+
+        user_ordinal -= 1
+
+    return -1
+
+
+def _collect_latest_visualization_plan_summary(events: List[Dict[str, Any]]) -> Optional[str]:
+    for idx in range(len(events) - 1, -1, -1):
+        event = events[idx]
+        if event.get("event") != "bot":
+            continue
+
+        payload = _extract_bot_custom_payload(event)
+        if not isinstance(payload, dict):
+            continue
+
+        payload_type_any = payload.get("type")
+        payload_type = payload_type_any.strip() if isinstance(payload_type_any, str) else ""
+        if payload_type != _VISUALIZATION_PLAN_TYPE:
+            continue
+
+        plan_any = payload.get("plan")
+        plan = cast(Dict[str, Any], plan_any) if isinstance(plan_any, dict) else {}
+
+        charts_any = plan.get("charts")
+        charts_list = cast(List[Any], charts_any) if isinstance(charts_any, list) else []
+        chart_count = len(charts_list)
+
+        statistical_tests_any = plan.get("statistical_tests")
+        statistical_tests_list = cast(List[Any], statistical_tests_any) if isinstance(statistical_tests_any, list) else []
+        stats_count = len(statistical_tests_list)
+
+        trace_id_any = payload.get("trace_id")
+        trace_id = trace_id_any.strip() if isinstance(trace_id_any, str) and trace_id_any.strip() else "unknown"
+
+        compact_plan_json: str
+        try:
+            compact_plan_json = json.dumps(plan, ensure_ascii=False)
+        except Exception:
+            compact_plan_json = "{}"
+
+        return f"Latest visualization plan context (trace_id={trace_id}, charts={chart_count}, statistical_tests={stats_count}):\n{compact_plan_json}"
+
+    return None
 
 
 class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
@@ -269,8 +373,17 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
     extracted_entities = extract_entities_from_latest_message(latest_msg)
     override_language = resolve_override_language(latest_meta, ctx.slots)
     language = resolve_language(metadata=latest_meta, slots=ctx.slots)
-    conversation_history = _collect_visualization_thread_messages(ctx.events, fallback_limit=12)
+    events = ctx.events
+    conversation_history = _collect_visualization_thread_messages(events, fallback_limit=12)
+    latest_plan_summary = _collect_latest_visualization_plan_summary(events)
+
     planner_question = "\n".join([m for m in conversation_history if m.strip()]).strip() or ctx.text
+    if latest_plan_summary:
+        planner_question = (f"{latest_plan_summary}\n\nConversation context (oldest to newest user turns):\n{planner_question}").strip()
+
+    update_target_trace_id_any = latest_meta.get("update_target_trace_id")
+    update_target_trace_id = update_target_trace_id_any.strip() if isinstance(update_target_trace_id_any, str) and update_target_trace_id_any.strip() else None
+
     return {
         "user_message": ctx.text,
         "planner_question": planner_question,
@@ -281,6 +394,8 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
         "override_language": override_language,
         "language": language,
         "conversation_history": conversation_history,
+        "latest_plan_summary": latest_plan_summary,
+        "update_target_trace_id": update_target_trace_id,
     }
 
 

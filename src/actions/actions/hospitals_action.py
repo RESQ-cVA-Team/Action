@@ -5,8 +5,8 @@ from uuid import uuid4
 from rasa_sdk import Action  # type: ignore
 
 from src.actions.error_messages import friendly_hospital_error
+from src.actions.helpers.hospital import extract_hospital_filters
 from src.actions.i18n import resolve_language_from_tracker, translate
-from src.actions.utils.hospital import extract_hospital_filters
 from src.executors.analytics_center.client import get_analytics_center_client
 from src.util import env as env_util
 

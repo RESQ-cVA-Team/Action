@@ -4,8 +4,8 @@ from typing import Any, Dict, List, Optional, Protocol, Text, cast
 from rasa_sdk import Action  # type: ignore
 
 from src.actions.error_messages import friendly_metric_error
+from src.actions.helpers.metric import extract_kpi, pick_description, resolve_language, suggest_metrics
 from src.actions.i18n import translate
-from src.actions.utils.metric import extract_kpi, pick_description, resolve_language, suggest_metrics
 from src.shared import ssot_loader
 from src.util import env as env_util
 
