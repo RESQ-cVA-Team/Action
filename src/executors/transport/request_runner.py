@@ -89,12 +89,48 @@ async def run_graphql_request(
         logger.error("[plan_executor] GraphQL errors returned (trace_id=%s, count=%s)", trace_label, error_count)
 
     if not metrics_payload:
+        logger.warning(
+            "[plan_executor] GraphQL response had no metrics payload (trace_id=%s, groupBy=%s, labels=%s, hash=%s, has_errors=%s)",
+            trace_label,
+            group_by_field,
+            " - ".join([part for part in label_parts if part]) or "(none)",
+            q_hash,
+            bool(getattr(resp, "errors", None)),
+        )
         return []
 
-    return map_metrics_payload_to_series(
+    metric_count = 0
+    kpi_group_count = 0
+    try:
+        metric_count = len(metrics_payload)
+        for metric in metrics_payload.values():
+            kpi_groups = getattr(metric, "kpi_group", None)
+            if kpi_groups is None:
+                continue
+            try:
+                kpi_group_count += len(kpi_groups)
+            except Exception:
+                kpi_group_count += 1
+    except Exception:
+        metric_count = 0
+
+    series = map_metrics_payload_to_series(
         metrics_payload=metrics_payload,
         label_parts=label_parts,
         include_metric_alias=include_metric_alias,
         group_by_field=group_by_field,
         add_time_period_labels=add_time_period_labels,
     )
+
+    if not series:
+        logger.warning(
+            "[plan_executor] Metrics payload mapped to zero series (trace_id=%s, groupBy=%s, labels=%s, hash=%s, metrics=%s, kpi_groups=%s)",
+            trace_label,
+            group_by_field,
+            " - ".join([part for part in label_parts if part]) or "(none)",
+            q_hash,
+            metric_count,
+            kpi_group_count,
+        )
+
+    return series

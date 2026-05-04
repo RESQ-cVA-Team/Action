@@ -674,8 +674,8 @@ class ActionOneShotGenerateVisualization(LongAction):
                 summary_cb=on_summary,
                 trace_id=trace_id,
             )
-            visualization_json = cast(Any, visualization).model_dump_json()
-            ctx.say(json_message=json.loads(cast(str, visualization_json)))
+            visualization_payload_any = cast(Any, visualization).model_dump(mode="json")
+            ctx.say(json_message=cast(Dict[str, Any], visualization_payload_any))
             completed_successfully = True
         except Exception as e:
             if isinstance(e, VisualizationExecutionError) and e.reason == "origin_scope_resolution":

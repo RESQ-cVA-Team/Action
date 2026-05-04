@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Dict, List, Optional, Text, cast
 from uuid import uuid4
@@ -54,7 +53,7 @@ def _normalize_trace_id(value: Any) -> Optional[str]:
 
 
 def _tracker_trace_id(tracker: TrackerLike) -> Optional[str]:
-    latest = tracker.latest_message if isinstance(tracker.latest_message, dict) else {}
+    latest = tracker.latest_message
     metadata_any = latest.get("metadata")
     metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
 
@@ -113,8 +112,8 @@ class ActionGuidedGenerateVisualization(Action):  # pyright: ignore
                 summary_cb=on_summary,
                 trace_id=trace_id,
             )
-            visualization_json = cast(Any, visualization).model_dump_json()
-            dispatcher.utter_message(json_message=json.loads(cast(str, visualization_json)))
+            visualization_payload_any = cast(Any, visualization).model_dump(mode="json")
+            dispatcher.utter_message(json_message=cast(Dict[str, Any], visualization_payload_any))
             if _SHOW_EXECUTION_SUMMARY and execution_summary is not None:
                 dispatcher.utter_message(
                     text=format_execution_summary(

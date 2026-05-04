@@ -355,6 +355,13 @@ class VisualizationExecutionError(RuntimeError):
 
 def _to_execution_error(failure_reasons: List[str], trace_id: Optional[str] = None) -> VisualizationExecutionError:
     reason_set = set(failure_reasons)
+    if "no_data" in reason_set:
+        return VisualizationExecutionError(
+            user_message="The analytics service returned no data for this visualization request. Try a wider date range or different filters.",
+            reason="no_data",
+            code="EXEC_NO_DATA",
+            trace_id=trace_id,
+        )
     if "timeout" in reason_set:
         return VisualizationExecutionError(
             user_message="The data service timed out while generating the visualization. Please try again.",
@@ -793,6 +800,7 @@ async def execute_plan_async(
                 )
                 if request_failures:
                     raise _to_execution_error(request_failures, trace_id=trace_id_resolved)
+                raise _to_execution_error(["no_data"], trace_id=trace_id_resolved)
             vis_chart = build_chart_dto(
                 plan_chart=planChart,
                 dimensions=dims,

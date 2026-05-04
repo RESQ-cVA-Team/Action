@@ -82,7 +82,11 @@ def map_metrics_payload_to_series(
             server_label = kpi.grouped_by.group_item_name if kpi.grouped_by else None
             origin_label = _origin_label_from_kpi_group(kpi)
 
-            is_grouped_or_time = bool(group_by_field) or add_time_period_labels
+            # Some plans (e.g., GroupBySex when backend groupBy enum is unavailable)
+            # are compiled into multiple filtered requests, one per category.
+            # In that case `group_by_field` is None, but non-empty label_parts
+            # still indicate grouped-style output should be produced from stats.
+            is_grouped_or_time = bool(group_by_field) or add_time_period_labels or bool(label_parts)
             if is_grouped_or_time:
                 y_value: Optional[float] = None
                 if isinstance(kpi.kpi1.mean, (int, float)):

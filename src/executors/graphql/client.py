@@ -52,6 +52,8 @@ class GraphQLProxyClient:
         target: str = "graphql",
         path: str = "/api/graphql/aggregation",
         timeout_seconds: int = 30,
+        connect_timeout_seconds: float = 5.0,
+        max_total_timeout_seconds: Optional[float] = None,
         retry_attempts: int = 2,
         retry_backoff_seconds: float = 0.6,
     ):
@@ -59,16 +61,26 @@ class GraphQLProxyClient:
         self.action_server_token = action_server_token
         self.target = target
         self.path = path
-        self.timeout_seconds = timeout_seconds
+        self.timeout_seconds = max(1.0, float(timeout_seconds))
+        self.connect_timeout_seconds = max(1.0, float(connect_timeout_seconds))
         self.retry_attempts = max(0, int(retry_attempts))
         self.retry_backoff_seconds = max(0.0, float(retry_backoff_seconds))
+        default_budget = self.timeout_seconds * (self.retry_attempts + 1)
+        if self.retry_attempts > 0:
+            default_budget += self.retry_backoff_seconds * ((2**self.retry_attempts) - 1)
+        if max_total_timeout_seconds is None:
+            self.max_total_timeout_seconds = default_budget
+        else:
+            self.max_total_timeout_seconds = max(self.timeout_seconds, float(max_total_timeout_seconds))
 
     @staticmethod
     def _is_transient_status(status_code: int) -> bool:
-        return status_code in {408, 429, 500, 502, 503, 504}
+        return status_code in {408, 429, 500, 502, 503, 504, 524}
 
-    def _sleep_before_retry(self, attempt: int) -> None:
+    def _sleep_before_retry(self, attempt: int, remaining_budget: Optional[float] = None) -> None:
         delay = self.retry_backoff_seconds * (2**attempt)
+        if remaining_budget is not None:
+            delay = min(delay, max(0.0, remaining_budget))
         if delay > 0:
             time.sleep(delay)
 
@@ -108,22 +120,44 @@ class GraphQLProxyClient:
         q_hash = hashlib.sha256(query_str.encode("utf-8")).hexdigest()[:12]
         attempts_total = self.retry_attempts + 1
         last_error: Optional[GraphQLProxyError] = None
+        started_at = time.monotonic()
 
         for attempt in range(attempts_total):
+            elapsed = time.monotonic() - started_at
+            remaining_budget = self.max_total_timeout_seconds - elapsed
+            if remaining_budget <= 0:
+                last_error = GraphQLProxyError(
+                    kind="timeout",
+                    message=f"GraphQL request exceeded total timeout budget ({self.max_total_timeout_seconds:.1f}s)",
+                    transient=True,
+                )
+                logger.warning(
+                    "[GraphQLProxyClient] Budget exhausted before attempt (trace_id=%s, attempt=%s/%s, hash=%s, budget=%.1fs)",
+                    trace_label,
+                    attempt + 1,
+                    attempts_total,
+                    q_hash,
+                    self.max_total_timeout_seconds,
+                )
+                break
+            read_timeout = max(1.0, min(self.timeout_seconds, remaining_budget))
             try:
                 logger.debug(
-                    "[GraphQLProxyClient] Outbound request (trace_id=%s, attempt=%s/%s, hash=%s, target=%s)",
+                    "[GraphQLProxyClient] Outbound request (trace_id=%s, attempt=%s/%s, hash=%s, target=%s, timeout=(%.1f, %.1f), budget_left=%.1fs)",
                     trace_label,
                     attempt + 1,
                     attempts_total,
                     q_hash,
                     self.target,
+                    self.connect_timeout_seconds,
+                    read_timeout,
+                    remaining_budget,
                 )
                 response = requests.post(
                     self.proxy_url,
                     headers=headers,
                     json=proxy_payload,
-                    timeout=self.timeout_seconds,
+                    timeout=(self.connect_timeout_seconds, read_timeout),
                 )
                 logger.info(
                     "[GraphQLProxyClient] Outbound response (trace_id=%s, attempt=%s/%s, hash=%s, status=%s)",
@@ -148,7 +182,10 @@ class GraphQLProxyClient:
                     exc,
                 )
                 if attempt < self.retry_attempts:
-                    self._sleep_before_retry(attempt)
+                    retry_budget = self.max_total_timeout_seconds - (time.monotonic() - started_at)
+                    if retry_budget <= 0:
+                        break
+                    self._sleep_before_retry(attempt, remaining_budget=retry_budget)
                     continue
                 break
             except requests.RequestException as exc:
@@ -166,7 +203,10 @@ class GraphQLProxyClient:
                     exc,
                 )
                 if attempt < self.retry_attempts:
-                    self._sleep_before_retry(attempt)
+                    retry_budget = self.max_total_timeout_seconds - (time.monotonic() - started_at)
+                    if retry_budget <= 0:
+                        break
+                    self._sleep_before_retry(attempt, remaining_budget=retry_budget)
                     continue
                 break
 
@@ -230,7 +270,10 @@ class GraphQLProxyClient:
                 transient=transient_status,
             )
             if transient_status and attempt < self.retry_attempts:
-                self._sleep_before_retry(attempt)
+                retry_budget = self.max_total_timeout_seconds - (time.monotonic() - started_at)
+                if retry_budget <= 0:
+                    break
+                self._sleep_before_retry(attempt, remaining_budget=retry_budget)
                 continue
             break
 
@@ -272,22 +315,44 @@ class GraphQLProxyClient:
         q_hash = hashlib.sha256(query_str.encode("utf-8")).hexdigest()[:12]
         attempts_total = self.retry_attempts + 1
         last_error: Optional[GraphQLProxyError] = None
+        started_at = time.monotonic()
 
         for attempt in range(attempts_total):
+            elapsed = time.monotonic() - started_at
+            remaining_budget = self.max_total_timeout_seconds - elapsed
+            if remaining_budget <= 0:
+                last_error = GraphQLProxyError(
+                    kind="timeout",
+                    message=f"GraphQL request exceeded total timeout budget ({self.max_total_timeout_seconds:.1f}s)",
+                    transient=True,
+                )
+                logger.warning(
+                    "[GraphQLProxyClient] Budget exhausted before raw attempt (trace_id=%s, attempt=%s/%s, hash=%s, budget=%.1fs)",
+                    trace_label,
+                    attempt + 1,
+                    attempts_total,
+                    q_hash,
+                    self.max_total_timeout_seconds,
+                )
+                break
+            read_timeout = max(1.0, min(self.timeout_seconds, remaining_budget))
             try:
                 logger.debug(
-                    "[GraphQLProxyClient] Outbound raw request (trace_id=%s, attempt=%s/%s, hash=%s, target=%s)",
+                    "[GraphQLProxyClient] Outbound raw request (trace_id=%s, attempt=%s/%s, hash=%s, target=%s, timeout=(%.1f, %.1f), budget_left=%.1fs)",
                     trace_label,
                     attempt + 1,
                     attempts_total,
                     q_hash,
                     self.target,
+                    self.connect_timeout_seconds,
+                    read_timeout,
+                    remaining_budget,
                 )
                 response = requests.post(
                     self.proxy_url,
                     headers=headers,
                     json=proxy_payload,
-                    timeout=self.timeout_seconds,
+                    timeout=(self.connect_timeout_seconds, read_timeout),
                 )
                 logger.info(
                     "[GraphQLProxyClient] Outbound raw response (trace_id=%s, attempt=%s/%s, hash=%s, status=%s)",
@@ -312,7 +377,10 @@ class GraphQLProxyClient:
                     exc,
                 )
                 if attempt < self.retry_attempts:
-                    self._sleep_before_retry(attempt)
+                    retry_budget = self.max_total_timeout_seconds - (time.monotonic() - started_at)
+                    if retry_budget <= 0:
+                        break
+                    self._sleep_before_retry(attempt, remaining_budget=retry_budget)
                     continue
                 break
             except requests.RequestException as exc:
@@ -330,7 +398,10 @@ class GraphQLProxyClient:
                     exc,
                 )
                 if attempt < self.retry_attempts:
-                    self._sleep_before_retry(attempt)
+                    retry_budget = self.max_total_timeout_seconds - (time.monotonic() - started_at)
+                    if retry_budget <= 0:
+                        break
+                    self._sleep_before_retry(attempt, remaining_budget=retry_budget)
                     continue
                 break
 
@@ -403,7 +474,10 @@ class GraphQLProxyClient:
                 transient=transient_status,
             )
             if transient_status and attempt < self.retry_attempts:
-                self._sleep_before_retry(attempt)
+                retry_budget = self.max_total_timeout_seconds - (time.monotonic() - started_at)
+                if retry_budget <= 0:
+                    break
+                self._sleep_before_retry(attempt, remaining_budget=retry_budget)
                 continue
             break
 
