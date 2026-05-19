@@ -1,11 +1,16 @@
+import logging
 import shlex
 from typing import Any, Dict, List, Tuple, cast
 
 from rasa_sdk import Action  # type: ignore
 from rasa_sdk.events import EventType  # type: ignore
 
+from src.util.logging_utils import log_context
+
 from .commands import get as get_command  # type: ignore
 from .commands import names as list_command_names
+
+logger = logging.getLogger(__name__)
 
 
 def _coerce_scalar(val: str) -> Any:
@@ -82,13 +87,23 @@ class ActionCliRouter(Action):
         if not sub:
             sub = "help"
 
-        # Try pluggable command handlers first
-        handler = get_command(sub)
-        if handler is not None:
-            return handler(dispatcher, tracker, domain, args, opts)
+        with log_context(
+            sender_id=str(getattr(tracker, "sender_id", "")),
+            action=self.name(),
+            cli_subcommand=sub,
+            cli_arg_count=len(args),
+            cli_option_count=len(opts),
+        ):
+            logger.info("Routing CLI command")
 
-        # No static duplicates; registry owns all commands now
+            # Try pluggable command handlers first
+            handler = get_command(sub)
+            if handler is not None:
+                return handler(dispatcher, tracker, domain, args, opts)
 
-        # Fallback: unknown command
-        dispatcher.utter_message(text=f"Unknown CLI command: {sub}. Try one of: {', '.join(sorted(list_command_names()))}")
-        return []
+            # No static duplicates; registry owns all commands now
+
+            # Fallback: unknown command
+            logger.warning("Unknown CLI command")
+            dispatcher.utter_message(text=f"Unknown CLI command: {sub}. Try one of: {', '.join(sorted(list_command_names()))}")
+            return []

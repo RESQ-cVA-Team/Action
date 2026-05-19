@@ -14,6 +14,7 @@ from src.actions.i18n import translate
 from src.planners.langchain.llm_factory import create_chat_llm
 from src.shared import ssot_loader
 from src.util import env as env_util
+from src.util.logging_utils import bind_current_context
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +210,7 @@ def _coerce_decision(raw: Dict[str, Any]) -> QueryDecision:
 
 def _invoke_query_guard(chain: Any, payload: Dict[str, Any]) -> QueryDecision:
     with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(chain.invoke, payload)
+        future = executor.submit(bind_current_context(chain.invoke), payload)
         try:
             response = future.result(timeout=_QUERY_GUARD_TIMEOUT_SECONDS)
         except FuturesTimeoutError as exc:

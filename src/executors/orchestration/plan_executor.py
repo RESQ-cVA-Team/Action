@@ -28,6 +28,7 @@ from src.executors.transport.request_runner import run_graphql_request
 from src.shared.ssot_loader import get_metric_display_name, get_metric_metadata, get_statistics_metric_enum_map
 from src.util import env as env_util
 from src.util.coalesce import coalesce
+from src.util.logging_utils import bind_current_context
 
 logger = logging.getLogger(__name__)
 # Privacy/safety defaults:
@@ -226,9 +227,9 @@ def _execute_mann_whitney_test(test: StatisticalTestSpec, user_sub: str, trace_i
     if ineligible:
         reason = f"Metric(s) not supported for statistical testing: {', '.join(ineligible)}"
         logger.warning(
-            "[plan_executor] Skipping MANN_WHITNEY_U_TEST (trace_id=%s): %s",
-            trace_id or "-",
+            "[plan_executor] Skipping MANN_WHITNEY_U_TEST: %s",
             reason,
+            extra={"trace_id": trace_id or "-"},
         )
         return [
             StatisticalTestResult(
@@ -269,9 +270,9 @@ def _execute_mann_whitney_test(test: StatisticalTestSpec, user_sub: str, trace_i
         if cohort_split is None:
             reason = "Could not determine two distinct cohorts for comparison"
             logger.warning(
-                "[plan_executor] Skipping MANN_WHITNEY_U_TEST (trace_id=%s): %s",
-                trace_id or "-",
+                "[plan_executor] Skipping MANN_WHITNEY_U_TEST: %s",
                 reason,
+                extra={"trace_id": trace_id or "-"},
             )
             return [
                 StatisticalTestResult(
@@ -393,15 +394,15 @@ def _execute_statistical_tests(plan: AnalysisPlan, user_sub: str, trace_id: str)
             if test_type == "MANN_WHITNEY_U_TEST":
                 results.extend(_execute_mann_whitney_test(test=test, user_sub=user_sub, trace_id=trace_id))
             else:
-                logger.warning("[plan_executor] Statistical test type '%s' is not implemented yet (trace_id=%s)", test_type, trace_id or "-")
+                logger.warning("[plan_executor] Statistical test type '%s' is not implemented yet", test_type, extra={"trace_id": trace_id})
         except Exception:
-            logger.exception("[plan_executor] Statistical test execution failed for test type '%s' (trace_id=%s)", test_type, trace_id or "-")
+            logger.exception("[plan_executor] Statistical test execution failed for test type '%s'", test_type, extra={"trace_id": trace_id})
 
     return results
 
 
 def _emit_compiler_diagnostics(progress_cb: Optional[Callable[[str], None]], payload: Dict[str, Any], trace_id: str) -> None:
-    logger.info("[plan_executor] compiler_diagnostics (trace_id=%s)=%s", trace_id, json.dumps(payload, default=str, sort_keys=True))
+    logger.debug("[plan_executor] compiler_diagnostics=%s", json.dumps(payload, default=str, sort_keys=True), extra={"trace_id": trace_id})
     if progress_cb is not None:
         progress_cb(f"Compiler diagnostics: {json.dumps(payload, default=str, sort_keys=True)}")
 
@@ -610,7 +611,7 @@ def execute_plan(plan: AnalysisPlan, user_sub: str) -> VisualizationResponse:
     except RuntimeError:
         return asyncio.run(coro)
     with ThreadPoolExecutor(max_workers=1) as ex:
-        fut = ex.submit(asyncio.run, coro)
+        fut = ex.submit(bind_current_context(asyncio.run), coro)
         return fut.result()
 
 
@@ -759,7 +760,7 @@ async def execute_plan_async(
     if not trace_id_resolved:
         raise ValueError("trace_id is required for execute_plan_async")
 
-    logger.info("[plan_executor] execute_plan_async start (trace_id=%s)", trace_id_resolved)
+    logger.info("[plan_executor] execute_plan_async start", extra={"trace_id": trace_id_resolved})
 
     try:
         plan = resolve_plan_metric_origins(plan=plan, user_sub=user_sub, trace_id=trace_id_resolved)
@@ -878,10 +879,10 @@ async def execute_plan_async(
                 )
             ):
                 logger.warning(
-                    "[plan_executor] Batched multi-period request timed out (trace_id=%s); retrying with per-period requests (period_count=%s, combos=%s)",
-                    trace_id_resolved,
+                    "[plan_executor] Batched multi-period request timed out; retrying with per-period requests (period_count=%s, combos=%s)",
                     len(batched_time_periods),
                     len(combo_contexts),
+                    extra={"trace_id": trace_id_resolved},
                 )
                 request_failures.clear()
 
@@ -922,10 +923,10 @@ async def execute_plan_async(
 
             if not all_series:
                 logger.warning(
-                    "[plan_executor] No series generated for chart '%s'%s (trace_id=%s). This often indicates a backend error or empty results.",
+                    "[plan_executor] No series generated for chart '%s'%s. This often indicates a backend error or empty results.",
                     planChart.chart_type or "Chart",
                     "",
-                    trace_id_resolved,
+                    extra={"trace_id": trace_id_resolved},
                 )
                 if request_failures:
                     raise _to_execution_error(request_failures, trace_id=trace_id_resolved)
@@ -954,6 +955,6 @@ async def execute_plan_async(
         try:
             summary_cb(payload)
         except Exception:
-            logger.debug("Failed to emit execution summary callback (trace_id=%s)", trace_id_resolved, exc_info=True)
+            logger.debug("Failed to emit execution summary callback", exc_info=True, extra={"trace_id": trace_id_resolved})
 
     return response

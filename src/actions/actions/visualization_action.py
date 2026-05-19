@@ -22,6 +22,7 @@ from src.executors.orchestration.plan_executor import VisualizationExecutionErro
 from src.planners.langchain import pipeline as lang_pipeline
 from src.planners.langchain.request_orchestrator import orchestrate_visualization_request
 from src.util import env as env_util
+from src.util.logging_utils import log_context
 
 logger = logging.getLogger(__name__)
 
@@ -261,97 +262,99 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
         trace_id = uuid4().hex
         metadata: Dict[str, Any] = {}
         slots: Dict[str, Any] = {}
-        try:
-            fallback_limit = 12
-            latest_msg = tracker.latest_message
+        fallback_limit = 12
+        latest_msg = tracker.latest_message
 
-            user_message_any = latest_msg.get("text")
-            user_message = user_message_any if isinstance(user_message_any, str) else ""
-            extracted_entities = extract_entities_from_latest_message(latest_msg)
+        user_message_any = latest_msg.get("text")
+        user_message = user_message_any if isinstance(user_message_any, str) else ""
+        extracted_entities = extract_entities_from_latest_message(latest_msg)
 
-            metadata_any = latest_msg.get("metadata")
-            metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
-            trace_id = _trace_id_from_metadata(metadata) or trace_id
-            logger.info("Starting visualization clarification routing (trace_id=%s)", trace_id)
-            slots_any = tracker.current_state().get("slots", {})
-            slots = cast(Dict[str, Any], slots_any) if isinstance(slots_any, dict) else {}
-            override_language = resolve_override_language(metadata, slots)
-            language = resolve_language(metadata=metadata, slots=slots, tracker=tracker)
+        metadata_any = latest_msg.get("metadata")
+        metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
+        trace_id = _trace_id_from_metadata(metadata) or trace_id
+        slots_any = tracker.current_state().get("slots", {})
+        slots = cast(Dict[str, Any], slots_any) if isinstance(slots_any, dict) else {}
 
-            events = tracker.events
-            conversation_history = _collect_visualization_thread_messages(events, fallback_limit=fallback_limit)
+        with log_context(trace_id=trace_id, sender_id=str(tracker.sender_id), action=self.name()):
+            try:
+                logger.info("Starting visualization clarification routing")
+                override_language = resolve_override_language(metadata, slots)
+                language = resolve_language(metadata=metadata, slots=slots, tracker=tracker)
 
-            planner_question = "\n".join([m for m in conversation_history if m.strip()]).strip() or user_message
+                events = tracker.events
+                conversation_history = _collect_visualization_thread_messages(events, fallback_limit=fallback_limit)
 
-            outcome = orchestrate_visualization_request(
-                question=planner_question,
-                entities=extracted_entities,
-                language=override_language,
-                trace_id=trace_id,
-                max_retries=_PLANNER_MAX_RETRIES,
-                include_plan=False,
-                conversation_history=conversation_history,
-                progress_cb=None,
-            )
+                planner_question = "\n".join([m for m in conversation_history if m.strip()]).strip() or user_message
 
-            dispatcher.utter_message(
-                json_message={
-                    "type": "visualization_query_decision",
-                    "trace_id": trace_id,
-                    "decision": outcome.decision,
-                    "reason": outcome.reason,
-                    "clarification_type": outcome.clarification_type,
-                    "clarification_options": outcome.clarification_options,
-                    "message": outcome.message,
-                    "missing_fields": outcome.missing_fields,
-                }
-            )
-
-            if outcome.decision == "clarify":
-                dispatcher.utter_message(text=outcome.message or translate("action.visualization.clarify_default", language=language))
-                return [SlotSet("awaiting_visualization_clarification", True)]
-
-            if outcome.decision == "reject":
-                dispatcher.utter_message(text=outcome.message or translate("action.visualization.reject_default", language=language))
-                return [SlotSet("awaiting_visualization_clarification", False)]
-
-            return [
-                SlotSet("awaiting_visualization_clarification", False),
-                FollowupAction("action_oneshot_generate_visualization"),
-            ]
-        except Exception as e:
-            logger.exception("Error routing visualization request (trace_id=%s)", trace_id)
-            language = resolve_language(metadata=metadata, slots=slots, tracker=tracker)
-            payload = visualization_error_payload(e, trace_id=trace_id, language=language)
-            dispatcher.utter_message(
-                json_message={
-                    "type": "visualization_error",
-                    "trace_id": payload.get("trace_id"),
-                    "error_code": payload.get("code"),
-                    "reason": payload.get("reason"),
-                    "message": payload.get("message"),
-                }
-            )
-            dispatcher.utter_message(
-                text=translate(
-                    "action.common.error_with_context",
-                    language=language,
-                    params={
-                        "message": payload.get("message") or "",
-                        "code": payload.get("code") or "-",
-                        "trace_id": payload.get("trace_id") or "-",
-                    },
+                outcome = orchestrate_visualization_request(
+                    question=planner_question,
+                    entities=extracted_entities,
+                    language=override_language,
+                    trace_id=trace_id,
+                    max_retries=_PLANNER_MAX_RETRIES,
+                    include_plan=False,
+                    conversation_history=conversation_history,
+                    progress_cb=None,
                 )
-            )
-            if _ECHO_INTERNAL_ERRORS:
+
+                dispatcher.utter_message(
+                    json_message={
+                        "type": "visualization_query_decision",
+                        "trace_id": trace_id,
+                        "decision": outcome.decision,
+                        "reason": outcome.reason,
+                        "clarification_type": outcome.clarification_type,
+                        "clarification_options": outcome.clarification_options,
+                        "message": outcome.message,
+                        "missing_fields": outcome.missing_fields,
+                    }
+                )
+
+                if outcome.decision == "clarify":
+                    dispatcher.utter_message(text=outcome.message or translate("action.visualization.clarify_default", language=language))
+                    return [SlotSet("awaiting_visualization_clarification", True)]
+
+                if outcome.decision == "reject":
+                    dispatcher.utter_message(text=outcome.message or translate("action.visualization.reject_default", language=language))
+                    return [SlotSet("awaiting_visualization_clarification", False)]
+
+                return [
+                    SlotSet("awaiting_visualization_clarification", False),
+                    FollowupAction("action_oneshot_generate_visualization"),
+                ]
+            except Exception as e:
+                logger.exception("Error routing visualization request")
+                language = resolve_language(metadata=metadata, slots=slots, tracker=tracker)
+                payload = visualization_error_payload(e, trace_id=trace_id, language=language)
+                dispatcher.utter_message(
+                    json_message={
+                        "type": "visualization_error",
+                        "trace_id": payload.get("trace_id"),
+                        "error_code": payload.get("code"),
+                        "reason": payload.get("reason"),
+                        "message": payload.get("message"),
+                    }
+                )
                 dispatcher.utter_message(
                     text=translate(
-                        "action.visualization.internal_error_routing",
+                        "action.common.error_with_context",
                         language=language,
-                        params={"error": str(e)},
+                        params={
+                            "message": payload.get("message") or "",
+                            "code": payload.get("code") or "-",
+                            "trace_id": payload.get("trace_id") or "-",
+                        },
                     )
                 )
-            return []
+                if _ECHO_INTERNAL_ERRORS:
+                    dispatcher.utter_message(
+                        text=translate(
+                            "action.visualization.internal_error_routing",
+                            language=language,
+                            params={"error": str(e)},
+                        )
+                    )
+                return []
 
 
 def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
@@ -450,150 +453,151 @@ class ActionOneShotGenerateVisualization(LongAction):
 
     async def prework(self, ctx: LongActionContext) -> PreworkResult:
         trace_id = _ensure_context_trace_id(ctx)
-        logger.info("Starting one-shot prework (trace_id=%s)", trace_id)
-        try:
-            if _is_guided_visualization_request(ctx.slots):
-                return PreworkResult(
-                    events=[
-                        SlotSet("awaiting_visualization_clarification", False),
-                        FollowupAction("action_guided_generate_visualization"),
-                    ],
-                    proceed=False,
+        with log_context(trace_id=trace_id):
+            logger.info("Starting one-shot prework")
+            try:
+                if _is_guided_visualization_request(ctx.slots):
+                    return PreworkResult(
+                        events=[
+                            SlotSet("awaiting_visualization_clarification", False),
+                            FollowupAction("action_guided_generate_visualization"),
+                        ],
+                        proceed=False,
+                    )
+
+                latest_any = ctx.tracker_snapshot.get("latest_message")
+                latest_msg = cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
+                parse_data_any = latest_msg.get("parse_data")
+                parse_data = cast(Dict[str, Any], parse_data_any) if isinstance(parse_data_any, dict) else {}
+                intent_any = parse_data.get("intent")
+                intent_obj = cast(Dict[str, Any], intent_any) if isinstance(intent_any, dict) else {}
+                intent_name_any = intent_obj.get("name")
+
+                if not isinstance(intent_name_any, str) or not intent_name_any.strip():
+                    metadata_any = latest_msg.get("metadata")
+                    metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
+                    metadata_intent_any = metadata.get("intentName")
+                    if isinstance(metadata_intent_any, str) and metadata_intent_any.strip():
+                        intent_name_any = metadata_intent_any
+
+                intent_name = intent_name_any.strip() if isinstance(intent_name_any, str) else ""
+                awaiting_clarification = bool(ctx.slots.get("awaiting_visualization_clarification"))
+
+                if awaiting_clarification and intent_name not in _VISUALIZATION_CONTINUATION_INTENTS:
+                    return PreworkResult(events=[FollowupAction("action_clarify_visualization_request")], proceed=False)
+
+                # Defensive fallback: if routing reaches this action for an unrelated
+                # intent, always send a user-facing response instead of returning
+                # nothing and leaving the conversation hanging.
+                if intent_name and intent_name not in _VISUALIZATION_CONTINUATION_INTENTS and not _is_guided_visualization_request(ctx.slots):
+                    language = resolve_language(metadata=ctx.metadata, slots=ctx.slots)
+                    ctx.say(text=translate("action.visualization.non_visualization_intent", language=language))
+                    return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=False)
+
+                request_ctx = _extract_request_context(ctx)
+                outcome = orchestrate_visualization_request(
+                    question=str(request_ctx.get("planner_question") or request_ctx.get("user_message") or ""),
+                    entities=cast(Dict[str, Any], request_ctx.get("extracted_entities") or {}),
+                    language=cast(Optional[str], request_ctx.get("override_language")),
+                    trace_id=trace_id,
+                    max_retries=_PLANNER_MAX_RETRIES,
+                    include_plan=False,
+                    conversation_history=cast(List[str], request_ctx.get("conversation_history") or []),
+                    progress_cb=None,
+                )
+                decision_name = str(outcome.decision or "").strip().lower()
+                language = cast(str, request_ctx.get("language") or "en")
+                if decision_name == "clarify":
+                    ctx.say(
+                        json_message={
+                            "type": "visualization_query_decision",
+                            "trace_id": trace_id,
+                            "decision": outcome.decision,
+                            "reason": outcome.reason,
+                            "clarification_type": outcome.clarification_type,
+                            "clarification_options": outcome.clarification_options,
+                            "message": outcome.message,
+                        }
+                    )
+                    ctx.say(text=outcome.message or translate("action.visualization.clarify_default", language=language))
+                    return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", True)], proceed=False)
+                if decision_name == "reject":
+                    ctx.say(
+                        json_message={
+                            "type": "visualization_query_decision",
+                            "trace_id": trace_id,
+                            "decision": outcome.decision,
+                            "reason": outcome.reason,
+                            "clarification_type": outcome.clarification_type,
+                            "clarification_options": outcome.clarification_options,
+                            "message": outcome.message,
+                        }
+                    )
+                    ctx.say(text=outcome.message or translate("action.visualization.reject_default", language=language))
+                    return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=False)
+
+                planner_question = str(request_ctx.get("planner_question") or request_ctx.get("user_message") or "")
+                extracted_entities = cast(Dict[str, Any], request_ctx.get("extracted_entities") or {})
+                override_language = cast(Optional[str], request_ctx.get("override_language"))
+
+                prepared_plan = lang_pipeline.generate_analysis_plan(
+                    question=planner_question,
+                    entities=extracted_entities,
+                    language=override_language,
+                    max_retries=_PLANNER_MAX_RETRIES,
+                    debug=False,
+                    trace_id=trace_id,
+                    progress_cb=None,
                 )
 
-            latest_any = ctx.tracker_snapshot.get("latest_message")
-            latest_msg = cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
-            parse_data_any = latest_msg.get("parse_data")
-            parse_data = cast(Dict[str, Any], parse_data_any) if isinstance(parse_data_any, dict) else {}
-            intent_any = parse_data.get("intent")
-            intent_obj = cast(Dict[str, Any], intent_any) if isinstance(intent_any, dict) else {}
-            intent_name_any = intent_obj.get("name")
+                ctx.tracker_snapshot[_INTERNAL_PREPARED_PLAN_KEY] = prepared_plan
+                ctx.tracker_snapshot[_INTERNAL_PLANNER_DIAGNOSTICS_KEY] = lang_pipeline.get_plan_cache_diagnostics()
 
-            if not isinstance(intent_name_any, str) or not intent_name_any.strip():
-                metadata_any = latest_msg.get("metadata")
-                metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
-                metadata_intent_any = metadata.get("intentName")
-                if isinstance(metadata_intent_any, str) and metadata_intent_any.strip():
-                    intent_name_any = metadata_intent_any
-
-            intent_name = intent_name_any.strip() if isinstance(intent_name_any, str) else ""
-            awaiting_clarification = bool(ctx.slots.get("awaiting_visualization_clarification"))
-
-            if awaiting_clarification and intent_name not in _VISUALIZATION_CONTINUATION_INTENTS:
-                return PreworkResult(events=[FollowupAction("action_clarify_visualization_request")], proceed=False)
-
-            # Defensive fallback: if routing reaches this action for an unrelated
-            # intent, always send a user-facing response instead of returning
-            # nothing and leaving the conversation hanging.
-            if intent_name and intent_name not in _VISUALIZATION_CONTINUATION_INTENTS and not _is_guided_visualization_request(ctx.slots):
+                ctx.say(
+                    json_message={
+                        "type": "visualization_query_decision",
+                        "trace_id": trace_id,
+                        "decision": outcome.decision,
+                        "reason": outcome.reason,
+                        "clarification_type": outcome.clarification_type,
+                        "clarification_options": outcome.clarification_options,
+                        "message": outcome.message,
+                    }
+                )
+                return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=True)
+            except Exception as e:
+                logger.exception("Error generating visualization during prework")
                 language = resolve_language(metadata=ctx.metadata, slots=ctx.slots)
-                ctx.say(text=translate("action.visualization.non_visualization_intent", language=language))
-                return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=False)
-
-            request_ctx = _extract_request_context(ctx)
-            outcome = orchestrate_visualization_request(
-                question=str(request_ctx.get("planner_question") or request_ctx.get("user_message") or ""),
-                entities=cast(Dict[str, Any], request_ctx.get("extracted_entities") or {}),
-                language=cast(Optional[str], request_ctx.get("override_language")),
-                trace_id=trace_id,
-                max_retries=_PLANNER_MAX_RETRIES,
-                include_plan=False,
-                conversation_history=cast(List[str], request_ctx.get("conversation_history") or []),
-                progress_cb=None,
-            )
-            decision_name = str(outcome.decision or "").strip().lower()
-            language = cast(str, request_ctx.get("language") or "en")
-            if decision_name == "clarify":
+                payload = visualization_error_payload(e, trace_id=trace_id, language=language)
                 ctx.say(
                     json_message={
-                        "type": "visualization_query_decision",
-                        "trace_id": trace_id,
-                        "decision": outcome.decision,
-                        "reason": outcome.reason,
-                        "clarification_type": outcome.clarification_type,
-                        "clarification_options": outcome.clarification_options,
-                        "message": outcome.message,
+                        "type": "visualization_error",
+                        "trace_id": payload.get("trace_id"),
+                        "error_code": payload.get("code"),
+                        "reason": payload.get("reason"),
+                        "message": payload.get("message"),
                     }
                 )
-                ctx.say(text=outcome.message or translate("action.visualization.clarify_default", language=language))
-                return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", True)], proceed=False)
-            if decision_name == "reject":
-                ctx.say(
-                    json_message={
-                        "type": "visualization_query_decision",
-                        "trace_id": trace_id,
-                        "decision": outcome.decision,
-                        "reason": outcome.reason,
-                        "clarification_type": outcome.clarification_type,
-                        "clarification_options": outcome.clarification_options,
-                        "message": outcome.message,
-                    }
-                )
-                ctx.say(text=outcome.message or translate("action.visualization.reject_default", language=language))
-                return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=False)
-
-            planner_question = str(request_ctx.get("planner_question") or request_ctx.get("user_message") or "")
-            extracted_entities = cast(Dict[str, Any], request_ctx.get("extracted_entities") or {})
-            override_language = cast(Optional[str], request_ctx.get("override_language"))
-
-            prepared_plan = lang_pipeline.generate_analysis_plan(
-                question=planner_question,
-                entities=extracted_entities,
-                language=override_language,
-                max_retries=_PLANNER_MAX_RETRIES,
-                debug=False,
-                trace_id=trace_id,
-                progress_cb=None,
-            )
-
-            ctx.tracker_snapshot[_INTERNAL_PREPARED_PLAN_KEY] = prepared_plan
-            ctx.tracker_snapshot[_INTERNAL_PLANNER_DIAGNOSTICS_KEY] = lang_pipeline.get_plan_cache_diagnostics()
-
-            ctx.say(
-                json_message={
-                    "type": "visualization_query_decision",
-                    "trace_id": trace_id,
-                    "decision": outcome.decision,
-                    "reason": outcome.reason,
-                    "clarification_type": outcome.clarification_type,
-                    "clarification_options": outcome.clarification_options,
-                    "message": outcome.message,
-                }
-            )
-            return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=True)
-        except Exception as e:
-            logger.exception("Error generating visualization (prework, trace_id=%s)", trace_id)
-            language = resolve_language(metadata=ctx.metadata, slots=ctx.slots)
-            payload = visualization_error_payload(e, trace_id=trace_id, language=language)
-            ctx.say(
-                json_message={
-                    "type": "visualization_error",
-                    "trace_id": payload.get("trace_id"),
-                    "error_code": payload.get("code"),
-                    "reason": payload.get("reason"),
-                    "message": payload.get("message"),
-                }
-            )
-            ctx.say(
-                text=translate(
-                    "action.common.error_with_context",
-                    language=language,
-                    params={
-                        "message": payload.get("message") or "",
-                        "code": payload.get("code") or "-",
-                        "trace_id": payload.get("trace_id") or "-",
-                    },
-                )
-            )
-            if _ECHO_INTERNAL_ERRORS:
                 ctx.say(
                     text=translate(
-                        "action.visualization.internal_error_generating",
+                        "action.common.error_with_context",
                         language=language,
-                        params={"error": str(e)},
+                        params={
+                            "message": payload.get("message") or "",
+                            "code": payload.get("code") or "-",
+                            "trace_id": payload.get("trace_id") or "-",
+                        },
                     )
                 )
-            return PreworkResult(events=[], proceed=False)
+                if _ECHO_INTERNAL_ERRORS:
+                    ctx.say(
+                        text=translate(
+                            "action.visualization.internal_error_generating",
+                            language=language,
+                            params={"error": str(e)},
+                        )
+                    )
+                return PreworkResult(events=[], proceed=False)
 
     async def work(self, ctx: LongActionContext) -> Any:
         completed_successfully = False
@@ -601,147 +605,144 @@ class ActionOneShotGenerateVisualization(LongAction):
         planner_diagnostics: Optional[Dict[str, Any]] = None
         trace_id = _ensure_context_trace_id(ctx)
         language = resolve_language(metadata=ctx.metadata, slots=ctx.slots)
-        try:
-            request_ctx = _extract_request_context(ctx)
-            user_message = cast(str, request_ctx["user_message"])
-            user_sub = cast(str, request_ctx["user_sub"])
-            language = cast(str, request_ctx.get("language") or "en")
+        with log_context(trace_id=trace_id):
+            try:
+                request_ctx = _extract_request_context(ctx)
+                user_message = cast(str, request_ctx["user_message"])
+                user_sub = cast(str, request_ctx["user_sub"])
+                language = cast(str, request_ctx.get("language") or "en")
 
-            if _LOG_USER_TEXT:
-                logger.info("Processing visualization request (trace_id=%s): '%s'", trace_id, user_message)
-            else:
-                logger.info(
-                    "Processing visualization request (trace_id=%s, text_len=%s)",
-                    trace_id,
-                    len(user_message or ""),
-                )
+                if _LOG_USER_TEXT:
+                    logger.info("Processing visualization request: '%s'", user_message)
+                else:
+                    logger.info(
+                        "Processing visualization request",
+                        extra={"log_context": {"text_length": len(user_message or "")}},
+                    )
 
-            def progress(msg: str) -> None:
-                ctx.say(progress=msg)
+                def progress(msg: str) -> None:
+                    ctx.say(progress=msg)
 
-            def on_summary(summary: Any) -> None:
-                nonlocal execution_summary
-                execution_summary = summary
+                def on_summary(summary: Any) -> None:
+                    nonlocal execution_summary
+                    execution_summary = summary
 
-            # In deferred-handoff mode, initial routing/clarification can use
-            # normal dispatcher delivery and heavy generation streams via
-            # callback after this explicit handoff.
-            if _DEFER_CALLBACK_HANDOFF and not ctx.callback_mode_enabled:
-                ctx.enable_callback_mode()
+                # In deferred-handoff mode, initial routing/clarification can use
+                # normal dispatcher delivery and heavy generation streams via
+                # callback after this explicit handoff.
+                if _DEFER_CALLBACK_HANDOFF and not ctx.callback_mode_enabled:
+                    ctx.enable_callback_mode()
 
-            plan_obj: lang_schema.AnalysisPlan
-            prepared_any = ctx.tracker_snapshot.pop(_INTERNAL_PREPARED_PLAN_KEY, None)
-            diagnostics_any = ctx.tracker_snapshot.pop(_INTERNAL_PLANNER_DIAGNOSTICS_KEY, None)
+                plan_obj: lang_schema.AnalysisPlan
+                prepared_any = ctx.tracker_snapshot.pop(_INTERNAL_PREPARED_PLAN_KEY, None)
+                diagnostics_any = ctx.tracker_snapshot.pop(_INTERNAL_PLANNER_DIAGNOSTICS_KEY, None)
 
-            if isinstance(prepared_any, lang_schema.AnalysisPlan):
-                plan_obj = prepared_any
-                planner_diagnostics = cast(Optional[Dict[str, Any]], diagnostics_any) if isinstance(diagnostics_any, dict) else None
-                progress("Using prepared plan from prework")
-            else:
-                logger.warning(
-                    "Prepared plan missing in work fallback; regenerating plan in work (trace_id=%s)",
-                    trace_id,
-                )
-                planner_question = cast(str, request_ctx.get("planner_question") or user_message)
-                extracted_entities = cast(Dict[str, Any], request_ctx["extracted_entities"])
-                override_language = cast(Optional[str], request_ctx["override_language"])
+                if isinstance(prepared_any, lang_schema.AnalysisPlan):
+                    plan_obj = prepared_any
+                    planner_diagnostics = cast(Optional[Dict[str, Any]], diagnostics_any) if isinstance(diagnostics_any, dict) else None
+                    progress("Using prepared plan from prework")
+                else:
+                    logger.warning("Prepared plan missing in work fallback; regenerating plan in work")
+                    planner_question = cast(str, request_ctx.get("planner_question") or user_message)
+                    extracted_entities = cast(Dict[str, Any], request_ctx["extracted_entities"])
+                    override_language = cast(Optional[str], request_ctx["override_language"])
 
-                progress("Calling planner LLM to build a plan")
-                plan_obj = lang_pipeline.generate_analysis_plan(
-                    question=planner_question,
-                    entities=extracted_entities,
-                    language=override_language,
-                    max_retries=_PLANNER_MAX_RETRIES,
-                    debug=False,
-                    trace_id=trace_id,
-                    progress_cb=progress,
-                )
-                planner_diagnostics = lang_pipeline.get_plan_cache_diagnostics()
+                    progress("Calling planner LLM to build a plan")
+                    plan_obj = lang_pipeline.generate_analysis_plan(
+                        question=planner_question,
+                        entities=extracted_entities,
+                        language=override_language,
+                        max_retries=_PLANNER_MAX_RETRIES,
+                        debug=False,
+                        trace_id=trace_id,
+                        progress_cb=progress,
+                    )
+                    planner_diagnostics = lang_pipeline.get_plan_cache_diagnostics()
 
-            ctx.say(
-                json_message={
-                    "type": "visualization_plan",
-                    "trace_id": trace_id,
-                    "plan": serialize_plan_for_frontend(plan_obj),
-                }
-            )
-
-            visualization = await execute_plan_async(
-                plan_obj,
-                user_sub=user_sub,
-                max_concurrency=_EXECUTOR_MAX_CONCURRENCY,
-                progress_cb=progress,
-                summary_cb=on_summary,
-                trace_id=trace_id,
-            )
-            visualization_payload_any = cast(Any, visualization).model_dump(mode="json")
-            ctx.say(json_message=cast(Dict[str, Any], visualization_payload_any))
-
-            warnings_any = visualization_payload_any.get("warnings") if isinstance(visualization_payload_any, dict) else None
-            if isinstance(warnings_any, list):
-                for warning in warnings_any:
-                    if isinstance(warning, str) and warning.strip():
-                        ctx.say(text=f"Note: {warning.strip()}")
-
-            completed_successfully = True
-        except Exception as e:
-            if isinstance(e, VisualizationExecutionError) and e.reason == "origin_scope_resolution":
                 ctx.say(
                     json_message={
-                        "type": "visualization_query_decision",
+                        "type": "visualization_plan",
                         "trace_id": trace_id,
-                        "decision": "clarify",
-                        "reason": e.reason,
-                        "clarification_type": e.clarification_type,
-                        "clarification_options": e.clarification_options,
-                        "message": e.user_message,
+                        "plan": serialize_plan_for_frontend(plan_obj),
                     }
                 )
-                ctx.say(text=e.user_message)
-                return None
 
-            logger.exception("Error generating visualization (trace_id=%s)", trace_id)
-            payload = visualization_error_payload(e, trace_id=trace_id, language=language)
-            ctx.say(
-                json_message={
-                    "type": "visualization_error",
-                    "trace_id": payload.get("trace_id"),
-                    "error_code": payload.get("code"),
-                    "reason": payload.get("reason"),
-                    "message": payload.get("message"),
-                }
-            )
-            ctx.say(
-                text=translate(
-                    "action.common.error_with_context",
-                    language=language,
-                    params={
-                        "message": payload.get("message") or "",
-                        "code": payload.get("code") or "-",
-                        "trace_id": payload.get("trace_id") or "-",
-                    },
+                visualization = await execute_plan_async(
+                    plan_obj,
+                    user_sub=user_sub,
+                    max_concurrency=_EXECUTOR_MAX_CONCURRENCY,
+                    progress_cb=progress,
+                    summary_cb=on_summary,
+                    trace_id=trace_id,
                 )
-            )
-            if _ECHO_INTERNAL_ERRORS:
+                visualization_payload_any = cast(Any, visualization).model_dump(mode="json")
+                ctx.say(json_message=cast(Dict[str, Any], visualization_payload_any))
+
+                warnings_any = visualization_payload_any.get("warnings") if isinstance(visualization_payload_any, dict) else None
+                if isinstance(warnings_any, list):
+                    for warning in warnings_any:
+                        if isinstance(warning, str) and warning.strip():
+                            ctx.say(text=f"Note: {warning.strip()}")
+
+                completed_successfully = True
+            except Exception as e:
+                if isinstance(e, VisualizationExecutionError) and e.reason == "origin_scope_resolution":
+                    ctx.say(
+                        json_message={
+                            "type": "visualization_query_decision",
+                            "trace_id": trace_id,
+                            "decision": "clarify",
+                            "reason": e.reason,
+                            "clarification_type": e.clarification_type,
+                            "clarification_options": e.clarification_options,
+                            "message": e.user_message,
+                        }
+                    )
+                    ctx.say(text=e.user_message)
+                    return None
+
+                logger.exception("Error generating visualization")
+                payload = visualization_error_payload(e, trace_id=trace_id, language=language)
+                ctx.say(
+                    json_message={
+                        "type": "visualization_error",
+                        "trace_id": payload.get("trace_id"),
+                        "error_code": payload.get("code"),
+                        "reason": payload.get("reason"),
+                        "message": payload.get("message"),
+                    }
+                )
                 ctx.say(
                     text=translate(
-                        "action.visualization.internal_error_generating",
+                        "action.common.error_with_context",
                         language=language,
-                        params={"error": str(e)},
+                        params={
+                            "message": payload.get("message") or "",
+                            "code": payload.get("code") or "-",
+                            "trace_id": payload.get("trace_id") or "-",
+                        },
                     )
                 )
-        finally:
-            if completed_successfully:
-                if _SHOW_EXECUTION_SUMMARY and execution_summary is not None:
+                if _ECHO_INTERNAL_ERRORS:
                     ctx.say(
-                        text=format_execution_summary(
-                            execution_summary,
-                            show_normalization=_SHOW_NORMALIZATION_SUMMARY,
-                            planner_diagnostics=planner_diagnostics,
+                        text=translate(
+                            "action.visualization.internal_error_generating",
                             language=language,
+                            params={"error": str(e)},
                         )
                     )
-                else:
-                    ctx.say(text=translate("action.visualization.success_complete", language=language))
-            ctx.done()
+            finally:
+                if completed_successfully:
+                    if _SHOW_EXECUTION_SUMMARY and execution_summary is not None:
+                        ctx.say(
+                            text=format_execution_summary(
+                                execution_summary,
+                                show_normalization=_SHOW_NORMALIZATION_SUMMARY,
+                                planner_diagnostics=planner_diagnostics,
+                                language=language,
+                            )
+                        )
+                    else:
+                        ctx.say(text=translate("action.visualization.success_complete", language=language))
+                ctx.done()
         return None

@@ -11,6 +11,7 @@ from src.actions.i18n import resolve_language_from_tracker, translate
 from src.actions.ssot_lookup import normalize_text, resolve_catalog_candidates, resolve_metric_candidates
 from src.domain.langchain import schema as S
 from src.executors.analytics_center.client import AnalyticsCenterError, get_analytics_center_client
+from src.util.logging_utils import log_context
 
 logger = logging.getLogger(__name__)
 
@@ -294,11 +295,108 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
     trace_id = _trace_id_from_tracker(tracker) or uuid4().hex
     client = get_analytics_center_client()
     entities = _latest_entities(tracker)
+    with log_context(trace_id=trace_id, sender_id=tracker.sender_id, user_sub=user_sub, validator="guided_hospital_scope"):
+        scope_ref_any = entities.get("hospital_scope_reference")
+        if isinstance(scope_ref_any, str) and scope_ref_any.strip():
+            scope_ref_norm = normalize_text(scope_ref_any)
+            if scope_ref_norm in ALL_SCOPE_TOKENS:
+                return {
+                    "guided_hospital_scope": _json_scope(
+                        "all",
+                        "all",
+                        label=translate("action.guided.all_hospitals_label", language=language),
+                    )
+                }
+            if scope_ref_norm in MINE_SCOPE_TOKENS:
+                process_id, hostname = _runtime_instance_fields()
+                logger.debug(
+                    "[GuidedVisualizationValidation] Mine scope validation",
+                    extra={
+                        "log_context": {
+                            "pid": process_id,
+                            "host": hostname,
+                            "scope_ref": scope_ref_any,
+                        }
+                    },
+                )
+                try:
+                    mine_scope = _resolve_mine_scope(user_sub=user_sub, trace_id=trace_id)
+                except AnalyticsCenterError as exc:
+                    details = exc.details if isinstance(exc.details, dict) else {}
+                    proxy_any = details.get("proxy")
+                    proxy_info = cast(Dict[str, Any], proxy_any) if isinstance(proxy_any, dict) else {}
+                    reason_any = proxy_info.get("reason")
+                    reason = reason_any.strip() if isinstance(reason_any, str) and reason_any.strip() else ""
 
-    scope_ref_any = entities.get("hospital_scope_reference")
-    if isinstance(scope_ref_any, str) and scope_ref_any.strip():
-        scope_ref_norm = normalize_text(scope_ref_any)
-        if scope_ref_norm in ALL_SCOPE_TOKENS:
+                    if exc.status_code == 401 or "cached user access token" in reason.lower() or "user token unavailable" in reason.lower():
+                        _utter_invalid(
+                            dispatcher,
+                            translate("action.guided.mine_scope_auth_unavailable", language=language),
+                        )
+                        return {"guided_hospital_scope": None}
+
+                    _utter_invalid(
+                        dispatcher,
+                        translate("action.guided.mine_scope_unknown", language=language),
+                    )
+                    return {"guided_hospital_scope": None}
+                if mine_scope is not None:
+                    return {"guided_hospital_scope": mine_scope}
+                _utter_invalid(
+                    dispatcher,
+                    translate("action.guided.mine_scope_not_found", language=language),
+                )
+                return {"guided_hospital_scope": None}
+
+        country_any = entities.get("country_code") or entities.get("countryCode") or entities.get("country")
+        if isinstance(country_any, str) and country_any.strip():
+            resolved = client.resolve_country_code(user_sub=user_sub, country_input=country_any.strip(), trace_id=trace_id, raise_on_error=False)
+            if resolved:
+                return {"guided_hospital_scope": _json_scope("country_code", resolved, label=resolved)}
+
+        hospital_any = entities.get("hospital_name") or entities.get("hospital") or entities.get("provider") or slot_value
+        if isinstance(hospital_any, str) and hospital_any.strip() and normalize_text(hospital_any) not in ALL_SCOPE_TOKENS:
+            page = client.list_providers(user_sub=user_sub, limit=200, offset=0, trace_id=trace_id, raise_on_error=False)
+            providers_any: Any = page.get("results", []) if isinstance(page, dict) else []
+            providers_list: List[Dict[str, Any]] = []
+            if isinstance(providers_any, list):
+                for provider_any in cast(List[Any], providers_any):
+                    if isinstance(provider_any, dict):
+                        providers_list.append(cast(Dict[str, Any], provider_any))
+            normalized = normalize_text(hospital_any)
+            exact_matches: List[Dict[str, Any]] = []
+            fuzzy_matches: List[Dict[str, Any]] = []
+            for provider_any in providers_list:
+                provider = provider_any
+                name = _provider_name(provider)
+                if not name:
+                    continue
+                provider_norm = normalize_text(name)
+                if provider_norm == normalized:
+                    exact_matches.append(provider)
+                elif normalized in provider_norm or provider_norm in normalized:
+                    fuzzy_matches.append(provider)
+            matches = exact_matches or fuzzy_matches
+            if len(matches) == 1:
+                provider = matches[0]
+                provider_id = _extract_provider_id(provider)
+                label = _provider_name(provider)
+                if provider_id is not None:
+                    return {"guided_hospital_scope": _json_scope("provider_id", provider_id, label=label)}
+                return {"guided_hospital_scope": _json_scope("hospital_name", label or hospital_any.strip(), label=label or hospital_any.strip())}
+            if len(matches) > 1:
+                _utter_invalid(dispatcher, translate("action.guided.hospital_name_ambiguous", language=language))
+                return {"guided_hospital_scope": None}
+
+        group_any = entities.get("group_id") or entities.get("group") or slot_value
+        if isinstance(group_any, int):
+            return {"guided_hospital_scope": _json_scope("group_id", group_any, label=str(group_any))}
+        if isinstance(group_any, str) and group_any.strip().isdigit():
+            return {"guided_hospital_scope": _json_scope("group_id", int(group_any.strip()), label=group_any.strip())}
+
+        raw_source = scope_ref_any if scope_ref_any is not None else slot_value
+        raw = raw_source if isinstance(raw_source, str) else str(raw_source or "")
+        if normalize_text(raw) in ALL_SCOPE_TOKENS:
             return {
                 "guided_hospital_scope": _json_scope(
                     "all",
@@ -306,105 +404,9 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
                     label=translate("action.guided.all_hospitals_label", language=language),
                 )
             }
-        if scope_ref_norm in MINE_SCOPE_TOKENS:
-            process_id, hostname = _runtime_instance_fields()
-            logger.info(
-                "[GuidedVisualizationValidation] Mine scope validation (trace_id=%s, pid=%s, host=%s, tracker_sender_id=%r, user_sub=%r, scope_ref=%r)",
-                trace_id,
-                process_id,
-                hostname,
-                tracker.sender_id,
-                user_sub,
-                scope_ref_any,
-            )
-            try:
-                mine_scope = _resolve_mine_scope(user_sub=user_sub, trace_id=trace_id)
-            except AnalyticsCenterError as exc:
-                details = exc.details if isinstance(exc.details, dict) else {}
-                proxy_any = details.get("proxy")
-                proxy_info = cast(Dict[str, Any], proxy_any) if isinstance(proxy_any, dict) else {}
-                reason_any = proxy_info.get("reason")
-                reason = reason_any.strip() if isinstance(reason_any, str) and reason_any.strip() else ""
 
-                if exc.status_code == 401 or "cached user access token" in reason.lower() or "user token unavailable" in reason.lower():
-                    _utter_invalid(
-                        dispatcher,
-                        translate("action.guided.mine_scope_auth_unavailable", language=language),
-                    )
-                    return {"guided_hospital_scope": None}
-
-                _utter_invalid(
-                    dispatcher,
-                    translate("action.guided.mine_scope_unknown", language=language),
-                )
-                return {"guided_hospital_scope": None}
-            if mine_scope is not None:
-                return {"guided_hospital_scope": mine_scope}
-            _utter_invalid(
-                dispatcher,
-                translate("action.guided.mine_scope_not_found", language=language),
-            )
-            return {"guided_hospital_scope": None}
-
-    country_any = entities.get("country_code") or entities.get("countryCode") or entities.get("country")
-    if isinstance(country_any, str) and country_any.strip():
-        resolved = client.resolve_country_code(user_sub=user_sub, country_input=country_any.strip(), trace_id=trace_id, raise_on_error=False)
-        if resolved:
-            return {"guided_hospital_scope": _json_scope("country_code", resolved, label=resolved)}
-
-    hospital_any = entities.get("hospital_name") or entities.get("hospital") or entities.get("provider") or slot_value
-    if isinstance(hospital_any, str) and hospital_any.strip() and normalize_text(hospital_any) not in ALL_SCOPE_TOKENS:
-        page = client.list_providers(user_sub=user_sub, limit=200, offset=0, trace_id=trace_id, raise_on_error=False)
-        providers_any: Any = page.get("results", []) if isinstance(page, dict) else []
-        providers_list: List[Dict[str, Any]] = []
-        if isinstance(providers_any, list):
-            for provider_any in cast(List[Any], providers_any):
-                if isinstance(provider_any, dict):
-                    providers_list.append(cast(Dict[str, Any], provider_any))
-        normalized = normalize_text(hospital_any)
-        exact_matches: List[Dict[str, Any]] = []
-        fuzzy_matches: List[Dict[str, Any]] = []
-        for provider_any in providers_list:
-            provider = provider_any
-            name = _provider_name(provider)
-            if not name:
-                continue
-            provider_norm = normalize_text(name)
-            if provider_norm == normalized:
-                exact_matches.append(provider)
-            elif normalized in provider_norm or provider_norm in normalized:
-                fuzzy_matches.append(provider)
-        matches = exact_matches or fuzzy_matches
-        if len(matches) == 1:
-            provider = matches[0]
-            provider_id = _extract_provider_id(provider)
-            label = _provider_name(provider)
-            if provider_id is not None:
-                return {"guided_hospital_scope": _json_scope("provider_id", provider_id, label=label)}
-            return {"guided_hospital_scope": _json_scope("hospital_name", label or hospital_any.strip(), label=label or hospital_any.strip())}
-        if len(matches) > 1:
-            _utter_invalid(dispatcher, translate("action.guided.hospital_name_ambiguous", language=language))
-            return {"guided_hospital_scope": None}
-
-    group_any = entities.get("group_id") or entities.get("group") or slot_value
-    if isinstance(group_any, int):
-        return {"guided_hospital_scope": _json_scope("group_id", group_any, label=str(group_any))}
-    if isinstance(group_any, str) and group_any.strip().isdigit():
-        return {"guided_hospital_scope": _json_scope("group_id", int(group_any.strip()), label=group_any.strip())}
-
-    raw_source = scope_ref_any if scope_ref_any is not None else slot_value
-    raw = raw_source if isinstance(raw_source, str) else str(raw_source or "")
-    if normalize_text(raw) in ALL_SCOPE_TOKENS:
-        return {
-            "guided_hospital_scope": _json_scope(
-                "all",
-                "all",
-                label=translate("action.guided.all_hospitals_label", language=language),
-            )
-        }
-
-    _utter_invalid(dispatcher, translate("action.guided.hospital_scope_invalid", language=language))
-    return {"guided_hospital_scope": None}
+        _utter_invalid(dispatcher, translate("action.guided.hospital_scope_invalid", language=language))
+        return {"guided_hospital_scope": None}
 
 
 def parse_guided_scope(scope_raw: Any) -> Optional[Dict[str, Any]]:

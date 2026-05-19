@@ -16,6 +16,7 @@ from src.planners.langchain.llm_factory import create_chat_llm
 from src.planners.langchain.pipeline import generate_analysis_plan
 from src.shared import ssot_loader
 from src.util import env as env_util
+from src.util.logging_utils import bind_current_context, log_context
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +198,7 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
 
 def _invoke_chain(chain: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
     with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(chain.invoke, payload)
+        future = executor.submit(bind_current_context(chain.invoke), payload)
         try:
             response = future.result(timeout=_ORCHESTRATOR_TIMEOUT_SECONDS)
         except FuturesTimeoutError as exc:
@@ -386,82 +387,10 @@ def orchestrate_visualization_request(
     conversation_history: Optional[List[str]] = None,
     progress_cb: Optional[Callable[[str], None]] = None,
 ) -> VisualizationRequestOutcome:
-    if not _ORCHESTRATOR_ENABLED:
-        if not include_plan:
-            return VisualizationRequestOutcome(decision="proceed", reason="orchestrator_disabled")
-        plan = generate_analysis_plan(
-            question=question,
-            entities=entities,
-            language=language,
-            max_retries=max_retries,
-            debug=False,
-            trace_id=trace_id,
-            progress_cb=progress_cb,
-        )
-        return VisualizationRequestOutcome(decision="proceed", reason="orchestrator_disabled", plan=plan)
-
-    def report(message: str) -> None:
-        if progress_cb is not None:
-            progress_cb(message)
-
-    try:
-        report("Analyzing request intent and feasibility")
-        stage1 = _decision_stage(question, entities, language, conversation_history=conversation_history)
-
-        if stage1.decision == "reject":
-            if stage1.message is None:
-                stage1.message = "This request is outside the visualization flow."
-            return stage1
-
-        if stage1.decision == "clarify":
-            if _ASSUME_DEFAULT_TIME_SCOPE and _should_assume_default_time_scope(stage1):
-                logger.info("Assuming default time scope; skipping clarification")
-                return VisualizationRequestOutcome(
-                    decision="proceed",
-                    reason="default_time_scope_assumed",
-                )
-
-            report("Generating clarification question")
-            return _clarification_stage(
-                question=question,
-                entities=entities,
-                missing_fields=stage1.missing_fields,
-                language=language,
-                conversation_history=conversation_history,
-            )
-
-        if not include_plan:
-            return VisualizationRequestOutcome(
-                decision="proceed",
-                reason=stage1.reason or "sufficient_information",
-            )
-
-        report("Generating visualization plan")
-        planner_question = question
-        if conversation_history:
-            cleaned_history = [item.strip() for item in conversation_history if item.strip()]
-            if cleaned_history:
-                joined = "\n".join(f"- {item}" for item in cleaned_history)
-                planner_question = f"Conversation context (oldest to newest user turns):\n{joined}\n\nCurrent request to fulfill:\n{question}"
-
-        plan = generate_analysis_plan(
-            question=planner_question,
-            entities=entities,
-            language=language,
-            max_retries=max_retries,
-            debug=False,
-            trace_id=trace_id,
-            progress_cb=progress_cb,
-        )
-        return VisualizationRequestOutcome(
-            decision="proceed",
-            reason=stage1.reason or "sufficient_information",
-            plan=plan,
-        )
-    except Exception:
-        logger.exception("Visualization request orchestration failed")
-        if _ORCHESTRATOR_FAIL_OPEN and include_plan:
-            report("Orchestration fallback: generating plan directly")
+    with log_context(trace_id=trace_id or "", orchestrator_include_plan=include_plan):
+        if not _ORCHESTRATOR_ENABLED:
+            if not include_plan:
+                return VisualizationRequestOutcome(decision="proceed", reason="orchestrator_disabled")
             plan = generate_analysis_plan(
                 question=question,
                 entities=entities,
@@ -471,14 +400,87 @@ def orchestrate_visualization_request(
                 trace_id=trace_id,
                 progress_cb=progress_cb,
             )
+            return VisualizationRequestOutcome(decision="proceed", reason="orchestrator_disabled", plan=plan)
+
+        def report(message: str) -> None:
+            if progress_cb is not None:
+                progress_cb(message)
+
+        try:
+            report("Analyzing request intent and feasibility")
+            stage1 = _decision_stage(question, entities, language, conversation_history=conversation_history)
+
+            if stage1.decision == "reject":
+                if stage1.message is None:
+                    stage1.message = "This request is outside the visualization flow."
+                return stage1
+
+            if stage1.decision == "clarify":
+                if _ASSUME_DEFAULT_TIME_SCOPE and _should_assume_default_time_scope(stage1):
+                    logger.debug("Assuming default time scope; skipping clarification")
+                    return VisualizationRequestOutcome(
+                        decision="proceed",
+                        reason="default_time_scope_assumed",
+                    )
+
+                report("Generating clarification question")
+                return _clarification_stage(
+                    question=question,
+                    entities=entities,
+                    missing_fields=stage1.missing_fields,
+                    language=language,
+                    conversation_history=conversation_history,
+                )
+
+            if not include_plan:
+                return VisualizationRequestOutcome(
+                    decision="proceed",
+                    reason=stage1.reason or "sufficient_information",
+                )
+
+            report("Generating visualization plan")
+            planner_question = question
+            if conversation_history:
+                cleaned_history = [item.strip() for item in conversation_history if item.strip()]
+                if cleaned_history:
+                    joined = "\n".join(f"- {item}" for item in cleaned_history)
+                    planner_question = f"Conversation context (oldest to newest user turns):\n{joined}\n\nCurrent request to fulfill:\n{question}"
+
+            plan = generate_analysis_plan(
+                question=planner_question,
+                entities=entities,
+                language=language,
+                max_retries=max_retries,
+                debug=False,
+                trace_id=trace_id,
+                progress_cb=progress_cb,
+            )
             return VisualizationRequestOutcome(
                 decision="proceed",
-                reason="orchestrator_fallback_to_plan",
+                reason=stage1.reason or "sufficient_information",
                 plan=plan,
             )
+        except Exception:
+            logger.exception("Visualization request orchestration failed")
+            if _ORCHESTRATOR_FAIL_OPEN and include_plan:
+                report("Orchestration fallback: generating plan directly")
+                plan = generate_analysis_plan(
+                    question=question,
+                    entities=entities,
+                    language=language,
+                    max_retries=max_retries,
+                    debug=False,
+                    trace_id=trace_id,
+                    progress_cb=progress_cb,
+                )
+                return VisualizationRequestOutcome(
+                    decision="proceed",
+                    reason="orchestrator_fallback_to_plan",
+                    plan=plan,
+                )
 
-        return VisualizationRequestOutcome(
-            decision="clarify",
-            reason="orchestrator_failed",
-            message="I need a bit more detail before I can continue.",
-        )
+            return VisualizationRequestOutcome(
+                decision="clarify",
+                reason="orchestrator_failed",
+                message="I need a bit more detail before I can continue.",
+            )

@@ -16,6 +16,7 @@ from rasa_sdk import types as rasa_types  # type: ignore
 from rasa_sdk.executor import CollectingDispatcher  # type: ignore
 
 from src.util import env as env_util
+from src.util.logging_utils import bind_current_context, log_context
 
 from . import long_action_registry as registry
 from .long_action_context import LongActionContext
@@ -142,6 +143,11 @@ class LongAction(Action, ABC):
         domain: rasa_types.DomainDict,
     ) -> List[Dict[str, Any]]:
         sender_id = tracker.sender_id
+        latest_message_any = getattr(tracker, "latest_message", None)
+        latest_message = cast(Dict[str, Any], latest_message_any) if isinstance(latest_message_any, dict) else {}
+        metadata_any = latest_message.get("metadata")
+        metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
+        request_trace_id = _trace_id_from_message(latest_message) or _trace_id_from_metadata(metadata)
 
         tracker_snapshot: Dict[str, Any] = {
             "latest_message": tracker.latest_message,
@@ -153,32 +159,54 @@ class LongAction(Action, ABC):
 
         callback_cfg = _get_callback_config(tracker)
 
-        # Prework always runs in dispatcher mode so subclasses can emit normal
-        # in-band messages and return Rasa events before any long-running work.
-        pre_ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher)
-        pre_outcome = await self.prework(pre_ctx)
-        immediate_events = pre_outcome.events if isinstance(pre_outcome.events, list) else []
-        if not pre_outcome.proceed:
-            return immediate_events
+        log_fields: Dict[str, Any] = {"sender_id": sender_id, "action": self.name()}
+        if request_trace_id:
+            log_fields["trace_id"] = request_trace_id
 
-        # If no callback is configured, fall back to synchronous execution so
-        # behavior is predictable in rasa shell and simple REST setups.
-        if callback_cfg is None:
-            ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher)
-            await self.work(ctx)
-            return [*immediate_events, *ctx.pending_events]
+        with log_context(**log_fields):
+            # Prework always runs in dispatcher mode so subclasses can emit normal
+            # in-band messages and return Rasa events before any long-running work.
+            pre_ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher)
+            pre_outcome = await self.prework(pre_ctx)
+            immediate_events = pre_outcome.events
+            if not pre_outcome.proceed:
+                return immediate_events
 
-        # Callback is configured: run the long task asynchronously and notify
-        # the frontend via HTTP callback when finished. We do not schedule Rasa
-        # reminders or use a poller in this mode.
-        callback_url, callback_token = callback_cfg
-        job_id = uuid.uuid4().hex
+            # If no callback is configured, fall back to synchronous execution so
+            # behavior is predictable in rasa shell and simple REST setups.
+            if callback_cfg is None:
+                ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher)
+                await self.work(ctx)
+                return [*immediate_events, *ctx.pending_events]
 
-        if _DEFER_CALLBACK_HANDOFF:
-            # Optional hybrid mode: start in normal dispatcher path and let the
-            # action explicitly switch to callback transport via
-            # ctx.enable_callback_mode().
-            ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher)
+            # Callback is configured: run the long task asynchronously and notify
+            # the frontend via HTTP callback when finished. We do not schedule Rasa
+            # reminders or use a poller in this mode.
+            callback_url, callback_token = callback_cfg
+            job_id = uuid.uuid4().hex
+
+            if _DEFER_CALLBACK_HANDOFF:
+                # Optional hybrid mode: start in normal dispatcher path and let the
+                # action explicitly switch to callback transport via
+                # ctx.enable_callback_mode().
+                ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher)
+                ctx.attach_progress_callback(
+                    lambda message, ctx=ctx, job_id=job_id, callback_url=callback_url, callback_token=callback_token: self._post_progress(
+                        ctx,
+                        job_id,
+                        callback_url,
+                        callback_token,
+                        message,
+                    )
+                )
+                with log_context(job_id=job_id, callback_mode=True):
+                    await self.work(ctx)
+                return [*immediate_events, *ctx.pending_events]
+
+            ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot)
+
+            # In callback mode, stream every ctx.say() as a progress callback to
+            # the frontend while the job is running.
             ctx.attach_progress_callback(
                 lambda message, ctx=ctx, job_id=job_id, callback_url=callback_url, callback_token=callback_token: self._post_progress(
                     ctx,
@@ -188,31 +216,15 @@ class LongAction(Action, ABC):
                     message,
                 )
             )
-            await self.work(ctx)
-            return [*immediate_events, *ctx.pending_events]
 
-        ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot)
+            threading.Thread(
+                target=bind_current_context(self._run_work),
+                args=(ctx, job_id, callback_url, callback_token),
+                daemon=True,
+            ).start()
 
-        # In callback mode, stream every ctx.say() as a progress callback to
-        # the frontend while the job is running.
-        ctx.attach_progress_callback(
-            lambda message, ctx=ctx, job_id=job_id, callback_url=callback_url, callback_token=callback_token: self._post_progress(
-                ctx,
-                job_id,
-                callback_url,
-                callback_token,
-                message,
-            )
-        )
-
-        threading.Thread(
-            target=self._run_work,
-            args=(ctx, job_id, callback_url, callback_token),
-            daemon=True,
-        ).start()
-
-        # No additional events required; we rely on the external callback.
-        return immediate_events
+            # No additional events required; we rely on the external callback.
+            return immediate_events
 
     def _post_progress(
         self,
@@ -254,20 +266,21 @@ class LongAction(Action, ABC):
             )
             if _LOG_CALLBACK_STATUS:
                 logger.debug(
-                    "LongAction callback posted (status=%s, trace_id=%s)",
+                    "LongAction callback posted (status=%s)",
                     getattr(resp, "status_code", None),
-                    trace_id or "-",
+                    extra={"trace_id": trace_id or "-"},
                 )
         except Exception:
             # Swallow errors from the callback endpoint; they should not
             # break the long-running job.
             if _LOG_CALLBACK_ERRORS:
-                logger.debug("LongAction callback post failed (trace_id=%s)", trace_id or "-", exc_info=True)
+                logger.debug("LongAction callback post failed", exc_info=True, extra={"trace_id": trace_id or "-"})
 
     def _run_work(self, ctx: LongActionContext, job_id: str, callback_url: str, callback_token: str) -> None:
         try:
             asyncio.run(self.work(ctx))
         except Exception:
+            logger.exception("LongAction work failed")
             # Fail closed: emit an error as a normal message so the user sees
             # something, but do not propagate the exception.
             ctx.say(text="Something went wrong.")

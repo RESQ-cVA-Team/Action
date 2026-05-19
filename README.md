@@ -56,11 +56,13 @@ LLM_MODEL=<model-id>
 LLM_API_KEY=<optional-or-required-by-provider>
 
 LOGLEVEL=DEBUG
+LOG_FORMAT=text
 
 # Optional: file logging for debugging
 LOG_TO_FILE=true
 LOG_FILE_DIR=.tmp/logs
 LOG_FILE_LEVEL=DEBUG
+LOG_FILE_FORMAT=text
 LOG_FILE_SESSION=false
 LOG_FILE_ROTATE=true
 LOG_FILE_MAX_BYTES=10485760
@@ -73,6 +75,10 @@ LOG_NOISY_LIB_LEVEL=WARNING
 # Leave empty (default) to disable per-library suppression, or opt in:
 LOG_NOISY_LIB_LOGGERS=
 # LOG_NOISY_LIB_LOGGERS=openai,httpx,httpcore,urllib3
+
+# Optional: override levels per logger/module
+LOG_MODULE_LEVELS=
+# LOG_MODULE_LEVELS=src.executors.graphql.client=DEBUG,src.executors.analytics_center.client=DEBUG,src.planners=DEBUG
 ```
 
 If using OpenAI:
@@ -99,6 +105,31 @@ This repo includes `.vscode/tasks.json` with:
 - `Start Rasa Actions`
 
 Run from VS Code: **Terminal → Run Task**.
+
+### Logging configuration
+
+The action service now supports two output formats:
+
+- `LOG_FORMAT=text` keeps developer-friendly single-line logs.
+- `LOG_FORMAT=json` emits structured logs with top-level fields such as `level`, `logger`, `message`, `trace_id`, `source`, and a `context` object.
+
+File logging can use the same or a different formatter via `LOG_FILE_FORMAT`.
+
+Level policy:
+
+- `INFO` is for request lifecycle milestones, meaningful fallbacks, and user-impacting warnings or failures.
+- `DEBUG` is for high-volume diagnostic detail such as outbound GraphQL or Analytics Center request chatter, planner bootstrap details, compiler diagnostics, and cache behavior.
+- `WARNING` and `ERROR` remain reserved for degraded behavior, retries, partial results, upstream failures, and invalid responses.
+
+Use `LOG_MODULE_LEVELS` for targeted overrides without changing the global level. The value is a comma-separated list of `logger=LEVEL` or `logger:LEVEL` entries, for example:
+
+```env
+LOGLEVEL=INFO
+LOG_FORMAT=json
+LOG_MODULE_LEVELS=src.executors.graphql.client=DEBUG,src.executors.analytics_center.client=DEBUG,src.planners=DEBUG
+```
+
+This is the recommended way to temporarily increase verbosity for one subsystem without turning on full-project `DEBUG` logging.
 
 ---
 

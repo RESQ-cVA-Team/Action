@@ -15,6 +15,7 @@ from src.domain.langchain.schema import AnalysisPlan
 from src.planners.langchain.examples import get_few_shot_examples
 from src.planners.langchain.llm_factory import create_chat_llm, get_llm_provider
 from src.util import env
+from src.util.logging_utils import bind_current_context, log_context
 
 logger = logging.getLogger(__name__)
 _ENABLE_DYNAMIC_FEW_SHOTS = True
@@ -44,9 +45,9 @@ _PLAN_CACHE_TTL_SECONDS = 900.0
 _PLAN_CACHE_KEY_VERSION = "v2"
 
 LLM_PROVIDER = get_llm_provider()
-llm: Any = create_chat_llm(temperature=0)
-logger.info("[Planner] Initialized LLM provider=%s", LLM_PROVIDER)
 _LLM_MODEL = (env.get_env("LLM_MODEL", default="") or "").strip()
+llm: Any = create_chat_llm(temperature=0)
+logger.debug("[Planner] Initialized LLM provider=%s model=%s", LLM_PROVIDER, _LLM_MODEL or "-")
 
 
 class PlannerTimeoutError(TimeoutError):
@@ -174,7 +175,7 @@ _LAST_CACHE_EVENT: ContextVar[Optional[bool]] = ContextVar("planner_last_cache_e
 
 def _invoke_with_timeout(chain: Any, inputs: Dict[str, Any], label: str) -> Any:
     with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(chain.invoke, inputs)
+        future = executor.submit(bind_current_context(chain.invoke), inputs)
         try:
             return future.result(timeout=_PLANNER_REQUEST_TIMEOUT_SECONDS)
         except FuturesTimeoutError as exc:
@@ -494,96 +495,101 @@ def generate_analysis_plan(
     if not language:
         language = "auto"
 
-    _record_cache_event(None)
+    with log_context(trace_id=trace_id or "", planner_language=language):
+        _record_cache_event(None)
 
-    cache_key: Optional[str] = None
-    if _ENABLE_PLAN_CACHE and not debug:
-        cache_key = _cache_key(question=question, entities=entities, language=language)
-        cached_plan = _cache_get(cache_key)
-        if cached_plan is not None:
-            _record_cache_event(True)
-            if progress_cb is not None:
-                progress_cb("Using cached plan.")
-            return cached_plan
-        _record_cache_event(False)
+        cache_key: Optional[str] = None
+        if _ENABLE_PLAN_CACHE and not debug:
+            cache_key = _cache_key(question=question, entities=entities, language=language)
+            cached_plan = _cache_get(cache_key)
+            if cached_plan is not None:
+                _record_cache_event(True)
+                logger.debug("[Planner] Returning cached analysis plan")
+                if progress_cb is not None:
+                    progress_cb("Using cached plan.")
+                return cached_plan
+            _record_cache_event(False)
 
-    # High-level notification that planning has started.
-    if progress_cb is not None:
-        progress_cb("Thinking about a plan.")
-
-    selected_examples = few_shot_examples
-    if _ENABLE_DYNAMIC_FEW_SHOTS:
-        selected_examples = _select_few_shot_examples(
-            question=question,
-            entities=entities,
-            max_items=_MAX_FEW_SHOTS,
-        )
-    few_shots_text = _build_few_shots_text(selected_examples)
-
-    logger.info("[Planner] generate_analysis_plan invoked (language=%s)", language)
-
-    steps: List[Any] = []
-    attempts: List[Any] = []
-
-    plan_inputs: Dict[str, Any] = {
-        "question": question,
-        "entities": json.dumps(entities),
-        "reasoning": "",
-        "few_shots": few_shots_text,
-        "language": language,
-        "supported_stat_tests": json.dumps(_SUPPORTED_STAT_TESTS),
-    }
-
-    retries = max(0, max_retries)
-    total_attempts = retries + 1
-    result: Optional[AnalysisPlan] = None
-    last_error: Optional[Exception] = None
-
-    for attempt in range(1, total_attempts + 1):
+        # High-level notification that planning has started.
         if progress_cb is not None:
-            progress_cb(f"Thinking about a plan (attempt {attempt}/{total_attempts}).")
+            progress_cb("Thinking about a plan.")
 
-        raw_result: Any = _invoke_with_timeout(plan_chain, plan_inputs, label=f"plan_chain_attempt_{attempt}")
-        steps.append(
-            {
-                "step": f"plan_attempt_{attempt}",
-                "prompt": "(prompt logging disabled)",
-                "response": raw_result,
-            }
+        selected_examples = few_shot_examples
+        if _ENABLE_DYNAMIC_FEW_SHOTS:
+            selected_examples = _select_few_shot_examples(
+                question=question,
+                entities=entities,
+                max_items=_MAX_FEW_SHOTS,
+            )
+        few_shots_text = _build_few_shots_text(selected_examples)
+
+        logger.debug(
+            "[Planner] generate_analysis_plan invoked",
+            extra={"log_context": {"question_length": len(question or ""), "entity_count": len(entities or {})}},
         )
 
-        try:
-            result = _coerce_analysis_plan(raw_result)
-            break
-        except Exception as exc:
-            last_error = exc
-            attempts.append(
+        steps: List[Any] = []
+        attempts: List[Any] = []
+
+        plan_inputs: Dict[str, Any] = {
+            "question": question,
+            "entities": json.dumps(entities),
+            "reasoning": "",
+            "few_shots": few_shots_text,
+            "language": language,
+            "supported_stat_tests": json.dumps(_SUPPORTED_STAT_TESTS),
+        }
+
+        retries = max(0, max_retries)
+        total_attempts = retries + 1
+        result: Optional[AnalysisPlan] = None
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, total_attempts + 1):
+            if progress_cb is not None:
+                progress_cb(f"Thinking about a plan (attempt {attempt}/{total_attempts}).")
+
+            raw_result: Any = _invoke_with_timeout(plan_chain, plan_inputs, label=f"plan_chain_attempt_{attempt}")
+            steps.append(
                 {
-                    "attempt": attempt,
-                    "ok": False,
-                    "error": str(exc),
+                    "step": f"plan_attempt_{attempt}",
+                    "prompt": "(prompt logging disabled)",
+                    "response": raw_result,
                 }
             )
-            if attempt >= total_attempts:
+
+            try:
+                result = _coerce_analysis_plan(raw_result)
                 break
-            plan_inputs["reasoning"] = f"Previous output failed schema validation. Return ONLY a valid AnalysisPlan JSON object. Validation error: {exc}"
+            except Exception as exc:
+                last_error = exc
+                attempts.append(
+                    {
+                        "attempt": attempt,
+                        "ok": False,
+                        "error": str(exc),
+                    }
+                )
+                if attempt >= total_attempts:
+                    break
+                plan_inputs["reasoning"] = f"Previous output failed schema validation. Return ONLY a valid AnalysisPlan JSON object. Validation error: {exc}"
 
-    if result is None:
-        raise ValueError(f"Planner failed to produce a valid AnalysisPlan after {total_attempts} attempts") from last_error
+        if result is None:
+            raise ValueError(f"Planner failed to produce a valid AnalysisPlan after {total_attempts} attempts") from last_error
 
-    if debug:
-        debug_payload: GeneratePlanDebug = {
-            "reasoning": "",
-            "steps": steps,
-            "attempts": attempts,
-            "final_output": result,
-        }
+        if debug:
+            debug_payload: GeneratePlanDebug = {
+                "reasoning": "",
+                "steps": steps,
+                "attempts": attempts,
+                "final_output": result,
+            }
+            if progress_cb is not None:
+                progress_cb("Finished thinking about a plan.")
+            return debug_payload
+
+        if cache_key is not None:
+            _cache_put(cache_key, result)
         if progress_cb is not None:
             progress_cb("Finished thinking about a plan.")
-        return debug_payload
-
-    if cache_key is not None:
-        _cache_put(cache_key, result)
-    if progress_cb is not None:
-        progress_cb("Finished thinking about a plan.")
-    return result
+        return result
