@@ -21,10 +21,11 @@ from src.executors.mapping.filter_mapper import to_gql_filter
 from src.executors.mapping.series_mapper import merge_series_by_name
 from src.executors.mapping.summary_builder import make_batch_summary, make_execution_summary
 from src.executors.planning.metric_request_factory import build_metric_requests
+from src.executors.planning.origin_scope_resolver import OriginScopeResolutionError, resolve_plan_metric_origins
 from src.executors.planning.query_compiler import Dimension, compile_chart_grouping, estimate_query_count_for_plan
 from src.executors.planning.request_plan import RequestSpec, build_fallback_request_specs, build_primary_request_specs, should_retry_unbatched_time
 from src.executors.transport.request_runner import run_graphql_request
-from src.shared.ssot_loader import get_metric_display_name, get_metric_metadata
+from src.shared.ssot_loader import get_metric_display_name, get_metric_metadata, get_statistics_metric_enum_map
 from src.util import env as env_util
 from src.util.coalesce import coalesce
 
@@ -205,25 +206,95 @@ def _cohort_split_from_groupby(group_by: Optional[List[GroupBySpec]]) -> Optiona
 
 def _execute_mann_whitney_test(test: StatisticalTestSpec, user_sub: str, trace_id: str) -> List[StatisticalTestResult]:
     base_filter = to_gql_filter(test.filters)
-    cohort_split = _cohort_split_from_groupby(test.group_by)
-    if cohort_split is None:
-        logger.warning(
-            "[plan_executor] Skipping MANN_WHITNEY_U_TEST (trace_id=%s) due to missing/unsupported two-cohort group_by",
-            trace_id or "-",
-        )
-        return []
 
-    dim, cat_a, cat_b, label_a, label_b = cohort_split
-
-    cohort_filter_a = _merge_case_filters(base_filter, dim.filter_for(cat_a))
-    cohort_filter_b = _merge_case_filters(base_filter, dim.filter_for(cat_b))
-
-    data_origin_payload = _build_default_data_origin().model_dump(by_alias=True, exclude_none=True)
-    time_period_payload = _default_time_period_from_filter(base_filter)
-
-    metric_values = [m.metric for m in (test.metrics or []) if isinstance(m.metric, str) and m.metric.strip()]
+    metrics = test.metrics or []
+    metric_values = [m.metric for m in metrics if isinstance(m.metric, str) and m.metric.strip()]
     if not metric_values:
         return []
+
+    # Translate SSOT canonical names to StatisticsMetricEnum GQL values and
+    # validate that each metric is supported by the statistics endpoint.
+    stats_enum_map = get_statistics_metric_enum_map()
+    translated_metrics: List[str] = []
+    ineligible: List[str] = []
+    for mv in metric_values:
+        gql_name = stats_enum_map.get(mv)
+        if gql_name is None:
+            ineligible.append(mv)
+        else:
+            translated_metrics.append(gql_name)
+    if ineligible:
+        reason = f"Metric(s) not supported for statistical testing: {', '.join(ineligible)}"
+        logger.warning(
+            "[plan_executor] Skipping MANN_WHITNEY_U_TEST (trace_id=%s): %s",
+            trace_id or "-",
+            reason,
+        )
+        return [
+            StatisticalTestResult(
+                test_type="MANN_WHITNEY_U_TEST",
+                status="skipped",
+                reason=reason,
+                title="Mann-Whitney U Test: skipped",
+            )
+        ]
+    metric_values = translated_metrics
+
+    # Preferred path: explicitly scoped metric pair (hospital-vs-hospital,
+    # hospital-vs-national, etc.) where first two metric entries define cohorts.
+    metric_a = metrics[0] if len(metrics) > 0 else None
+    metric_b = metrics[1] if len(metrics) > 1 else None
+    metric_a_origin = cast(Optional[Any], getattr(metric_a, "data_origin", None)) if metric_a is not None else None
+    metric_b_origin = cast(Optional[Any], getattr(metric_b, "data_origin", None)) if metric_b is not None else None
+
+    data_origin_payload_a: Optional[Dict[str, Any]] = None
+    data_origin_payload_b: Optional[Dict[str, Any]] = None
+    label_a = "Cohort A"
+    label_b = "Cohort B"
+    cohort_filter_a = base_filter
+    cohort_filter_b = base_filter
+
+    if metric_a_origin is not None and metric_b_origin is not None:
+        data_origin_payload_a = metric_a_origin.model_dump(by_alias=True, exclude_none=True)
+        data_origin_payload_b = metric_b_origin.model_dump(by_alias=True, exclude_none=True)
+        label_a = cast(Optional[str], getattr(cast(Any, metric_a), "origin_scope", None).label) if getattr(cast(Any, metric_a), "origin_scope", None) is not None else "Cohort A"
+        label_b = cast(Optional[str], getattr(cast(Any, metric_b), "origin_scope", None).label) if getattr(cast(Any, metric_b), "origin_scope", None) is not None else "Cohort B"
+        if not label_a:
+            label_a = "Cohort A"
+        if not label_b:
+            label_b = "Cohort B"
+    else:
+        # Backward-compatible fallback: derive cohorts from two-way group_by split.
+        cohort_split = _cohort_split_from_groupby(test.group_by)
+        if cohort_split is None:
+            reason = "Could not determine two distinct cohorts for comparison"
+            logger.warning(
+                "[plan_executor] Skipping MANN_WHITNEY_U_TEST (trace_id=%s): %s",
+                trace_id or "-",
+                reason,
+            )
+            return [
+                StatisticalTestResult(
+                    test_type="MANN_WHITNEY_U_TEST",
+                    status="skipped",
+                    reason=reason,
+                    title="Mann-Whitney U Test: skipped",
+                )
+            ]
+
+        dim, cat_a, cat_b, label_a_split, label_b_split = cohort_split
+        cohort_filter_a = _merge_case_filters(base_filter, dim.filter_for(cat_a))
+        cohort_filter_b = _merge_case_filters(base_filter, dim.filter_for(cat_b))
+        data_origin_payload_default = _build_default_data_origin().model_dump(by_alias=True, exclude_none=True)
+        data_origin_payload_a = data_origin_payload_default
+        data_origin_payload_b = data_origin_payload_default
+        label_a = label_a_split
+        label_b = label_b_split
+
+    if data_origin_payload_a is None or data_origin_payload_b is None:
+        return []
+
+    time_period_payload = _default_time_period_from_filter(base_filter)
 
     query = """
 query MannWhitney($metric: [StatisticsMetricEnum!]!, $cohortA: CohortFilterInput!, $cohortB: CohortFilterInput!) {
@@ -241,12 +312,12 @@ query MannWhitney($metric: [StatisticsMetricEnum!]!, $cohortA: CohortFilterInput
     variables: Dict[str, Any] = {
         "metric": metric_values,
         "cohortA": {
-            "dataOrigin": data_origin_payload,
+            "dataOrigin": data_origin_payload_a,
             "timePeriod": time_period_payload,
             "caseFilter": cohort_filter_a.model_dump(by_alias=True, exclude_none=True) if cohort_filter_a is not None else None,
         },
         "cohortB": {
-            "dataOrigin": data_origin_payload,
+            "dataOrigin": data_origin_payload_b,
             "timePeriod": time_period_payload,
             "caseFilter": cohort_filter_b.model_dump(by_alias=True, exclude_none=True) if cohort_filter_b is not None else None,
         },
@@ -291,6 +362,7 @@ query MannWhitney($metric: [StatisticsMetricEnum!]!, $cohortA: CohortFilterInput
         out.append(
             StatisticalTestResult(
                 test_type="MANN_WHITNEY_U_TEST",
+                status="success",
                 p_value=p_value,
                 passed=significant,
                 title=f"Mann-Whitney U Test: {metric_label}",
@@ -554,6 +626,12 @@ class ExecutionContext:
     log_graphql_query: bool
 
 
+@dataclass(frozen=True)
+class RequestExecutionResult:
+    spec: RequestSpec
+    series: List[ChartSeries]
+
+
 def _emit_progress(context: ExecutionContext, completed: int, total: int, prefix: str = "Fetching data") -> None:
     if context.progress_cb is None:
         return
@@ -563,35 +641,50 @@ def _emit_progress(context: ExecutionContext, completed: int, total: int, prefix
         context.progress_cb(f"{prefix}…")
 
 
+def _request_scope_label(spec: RequestSpec) -> str:
+    if isinstance(spec.scope_label, str) and spec.scope_label.strip():
+        return spec.scope_label.strip()
+    if spec.label_parts:
+        joined = " - ".join([part for part in spec.label_parts if isinstance(part, str) and part.strip()])
+        if joined:
+            return joined
+    return "one requested scope"
+
+
 async def _execute_request_spec(
     spec: RequestSpec,
     request_failures: List[str],
+    request_warnings: List[str],
     context: ExecutionContext,
     trace_id: str,
-) -> List[ChartSeries]:
-    return await run_graphql_request(
+) -> RequestExecutionResult:
+    series = await run_graphql_request(
         req=spec.req,
         label_parts=spec.label_parts,
         include_metric_alias=spec.include_metric_alias,
         group_by_field=spec.group_by_field,
         add_time_period_labels=spec.add_time_period_labels,
+        scope_label=spec.scope_label,
         request_failures=request_failures,
         client=client,
         user_sub=context.user_sub,
         trace_id=trace_id,
         semaphore=context.semaphore,
         log_graphql_query=context.log_graphql_query,
+        request_warnings=request_warnings,
     )
+    return RequestExecutionResult(spec=spec, series=series)
 
 
 async def _execute_specs_concurrent(
     specs: List[RequestSpec],
     request_failures: List[str],
+    request_warnings: List[str],
     context: ExecutionContext,
     trace_id: str,
     total_requests: int,
     progress_prefix: str = "Fetching data",
-) -> List[ChartSeries]:
+) -> List[RequestExecutionResult]:
     _emit_progress(context, completed=0, total=total_requests, prefix=progress_prefix)
     if not specs:
         return []
@@ -601,6 +694,7 @@ async def _execute_specs_concurrent(
             _execute_request_spec(
                 spec=spec,
                 request_failures=request_failures,
+                request_warnings=request_warnings,
                 context=context,
                 trace_id=trace_id,
             )
@@ -608,36 +702,43 @@ async def _execute_specs_concurrent(
         for spec in specs
     ]
 
-    all_series: List[ChartSeries] = []
+    results: List[RequestExecutionResult] = []
     completed = 0
     for task in asyncio.as_completed(tasks):
         result = await task
-        all_series.extend(result)
+        results.append(result)
         completed += 1
         _emit_progress(context, completed=completed, total=total_requests, prefix=progress_prefix)
 
-    return all_series
+    return results
 
 
 async def _execute_specs_sequential(
     specs: List[RequestSpec],
     request_failures: List[str],
+    request_warnings: List[str],
     context: ExecutionContext,
     trace_id: str,
     total_requests: int,
     progress_prefix: str,
-) -> List[ChartSeries]:
+) -> List[RequestExecutionResult]:
     _emit_progress(context, completed=0, total=total_requests, prefix=progress_prefix)
-    all_series: List[ChartSeries] = []
+    results: List[RequestExecutionResult] = []
     completed = 0
 
     for spec in specs:
-        result = await _execute_request_spec(spec=spec, request_failures=request_failures, context=context, trace_id=trace_id)
-        all_series.extend(result)
+        result = await _execute_request_spec(
+            spec=spec,
+            request_failures=request_failures,
+            request_warnings=request_warnings,
+            context=context,
+            trace_id=trace_id,
+        )
+        results.append(result)
         completed += 1
         _emit_progress(context, completed=completed, total=total_requests, prefix=progress_prefix)
 
-    return all_series
+    return results
 
 
 async def execute_plan_async(
@@ -660,6 +761,18 @@ async def execute_plan_async(
 
     logger.info("[plan_executor] execute_plan_async start (trace_id=%s)", trace_id_resolved)
 
+    try:
+        plan = resolve_plan_metric_origins(plan=plan, user_sub=user_sub, trace_id=trace_id_resolved)
+    except OriginScopeResolutionError as exc:
+        raise VisualizationExecutionError(
+            user_message=str(exc),
+            reason="origin_scope_resolution",
+            code="EXEC_ORIGIN_SCOPE",
+            trace_id=trace_id_resolved,
+            clarification_type=exc.clarification_type,
+            clarification_options=exc.clarification_options,
+        ) from exc
+
     normalization_summary = None
 
     plan_charts = coalesce(plan.charts, [])
@@ -678,7 +791,7 @@ async def execute_plan_async(
     )
 
     for planChart in plan_charts:
-        metric_requests, derived_axes, metric_data_origins = build_metric_requests(
+        metric_requests, derived_axes, metric_data_origins, metric_scope_labels = build_metric_requests(
             plan_chart=planChart,
             derive_defaults_fn=_derive_distribution_defaults,
             axis_from_meta_fn=_axis_from_meta,
@@ -689,6 +802,7 @@ async def execute_plan_async(
 
         for batch in compiled_grouping.batches:
             request_failures: List[str] = []
+            request_warnings: List[str] = []
             filter_dims = batch.filter_dims
             batched_time_enabled = batch.batched_time_enabled
             batched_time_periods = batch.batched_time_periods
@@ -710,6 +824,7 @@ async def execute_plan_async(
                 batched_time_periods=batched_time_periods,
                 include_metric_alias=include_metric_alias,
                 group_by_field=gb_field,
+                metric_scope_labels=metric_scope_labels,
             )
             total_requests = max(1, len(primary_specs))
             actual_queries += total_requests
@@ -741,14 +856,16 @@ async def execute_plan_async(
                     trace_id=trace_id_resolved,
                 )
 
-            all_series = await _execute_specs_concurrent(
+            request_results = await _execute_specs_concurrent(
                 specs=primary_specs,
                 request_failures=request_failures,
+                request_warnings=request_warnings,
                 context=execution_context,
                 trace_id=trace_id_resolved,
                 total_requests=total_requests,
                 progress_prefix="Fetching data",
             )
+            all_series = [item for result in request_results for item in result.series]
 
             if (
                 _ENABLE_UNBATCHED_TIME_FALLBACK
@@ -767,7 +884,6 @@ async def execute_plan_async(
                     len(combo_contexts),
                 )
                 request_failures.clear()
-                all_series = []
 
                 fallback_specs = build_fallback_request_specs(
                     combo_contexts=combo_contexts,
@@ -776,18 +892,31 @@ async def execute_plan_async(
 
                 retry_count = max(1, len(fallback_specs))
                 actual_queries += retry_count
-                all_series = await _execute_specs_sequential(
+                request_results = await _execute_specs_sequential(
                     specs=fallback_specs,
                     request_failures=request_failures,
+                    request_warnings=request_warnings,
                     context=execution_context,
                     trace_id=trace_id_resolved,
                     total_requests=retry_count,
                     progress_prefix="Retrying with per-period requests",
                 )
+                all_series = [item for result in request_results for item in result.series]
 
             sampled_period_override = _sampled_period_from_specs(primary_specs)
             if sampled_period_override is None and fallback_specs:
                 sampled_period_override = _sampled_period_from_specs(fallback_specs)
+
+            # Surface partial-result scenarios (some scopes returned no rows) without failing whole chart.
+            empty_scope_labels = [_request_scope_label(result.spec) for result in request_results if not result.series]
+            for scope_label in sorted(set(empty_scope_labels)):
+                warning_msg = f"No data was returned for {scope_label}. The chart includes the data that is available."
+                if warning_msg not in response.warnings:
+                    response.warnings.append(warning_msg)
+
+            for warning_msg in request_warnings:
+                if warning_msg not in response.warnings:
+                    response.warnings.append(warning_msg)
 
             all_series = merge_series_by_name(all_series)
 

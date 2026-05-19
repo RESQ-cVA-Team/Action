@@ -31,12 +31,21 @@ def test_analytics(dispatcher: Any, tracker: Any, domain: Any, args: List[str], 
     # Sample typed stats
     stats: List[StatisticalTestResult] = [
         StatisticalTestResult(
-            test_type="t-test",
+            test_type="MANN_WHITNEY_U_TEST",
+            status="success",
             p_value=0.031,
-            effect_size=0.45,
-            significance_level=0.05,
             passed=True,
-            title="Two-sample t-test",
+            title="Mann-Whitney U Test: DTN",
+            details={
+                "metric": "DOOR_TO_NEEDLE",
+                "u_statistic": 412.0,
+                "cohort_a_label": "My Hospital",
+                "cohort_b_label": "National",
+                "cohort_a_size": 85,
+                "cohort_b_size": 4320,
+                "cohort_a_median": 42.0,
+                "cohort_b_median": 55.0,
+            },
         )
     ]
 

@@ -61,6 +61,17 @@ def _provider_name(provider: Dict[str, Any]) -> str:
     return ""
 
 
+def _provider_country_code(provider: Dict[str, Any]) -> Optional[str]:
+    for key in ("countryCode", "country_code", "country"):
+        value = provider.get(key)
+        if isinstance(value, str) and value.strip():
+            token = value.strip()
+            if len(token) == 2 and token.isalpha():
+                return token.upper()
+            return token
+    return None
+
+
 def _provider_group_id(group: Dict[str, Any]) -> Optional[int]:
     for key in ("id", "groupId", "providerGroupId"):
         value = group.get(key)
@@ -77,6 +88,17 @@ def _provider_group_name(group: Dict[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
+
+
+def _provider_group_country_code(group: Dict[str, Any]) -> Optional[str]:
+    for key in ("countryCode", "country_code", "country"):
+        value = group.get(key)
+        if isinstance(value, str) and value.strip():
+            token = value.strip()
+            if len(token) == 2 and token.isalpha():
+                return token.upper()
+            return token
+    return None
 
 
 def _list_accessible_providers(user_sub: str, trace_id: str, country_code: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -304,7 +326,7 @@ def _resolve_country_scope(value: Any, country_code: Optional[str], user_sub: st
     )
     if not resolved_country:
         raise OriginScopeResolutionError(
-            f"I could not resolve country '{raw_country}'.",
+            f"I could not recognize '{raw_country}' as a valid country name or code. Please use a country name or ISO 2-letter code (e.g. 'Denmark' or 'DK').",
             clarification_type="country_code",
         )
 
@@ -316,15 +338,103 @@ def _resolve_country_scope(value: Any, country_code: Optional[str], user_sub: st
             provider_ids.append(provider_id)
 
     if not provider_ids:
+        # Try to surface which countries the user does have access to
+        accessible_countries: List[str] = []
+        try:
+            all_providers = _list_accessible_providers(user_sub=user_sub, trace_id=trace_id)
+            seen: set = set()
+            for provider in all_providers:
+                country = _provider_country_code(provider)
+                resolved_c = client.resolve_country_code(user_sub=user_sub, country_input=country or "", trace_id=trace_id, raise_on_error=False) if country else None
+                if resolved_c and resolved_c not in seen:
+                    seen.add(resolved_c)
+                    accessible_countries.append(resolved_c)
+        except Exception:
+            pass
+
+        if accessible_countries:
+            countries_hint = ", ".join(accessible_countries)
+            raise OriginScopeResolutionError(
+                f"You do not have access to any hospitals in {resolved_country}. You can request national data for: {countries_hint}.",
+                clarification_type="country_code",
+            )
         raise OriginScopeResolutionError(
-            f"No accessible providers were found for country '{resolved_country}'.",
+            f"You do not have access to any hospitals in {resolved_country}.",
             clarification_type="country_code",
         )
 
     return S.DataOriginSpec(providerId=provider_ids)
 
 
-def _resolve_scope(scope: S.OriginScopeSpec, user_sub: str, trace_id: str) -> Optional[S.DataOriginSpec]:
+def _infer_country_code_from_data_origin(data_origin: S.DataOriginSpec, user_sub: str, trace_id: str) -> Optional[str]:
+    client = get_analytics_center_client()
+
+    provider_ids = list(cast(Optional[List[int]], getattr(data_origin, "provider_id", None)) or [])
+    if provider_ids:
+        providers = _list_accessible_providers(user_sub=user_sub, trace_id=trace_id)
+        by_id: Dict[int, Dict[str, Any]] = {}
+        for provider in providers:
+            pid = _provider_id(provider)
+            if pid is not None:
+                by_id[pid] = provider
+
+        for pid in provider_ids:
+            provider = by_id.get(pid)
+            if provider is None:
+                continue
+            country = _provider_country_code(provider)
+            if not country:
+                continue
+            resolved_country = client.resolve_country_code(
+                user_sub=user_sub,
+                country_input=country,
+                trace_id=trace_id,
+                raise_on_error=False,
+            )
+            if resolved_country:
+                return resolved_country
+
+    provider_group_ids = list(cast(Optional[List[int]], getattr(data_origin, "provider_group_id", None)) or [])
+    if provider_group_ids:
+        groups = _list_accessible_provider_groups(user_sub=user_sub, trace_id=trace_id)
+        by_id_group: Dict[int, Dict[str, Any]] = {}
+        for group in groups:
+            gid = _provider_group_id(group)
+            if gid is not None:
+                by_id_group[gid] = group
+
+        for gid in provider_group_ids:
+            group = by_id_group.get(gid)
+            if group is None:
+                continue
+            country = _provider_group_country_code(group)
+            if not country:
+                continue
+            resolved_country = client.resolve_country_code(
+                user_sub=user_sub,
+                country_input=country,
+                trace_id=trace_id,
+                raise_on_error=False,
+            )
+            if resolved_country:
+                return resolved_country
+
+    return None
+
+
+def _infer_user_country_code(user_sub: str, trace_id: str) -> Optional[str]:
+    mine_scope = _resolve_mine_scope(user_sub=user_sub, trace_id=trace_id)
+    if mine_scope is None:
+        return None
+    return _infer_country_code_from_data_origin(data_origin=mine_scope, user_sub=user_sub, trace_id=trace_id)
+
+
+def _resolve_scope(
+    scope: S.OriginScopeSpec,
+    user_sub: str,
+    trace_id: str,
+    inferred_country_code: Optional[str] = None,
+) -> Optional[S.DataOriginSpec]:
     scope_type = (scope.scope_type or "").strip().lower()
     value = scope.value
 
@@ -361,10 +471,20 @@ def _resolve_scope(scope: S.OriginScopeSpec, user_sub: str, trace_id: str) -> Op
         )
 
     if scope_type == "country_code":
-        return _resolve_country_scope(value=value, country_code=scope.country_code, user_sub=user_sub, trace_id=trace_id)
+        return _resolve_country_scope(
+            value=value,
+            country_code=scope.country_code or inferred_country_code,
+            user_sub=user_sub,
+            trace_id=trace_id,
+        )
 
     if scope_type == "country_average":
-        return _resolve_country_scope(value=value, country_code=scope.country_code, user_sub=user_sub, trace_id=trace_id)
+        return _resolve_country_scope(
+            value=value,
+            country_code=scope.country_code or inferred_country_code,
+            user_sub=user_sub,
+            trace_id=trace_id,
+        )
 
     if scope_type == "all_accessible":
         providers = _list_accessible_providers(user_sub=user_sub, trace_id=trace_id)
@@ -393,48 +513,100 @@ def _default_scope_ref() -> Optional[S.OriginScopeSpec]:
     return S.OriginScopeSpec(scopeType=token)
 
 
+def _resolve_metric_origin(
+    metric: S.MetricSpec,
+    *,
+    default_scope: Optional[S.OriginScopeSpec],
+    user_sub: str,
+    trace_id: str,
+    fail_open_for_default_scope: bool,
+    inferred_country_code: Optional[str],
+) -> S.MetricSpec:
+    metric_data_origin = cast(Optional[S.DataOriginSpec], getattr(metric, "data_origin", None))
+    metric_origin_scope = cast(Optional[S.OriginScopeSpec], getattr(metric, "origin_scope", None))
+
+    if metric_data_origin is not None:
+        return metric
+
+    scope_ref = metric_origin_scope or default_scope
+    resolved_data_origin: Optional[S.DataOriginSpec] = None
+    fail_open_for_metric = fail_open_for_default_scope and metric_origin_scope is None
+    metric_distribution = cast(Optional[S.DistributionSpec], getattr(metric, "distribution", None))
+
+    if scope_ref is not None:
+        try:
+            resolved_data_origin = _resolve_scope(
+                scope=scope_ref,
+                user_sub=user_sub,
+                trace_id=trace_id,
+                inferred_country_code=inferred_country_code,
+            )
+        except OriginScopeResolutionError:
+            if not fail_open_for_metric:
+                raise
+            logger.warning("Origin scope resolution failed; falling back to executor default data origin", exc_info=True)
+            resolved_data_origin = None
+        except Exception:
+            if not fail_open_for_metric:
+                raise OriginScopeResolutionError("Origin scope resolution failed unexpectedly.")
+            logger.warning("Unexpected origin scope resolution failure; falling back to executor default data origin", exc_info=True)
+            resolved_data_origin = None
+
+    return S.MetricSpec(
+        metric=metric.metric,
+        distribution=metric_distribution,
+        dataOrigin=resolved_data_origin,
+        originScope=scope_ref,
+    )
+
+
+def _metric_needs_country_inference(metric: S.MetricSpec) -> bool:
+    scope = cast(Optional[S.OriginScopeSpec], getattr(metric, "origin_scope", None))
+    if scope is None:
+        return False
+    scope_type = (scope.scope_type or "").strip().lower()
+    if scope_type not in {"country_code", "country_average"}:
+        return False
+
+    explicit_country = None
+    if isinstance(scope.country_code, str) and scope.country_code.strip():
+        explicit_country = scope.country_code.strip()
+    elif isinstance(scope.value, str) and scope.value.strip():
+        explicit_country = scope.value.strip()
+
+    return not bool(explicit_country)
+
+
+def _plan_needs_country_inference(plan: S.AnalysisPlan) -> bool:
+    for chart in plan.charts or []:
+        for metric in chart.metrics:
+            if _metric_needs_country_inference(metric):
+                return True
+
+    for test in plan.statistical_tests or []:
+        for metric in test.metrics:
+            if _metric_needs_country_inference(metric):
+                return True
+
+    return False
+
+
 def resolve_plan_metric_origins(plan: S.AnalysisPlan, user_sub: str, trace_id: str) -> S.AnalysisPlan:
-    charts = plan.charts or []
-    if not charts:
-        return plan
-
     default_scope = _default_scope_ref()
+    inferred_country_code = _infer_user_country_code(user_sub=user_sub, trace_id=trace_id) if _plan_needs_country_inference(plan) else None
 
+    charts = plan.charts or []
     resolved_charts: List[S.ChartSpec] = []
     for chart in charts:
         resolved_metrics: List[S.MetricSpec] = []
         for metric in chart.metrics:
-            metric_data_origin = cast(Optional[S.DataOriginSpec], getattr(metric, "data_origin", None))
-            metric_origin_scope = cast(Optional[S.OriginScopeSpec], getattr(metric, "origin_scope", None))
-
-            if metric_data_origin is not None:
-                resolved_metrics.append(metric)
-                continue
-
-            scope_ref = metric_origin_scope or default_scope
-            resolved_data_origin: Optional[S.DataOriginSpec] = None
-            fail_open_for_metric = _FAIL_OPEN and metric_origin_scope is None
-            metric_distribution = cast(Optional[S.DistributionSpec], getattr(metric, "distribution", None))
-
-            if scope_ref is not None:
-                try:
-                    resolved_data_origin = _resolve_scope(scope=scope_ref, user_sub=user_sub, trace_id=trace_id)
-                except OriginScopeResolutionError:
-                    if not fail_open_for_metric:
-                        raise
-                    logger.warning("Origin scope resolution failed; falling back to executor default data origin", exc_info=True)
-                    resolved_data_origin = None
-                except Exception:
-                    if not fail_open_for_metric:
-                        raise OriginScopeResolutionError("Origin scope resolution failed unexpectedly.")
-                    logger.warning("Unexpected origin scope resolution failure; falling back to executor default data origin", exc_info=True)
-                    resolved_data_origin = None
-
-            resolved_metric = S.MetricSpec(
-                metric=metric.metric,
-                distribution=metric_distribution,
-                data_origin=resolved_data_origin,
-                origin_scope=scope_ref,
+            resolved_metric = _resolve_metric_origin(
+                metric,
+                default_scope=default_scope,
+                user_sub=user_sub,
+                trace_id=trace_id,
+                fail_open_for_default_scope=_FAIL_OPEN,
+                inferred_country_code=inferred_country_code,
             )
             resolved_metrics.append(resolved_metric)
 
@@ -448,4 +620,27 @@ def resolve_plan_metric_origins(plan: S.AnalysisPlan, user_sub: str, trace_id: s
         )
         resolved_charts.append(resolved_chart)
 
-    return S.AnalysisPlan(charts=resolved_charts, statistical_tests=plan.statistical_tests)
+    statistical_tests = plan.statistical_tests or []
+    resolved_tests: List[S.StatisticalTestSpec] = []
+    for test in statistical_tests:
+        resolved_test_metrics: List[S.MetricSpec] = []
+        for metric in test.metrics:
+            resolved_metric = _resolve_metric_origin(
+                metric,
+                default_scope=default_scope,
+                user_sub=user_sub,
+                trace_id=trace_id,
+                fail_open_for_default_scope=False,
+                inferred_country_code=inferred_country_code,
+            )
+            resolved_test_metrics.append(resolved_metric)
+
+        resolved_test = S.StatisticalTestSpec(
+            test_type=test.test_type,
+            metrics=resolved_test_metrics,
+            group_by=cast(Optional[List[S.GroupBySpec]], getattr(test, "group_by", None)),
+            filters=cast(Optional[S.FilterNode], getattr(test, "filters", None)),
+        )
+        resolved_tests.append(resolved_test)
+
+    return S.AnalysisPlan(charts=resolved_charts or None, statistical_tests=resolved_tests or None)

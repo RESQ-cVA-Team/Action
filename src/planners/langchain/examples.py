@@ -303,9 +303,80 @@ def example_dtn_my_hospital_vs_provider_group_name() -> Tuple[str, str]:
     return user, assistant
 
 
+def example_mw_my_hospital_vs_national() -> Tuple[str, str]:
+    detected_entities = {
+        "metric": ["DTN"],
+        "scope": ["mine", "country_average"],
+        "statistical_test_type": ["MANN_WHITNEY_U_TEST"],
+    }
+    plan = AnalysisPlan(
+        charts=None,
+        statistical_tests=[
+            StatisticalTestSpec(
+                test_type="MANN_WHITNEY_U_TEST",
+                group_by=None,
+                metrics=[
+                    MetricSpec(
+                        metric="DTN",
+                        origin_scope=OriginScopeSpec(scopeType="mine", label="My hospital"),
+                    ),
+                    MetricSpec(
+                        metric="DTN",
+                        origin_scope=OriginScopeSpec(scopeType="country_average", label="National mean"),
+                    ),
+                ],
+            )
+        ],
+    )
+    user = "USER_UTTERANCE:\nCompare DTN between my hospital and the national mean\n\nENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
+def example_mw_hospital_vs_hospital() -> Tuple[str, str]:
+    detected_entities = {
+        "metric": ["DTN"],
+        "scope": ["provider_name"],
+        "provider_name": ["City Stroke Center", "University Hospital"],
+        "statistical_test_type": ["MANN_WHITNEY_U_TEST"],
+    }
+    plan = AnalysisPlan(
+        charts=None,
+        statistical_tests=[
+            StatisticalTestSpec(
+                test_type="MANN_WHITNEY_U_TEST",
+                group_by=None,
+                metrics=[
+                    MetricSpec(
+                        metric="DTN",
+                        origin_scope=OriginScopeSpec(
+                            scopeType="provider_name",
+                            value="City Stroke Center",
+                            label="City Stroke Center",
+                        ),
+                    ),
+                    MetricSpec(
+                        metric="DTN",
+                        origin_scope=OriginScopeSpec(
+                            scopeType="provider_name",
+                            value="University Hospital",
+                            label="University Hospital",
+                        ),
+                    ),
+                ],
+            )
+        ],
+    )
+    user = "USER_UTTERANCE:\nIs there a significant difference in DTN between City Stroke Center and University Hospital?\n\nENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
 def get_few_shot_examples() -> List[Dict[str, str]]:
     examples: List[Dict[str, str]] = []
     for user, assistant in [
+        example_mw_my_hospital_vs_national(),
+        example_mw_hospital_vs_hospital(),
         example_dtn_my_hospital_vs_country_average(),
         example_dtn_my_hospital_vs_provider_group_name(),
         example_one_graph_cross_split(),

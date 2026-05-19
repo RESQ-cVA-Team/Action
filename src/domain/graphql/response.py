@@ -73,7 +73,7 @@ class Kpi1(BaseModel):
 
 
 class MetricKpiGroup(BaseModel):
-    kpi1: Kpi1
+    kpi1: Optional[Kpi1] = None
     grouped_by: Optional[GroupedBy] = Field(default=None, alias="groupedBy")
     time_period: Optional[TimePeriodRef] = Field(default=None, alias="timePeriod")
     data_origin: Optional[DataOriginRef] = Field(default=None, alias="dataOrigin")

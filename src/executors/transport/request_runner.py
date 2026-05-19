@@ -24,9 +24,12 @@ async def run_graphql_request(
     user_sub: str,
     trace_id: str,
     semaphore: asyncio.Semaphore,
+    scope_label: Optional[str] = None,
+    request_warnings: Optional[List[str]] = None,
     log_graphql_query: bool = False,
 ) -> List[ChartSeries]:
     trace_label = trace_id
+    request_label = scope_label or " | ".join([part for part in label_parts if part]) or "(none)"
     async with semaphore:
         query_str = req.to_graphql_string()
         q_hash = hashlib.sha256(query_str.encode("utf-8")).hexdigest()[:12]
@@ -35,7 +38,7 @@ async def run_graphql_request(
                 "[plan_executor] GraphQL query for chart (trace_id=%s, groupBy=%s, labels=%s, hash=%s):\n%s",
                 trace_label,
                 group_by_field,
-                " | ".join(label_parts),
+                request_label,
                 q_hash,
                 query_str,
             )
@@ -44,7 +47,7 @@ async def run_graphql_request(
                 "[plan_executor] GraphQL query for chart (trace_id=%s, groupBy=%s, labels=%s, hash=%s, len=%s)",
                 trace_label,
                 group_by_field,
-                " | ".join(label_parts),
+                request_label,
                 q_hash,
                 len(query_str),
             )
@@ -68,7 +71,7 @@ async def run_graphql_request(
                 "[plan_executor] GraphQL request failed (trace_id=%s, groupBy=%s, labels=%s, kind=%s, status=%s)",
                 trace_label,
                 group_by_field,
-                " - ".join([part for part in label_parts if part]) or "(none)",
+                request_label,
                 exc.kind,
                 exc.status_code,
             )
@@ -93,7 +96,7 @@ async def run_graphql_request(
             "[plan_executor] GraphQL response had no metrics payload (trace_id=%s, groupBy=%s, labels=%s, hash=%s, has_errors=%s)",
             trace_label,
             group_by_field,
-            " - ".join([part for part in label_parts if part]) or "(none)",
+            request_label,
             q_hash,
             bool(getattr(resp, "errors", None)),
         )
@@ -120,17 +123,62 @@ async def run_graphql_request(
         include_metric_alias=include_metric_alias,
         group_by_field=group_by_field,
         add_time_period_labels=add_time_period_labels,
+        scope_label=scope_label,
     )
 
+    skipped_rows = 0
+    try:
+        for metric in metrics_payload.values():
+            kpi_groups = getattr(metric, "kpi_group", None)
+            if not isinstance(kpi_groups, list):
+                continue
+            for kpi in kpi_groups:
+                if getattr(kpi, "kpi1", None) is None:
+                    skipped_rows += 1
+    except Exception:
+        skipped_rows = 0
+
+    total_rows = kpi_group_count
+    valid_rows = max(0, total_rows - skipped_rows)
+
+    def _append_warning(message: str) -> None:
+        if request_warnings is None:
+            return
+        if message not in request_warnings:
+            request_warnings.append(message)
+
     if not series:
+        if total_rows > 0:
+            if skipped_rows > 0 or getattr(resp, "errors", None):
+                detail_bits: List[str] = []
+                if skipped_rows > 0:
+                    detail_bits.append(f"{skipped_rows}/{total_rows} row(s) were omitted")
+                if getattr(resp, "errors", None):
+                    detail_bits.append("the backend returned validation errors")
+                _append_warning(f"Partial data returned for {request_label}; {' and '.join(detail_bits)}.")
+            else:
+                _append_warning(f"No usable data was returned for {request_label}; 0/{total_rows} row(s) had valid data.")
+
         logger.warning(
             "[plan_executor] Metrics payload mapped to zero series (trace_id=%s, groupBy=%s, labels=%s, hash=%s, metrics=%s, kpi_groups=%s)",
             trace_label,
             group_by_field,
-            " - ".join([part for part in label_parts if part]) or "(none)",
+            request_label,
             q_hash,
             metric_count,
             kpi_group_count,
         )
+        return series
+
+    has_graphql_errors = bool(getattr(resp, "errors", None))
+    if skipped_rows > 0 or has_graphql_errors:
+        warning_bits: List[str] = []
+        if skipped_rows > 0:
+            warning_bits.append(f"{skipped_rows}/{total_rows} row(s) were omitted")
+        if has_graphql_errors:
+            warning_bits.append("the backend returned validation errors")
+
+        warning_text = f"Partial data returned for {request_label}; {' and '.join(warning_bits)}."
+        _append_warning(warning_text)
 
     return series

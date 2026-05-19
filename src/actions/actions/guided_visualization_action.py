@@ -114,6 +114,13 @@ class ActionGuidedGenerateVisualization(Action):  # pyright: ignore
             )
             visualization_payload_any = cast(Any, visualization).model_dump(mode="json")
             dispatcher.utter_message(json_message=cast(Dict[str, Any], visualization_payload_any))
+
+            warnings_any = visualization_payload_any.get("warnings") if isinstance(visualization_payload_any, dict) else None
+            if isinstance(warnings_any, list):
+                for warning in warnings_any:
+                    if isinstance(warning, str) and warning.strip():
+                        dispatcher.utter_message(text=f"Note: {warning.strip()}")
+
             if _SHOW_EXECUTION_SUMMARY and execution_summary is not None:
                 dispatcher.utter_message(
                     text=format_execution_summary(

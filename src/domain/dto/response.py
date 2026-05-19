@@ -15,4 +15,5 @@ class VisualizationResponse(BaseModel):
     trace_id: Optional[str] = None
     charts: List[ChartDTO] = []
     stats: List[StatisticalTestResult] = []
+    warnings: List[str] = []
     timestamp: Optional[datetime] = None

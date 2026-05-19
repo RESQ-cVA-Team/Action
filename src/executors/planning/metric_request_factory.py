@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, cast
 
 from src.domain.dto.charts.types import ChartAxis
 from src.domain.graphql.request import DataOrigin, MetricRequest
@@ -17,13 +17,45 @@ def derive_distribution_defaults(metric: S.MetricSpec) -> DistributionSpec:
     return DistributionSpec(num_buckets=20, min_value=0, max_value=200)
 
 
+def _metric_scope_label(metric: S.MetricSpec) -> Optional[str]:
+    scope = cast(Optional[S.OriginScopeSpec], getattr(metric, "origin_scope", None))
+    if scope is None:
+        return None
+
+    if isinstance(scope.label, str) and scope.label.strip():
+        return scope.label.strip()
+
+    scope_type = (scope.scope_type or "").strip().lower()
+    if scope_type == "mine":
+        return "My Hospital"
+    if scope_type == "country_average":
+        if isinstance(scope.value, str) and scope.value.strip():
+            return f"National Mean ({scope.value.strip()})"
+        if isinstance(scope.country_code, str) and scope.country_code.strip():
+            return f"National Mean ({scope.country_code.strip().upper()})"
+        return "National Mean"
+    if scope_type == "country_code":
+        if isinstance(scope.country_code, str) and scope.country_code.strip():
+            return f"Country ({scope.country_code.strip().upper()})"
+        if isinstance(scope.value, str) and scope.value.strip():
+            return f"Country ({scope.value.strip().upper()})"
+        return "Country"
+    if scope_type == "provider_name" and isinstance(scope.value, str) and scope.value.strip():
+        return scope.value.strip()
+    if scope_type == "provider_group_name" and isinstance(scope.value, str) and scope.value.strip():
+        return scope.value.strip()
+
+    return None
+
+
 def build_metric_requests(
     plan_chart: S.ChartSpec,
     derive_defaults_fn: Callable[[str], tuple[int, int, int]],
     axis_from_meta_fn: Callable[[str, int, int], tuple[ChartAxis, ChartAxis]],
-) -> tuple[List[MetricRequest], Optional[tuple[ChartAxis, ChartAxis]], List[Optional[DataOrigin]]]:
+) -> tuple[List[MetricRequest], Optional[tuple[ChartAxis, ChartAxis]], List[Optional[DataOrigin]], List[Optional[str]]]:
     metric_requests: List[MetricRequest] = []
     metric_data_origins: List[Optional[DataOrigin]] = []
+    metric_scope_labels: List[Optional[str]] = []
     derived_axes: Optional[tuple[ChartAxis, ChartAxis]] = None
     has_grouping = bool(plan_chart.group_by)
 
@@ -31,10 +63,12 @@ def build_metric_requests(
         metric_data_origin: Optional[DataOrigin] = None
         if metric.data_origin is not None:
             metric_data_origin = DataOrigin.model_validate(metric.data_origin.model_dump(by_alias=True, exclude_none=True))
+        metric_scope_label = _metric_scope_label(metric)
 
         if has_grouping:
             metric_requests.append(MetricRequest(metricType=MetricType(metric.metric)).with_stats())
             metric_data_origins.append(metric_data_origin)
+            metric_scope_labels.append(metric_scope_label)
             continue
 
         distribution = metric.distribution
@@ -52,5 +86,6 @@ def build_metric_requests(
             )
         )
         metric_data_origins.append(metric_data_origin)
+        metric_scope_labels.append(metric_scope_label)
 
-    return metric_requests, derived_axes, metric_data_origins
+    return metric_requests, derived_axes, metric_data_origins, metric_scope_labels

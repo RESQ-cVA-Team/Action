@@ -32,7 +32,7 @@ _INTENT_KEYWORDS: Dict[str, List[str]] = {
     "distribution": ["distribution", "histogram", "violin", "box"],
     "time": ["over time", "last ", "monthly", "weekly", "yearly", "time series"],
     "group_by": [" by ", "grouped by", "split by"],
-    "stat_test": ["test", "anova", "t-test", "chi", "wilcoxon", "mann-whitney"],
+    "stat_test": ["compare", "mann-whitney", "statistical test", "significant", "difference between"],
 }
 
 _SUPPORTED_STAT_TESTS = ["MANN_WHITNEY_U_TEST"]
@@ -94,6 +94,29 @@ def _extract_json_block(text: str) -> str:
     return candidate[start : end + 1]
 
 
+def _assert_no_empty_groupby_entries(payload: Dict[str, Any]) -> None:
+    """Reject ambiguous planner output instead of auto-correcting it.
+
+    Empty dict items in group_by (e.g., group_by=[{}]) can be coerced by the
+    schema Union into unintended groupings. We fail fast so retry feedback forces
+    the model to return an explicit valid group_by spec or null.
+    """
+    charts_any = payload.get("charts")
+    if not isinstance(charts_any, list):
+        return
+
+    for chart_idx, chart_any in enumerate(charts_any):
+        if not isinstance(chart_any, dict):
+            continue
+        group_by_any = chart_any.get("group_by")
+        if not isinstance(group_by_any, list):
+            continue
+
+        for gb_idx, item in enumerate(group_by_any):
+            if isinstance(item, dict) and not item:
+                raise ValueError(f"Invalid AnalysisPlan: charts[{chart_idx}].group_by[{gb_idx}] is an empty object. Use an explicit GroupBy spec or set group_by to null.")
+
+
 def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
     import json
 
@@ -101,6 +124,7 @@ def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
         return response
 
     if isinstance(response, dict):
+        _assert_no_empty_groupby_entries(response)
         return AnalysisPlan.model_validate(response)
 
     text = _extract_text(response)
@@ -108,6 +132,7 @@ def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
     parsed = json.loads(json_block)
     if not isinstance(parsed, dict):
         raise ValueError("Model output JSON must be an object")
+    _assert_no_empty_groupby_entries(parsed)
     return AnalysisPlan.model_validate(parsed)
 
 
@@ -378,6 +403,7 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
             "Put human references in originScope.value and ISO country in originScope.countryCode when available. "
             "Only use dataOrigin when explicit numeric provider/group IDs are directly provided by the user. "
             "When comparing multiple scopes in one chart, use separate metric entries with metric-level originScope/dataOrigin. "
+            "Never emit empty objects in group_by. If no grouping is intended, set group_by to null or omit it. "
             "Sex semantics guidance: phrases like 'males only' or 'females only' should usually be chart filters (SexFilter), while 'split/group by sex' should use GroupBySex. "
             "Prefer LINE/BAR for trends or comparisons; BOX/VIOLIN/HISTOGRAM for distributions. "
             "Chart intent guidance: If user asks for one graph/one chart/single visual with multiple splits, prefer one chart with multiple group_by dimensions. If user asks for separate charts/multiple visuals, produce multiple chart specs. "

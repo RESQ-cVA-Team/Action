@@ -676,6 +676,13 @@ class ActionOneShotGenerateVisualization(LongAction):
             )
             visualization_payload_any = cast(Any, visualization).model_dump(mode="json")
             ctx.say(json_message=cast(Dict[str, Any], visualization_payload_any))
+
+            warnings_any = visualization_payload_any.get("warnings") if isinstance(visualization_payload_any, dict) else None
+            if isinstance(warnings_any, list):
+                for warning in warnings_any:
+                    if isinstance(warning, str) and warning.strip():
+                        ctx.say(text=f"Note: {warning.strip()}")
+
             completed_successfully = True
         except Exception as e:
             if isinstance(e, VisualizationExecutionError) and e.reason == "origin_scope_resolution":

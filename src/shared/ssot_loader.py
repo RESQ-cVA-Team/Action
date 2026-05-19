@@ -286,6 +286,23 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
     return out
 
 
+@lru_cache(maxsize=1)
+def get_statistics_metric_enum_map() -> Dict[str, str]:
+    """Return a mapping from SSOT metric canonical → StatisticsMetricEnum GQL value.
+
+    Only metrics with a ``statistics_enum`` field in MetricType.yml are included;
+    these are the metrics valid for ``getMannWhitneyUTest`` and similar endpoints.
+    """
+    items = _load_yaml("MetricType.yml")
+    out: Dict[str, str] = {}
+    for item in items:
+        canonical = item.get("canonical")
+        stats_enum = item.get("statistics_enum")
+        if isinstance(canonical, str) and isinstance(stats_enum, str):
+            out[canonical.strip()] = stats_enum.strip()
+    return out
+
+
 def _ci_get(d: Dict[str, Any], key: str) -> Any:
     """Case-insensitive dict.get for first-level keys."""
     if key in d:
