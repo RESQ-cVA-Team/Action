@@ -108,7 +108,7 @@ Run from VS Code: **Terminal → Run Task**.
 
 ### Logging configuration
 
-The action service now supports two output formats:
+The action service supports two output formats:
 
 - `LOG_FORMAT=text` keeps developer-friendly single-line logs.
 - `LOG_FORMAT=json` emits structured logs with top-level fields such as `level`, `logger`, `message`, `trace_id`, `source`, and a `context` object.
