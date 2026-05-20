@@ -4,10 +4,13 @@ on:
   push:
     branches:
       - master
+      - dev
 
 jobs:
   build:
-    permissions: write-all
+    permissions:
+      contents: read
+      packages: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code (with submodules)
@@ -28,8 +31,27 @@ jobs:
 
       - name: Set lowercase repository name
         run: |
-          REPO_NAME=${{ github.repository }}
-          echo "REPO_NAME_LC=${REPO_NAME,,}" >> ${GITHUB_ENV}
+          REPO_NAME="${{ github.repository }}"
+          echo "REPO_NAME_LC=${REPO_NAME,,}" >> "$GITHUB_ENV"
+
+      - name: Select image tags for branch
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+
+          case "${GITHUB_REF_NAME}" in
+            master)
+              echo "IMAGE_TAG=latest" >> "$GITHUB_ENV"
+              echo "IMAGE_SHA_TAG=master-$SHORT_SHA" >> "$GITHUB_ENV"
+              ;;
+            dev)
+              echo "IMAGE_TAG=dev" >> "$GITHUB_ENV"
+              echo "IMAGE_SHA_TAG=dev-$SHORT_SHA" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "Unsupported branch for docker publish: ${GITHUB_REF_NAME}" >&2
+              exit 1
+              ;;
+          esac
 
       - name: Verify SSOT YAML presence
         run: |
@@ -40,8 +62,12 @@ jobs:
 
       - name: Build Docker image (fail-fast if SSOT missing)
         run: |
-          docker build --progress=plain -t ghcr.io/$REPO_NAME_LC:latest .
+          docker build --progress=plain \
+            -t ghcr.io/$REPO_NAME_LC:$IMAGE_TAG \
+            -t ghcr.io/$REPO_NAME_LC:$IMAGE_SHA_TAG \
+            .
 
       - name: Push Docker image to GitHub Container Registry
         run: |
-          docker push ghcr.io/$REPO_NAME_LC:latest
+          docker push ghcr.io/$REPO_NAME_LC:$IMAGE_TAG
+          docker push ghcr.io/$REPO_NAME_LC:$IMAGE_SHA_TAG
