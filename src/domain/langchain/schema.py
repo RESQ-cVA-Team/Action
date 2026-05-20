@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Union, cast
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.domain.graphql.ssot_enums import (
     BooleanPropertyType as BooleanType,
@@ -59,12 +59,14 @@ def _enum_allowed_values(enum_cls: Any) -> Set[str]:
     Works with str-subclass Enums created via SSOT loader; avoids EnumMeta __contains__ pitfalls.
     """
     try:
-        return {m.value for m in enum_cls}  # type: ignore[attr-defined]
+        members = list(enum_cls)
     except Exception:
-        try:
-            return {str(m.value) if hasattr(m, "value") else str(m) for m in list(enum_cls)}  # type: ignore[arg-type]
-        except Exception:
-            return set()
+        return set()
+
+    allowed_values: Set[str] = set()
+    for member in members:
+        allowed_values.add(str(getattr(member, "value", member)))
+    return allowed_values
 
 
 def _extract_canonical(entry: Any) -> Optional[str]:
@@ -502,9 +504,7 @@ class DataOriginSpec(BaseModel):
             out.append(value)
         return out
 
-    from pydantic import model_validator as _model_validator  # type: ignore
-
-    @_model_validator(mode="after")
+    @model_validator(mode="after")
     def validate_origin(self) -> "DataOriginSpec":
         if not self.provider_id and not self.provider_group_id:
             raise ValueError("DataOriginSpec requires providerId or providerGroupId.")
@@ -597,13 +597,7 @@ class MetricSpec(BaseModel):
     @field_validator("metric")
     def validate_metric_type(cls, v: str) -> str:
         v_norm = v.upper()
-        try:
-            allowed_values: Set[str] = {m.value for m in MetricType}  # type: ignore[attr-defined]
-        except Exception:
-            try:
-                allowed_values = {str(m.value) if hasattr(m, "value") else str(m) for m in list(MetricType)}  # type: ignore[arg-type]
-            except Exception:
-                allowed_values = set()
+        allowed_values = _enum_allowed_values(MetricType)
         if v_norm not in allowed_values:
             raise ValueError(f"{v} is not a valid MetricType. Allowed: {sorted(allowed_values)}")
         return v_norm
@@ -632,9 +626,7 @@ class ChartSpec(BaseModel):
             raise ValueError(f"{v} is not a valid ChartType. Allowed: {ChartType}")
         return v_norm
 
-    from pydantic import model_validator as _model_validator  # type: ignore
-
-    @_model_validator(mode="after")
+    @model_validator(mode="after")
     def validate_chart_level_groupby(self) -> "ChartSpec":
         """Validate chart-level group_by and filters.
 
@@ -718,9 +710,7 @@ class StatisticalTestSpec(BaseModel):
             raise ValueError(f"{v} is not a valid StatisticalTestType. Allowed: {StatisticalTestType}")
         return v_norm
 
-    from pydantic import model_validator as _model_validator  # type: ignore
-
-    @_model_validator(mode="after")
+    @model_validator(mode="after")
     def validate_test_groupby(self) -> "StatisticalTestSpec":
         """Ensure no duplicate group_by specs and single-instance constraints similar to charts.
 

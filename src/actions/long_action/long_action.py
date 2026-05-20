@@ -8,18 +8,16 @@ import threading
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Dict, List, Optional, Protocol, Tuple, cast
 
 import requests
-from rasa_sdk import Action, Tracker  # type: ignore
-from rasa_sdk import types as rasa_types  # type: ignore
-from rasa_sdk.executor import CollectingDispatcher  # type: ignore
+from rasa_sdk import Action  # type: ignore
 
 from src.util import env as env_util
 from src.util.logging_utils import bind_current_context, log_context
 
 from . import long_action_registry as registry
-from .long_action_context import LongActionContext
+from .long_action_context import DispatcherLike, LongActionContext
 
 _CALLBACK_TOKEN_ENV = "LONG_TASK_CALLBACK_TOKEN"
 logger = logging.getLogger(__name__)
@@ -41,7 +39,19 @@ class PreworkResult:
     proceed: bool = True
 
 
-def _get_callback_config(tracker: Tracker) -> Optional[Tuple[str, str]]:
+DomainDict = Dict[str, Any]
+RasaEventList = List[Dict[str, Any]]
+
+
+class TrackerLike(Protocol):
+    sender_id: str
+    latest_message: Dict[str, Any]
+    events: List[Dict[str, Any]]
+
+    def current_state(self) -> Dict[str, Any]: ...
+
+
+def _get_callback_config(tracker: TrackerLike) -> Optional[Tuple[str, str]]:
     """Return (url, token) for the long-task callback if configured.
 
     The callback URL is taken from the incoming message metadata as
@@ -138,10 +148,10 @@ class LongAction(Action, ABC):
 
     async def run(
         self,
-        dispatcher: CollectingDispatcher,
-        tracker: Tracker,
-        domain: rasa_types.DomainDict,
-    ) -> List[Dict[str, Any]]:
+        dispatcher: DispatcherLike,
+        tracker: TrackerLike,
+        domain: DomainDict,
+    ) -> RasaEventList:
         sender_id = tracker.sender_id
         latest_message_any = getattr(tracker, "latest_message", None)
         latest_message = cast(Dict[str, Any], latest_message_any) if isinstance(latest_message_any, dict) else {}

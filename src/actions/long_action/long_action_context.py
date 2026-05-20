@@ -1,8 +1,12 @@
-from typing import Any, Callable, Dict, List, Optional, cast
+from typing import Any, Callable, Dict, List, Optional, Protocol, cast
+
+
+class DispatcherLike(Protocol):
+    def utter_message(self, text: Optional[str] = None, **kwargs: Any) -> None: ...
 
 
 class LongActionContext:
-    def __init__(self, sender_id: str, tracker_snapshot: Dict[str, Any], dispatcher: Optional[Any] = None):
+    def __init__(self, sender_id: str, tracker_snapshot: Dict[str, Any], dispatcher: Optional[DispatcherLike] = None):
         self.sender_id = sender_id
         self.tracker_snapshot = tracker_snapshot
         self.dispatcher = dispatcher

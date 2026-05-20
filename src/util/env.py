@@ -56,7 +56,7 @@ def require_all_env(key: str) -> str: ...
 def require_all_env(*keys: str) -> Tuple[str, ...]: ...
 
 
-def require_all_env(*keys: str) -> str | Tuple[str, ...]:  # type: ignore
+def require_all_env(*keys: str) -> str | Tuple[str, ...]:
     _ensure_loaded()
 
     values: list[str] = []
@@ -81,7 +81,7 @@ def require_any_env(key: str) -> str | None: ...
 def require_any_env(*keys: str) -> Tuple[str | None, ...]: ...
 
 
-def require_any_env(*keys: str) -> str | None | Tuple[str | None, ...]:  # type: ignore
+def require_any_env(*keys: str) -> str | None | Tuple[str | None, ...]:
     _ensure_loaded()
 
     values: list[str | None] = []

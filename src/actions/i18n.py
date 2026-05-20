@@ -146,8 +146,11 @@ def translate(
         template = _lookup_catalog(_load_catalog(DEFAULT_LANGUAGE), key)
 
     if template is None:
-        template = default if isinstance(default, str) else key
-        logger.warning("Missing translation key='%s' for language='%s'", key, normalized_language)
+        if isinstance(default, str):
+            template = default
+        else:
+            template = key
+            logger.warning("Missing translation key='%s' for language='%s'", key, normalized_language)
 
     if not params:
         return template
