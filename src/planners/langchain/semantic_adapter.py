@@ -131,8 +131,8 @@ def to_analysis_plan(plan: SemanticPlan) -> S.AnalysisPlan:
                 S.MetricSpec(
                     metric=m.metric,
                     distribution=m.distribution,
-                    data_origin=m.data_origin,
-                    origin_scope=m.origin_scope,
+                    dataOrigin=m.data_origin,
+                    originScope=m.origin_scope,
                 )
             )
 

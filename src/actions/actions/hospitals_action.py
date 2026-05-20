@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, List, Optional, Protocol, Text
+from typing import Any, Dict, List, Mapping, Optional, Protocol, Text, cast
 from uuid import uuid4
 
 from rasa_sdk import Action  # type: ignore
@@ -28,11 +28,21 @@ class TrackerLike(Protocol):
     latest_message: Dict[str, Any]
 
 
+def _mapping_to_dict(value: object) -> Dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+
+    mapping = cast(Mapping[object, object], value)
+    result: Dict[str, Any] = {}
+    for raw_key, raw_value in mapping.items():
+        if isinstance(raw_key, str):
+            result[raw_key] = raw_value
+    return result
+
+
 def _tracker_trace_id(tracker: TrackerLike) -> Optional[str]:
-    latest_any = getattr(tracker, "latest_message", None)
-    latest = latest_any if isinstance(latest_any, dict) else {}
-    metadata_any = latest.get("metadata") if isinstance(latest, dict) else None
-    metadata = metadata_any if isinstance(metadata_any, dict) else {}
+    latest = _mapping_to_dict(tracker.latest_message)
+    metadata = _mapping_to_dict(latest.get("metadata"))
 
     for key in ("trace_id", "traceId", "x-trace-id", "x_trace_id"):
         raw = metadata.get(key)
@@ -42,8 +52,7 @@ def _tracker_trace_id(tracker: TrackerLike) -> Optional[str]:
         if token:
             return token
 
-    headers_any = metadata.get("headers")
-    headers = headers_any if isinstance(headers_any, dict) else {}
+    headers = _mapping_to_dict(metadata.get("headers"))
     for key in ("x-trace-id", "x_trace_id", "trace_id", "traceId"):
         raw = headers.get(key)
         if raw is None:

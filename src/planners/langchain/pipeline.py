@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, Callable, Dict, List, Literal, Optional, Type, TypedDict, Union, cast, overload
 
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 
 from src.domain.langchain.schema import AnalysisPlan
 from src.planners.langchain.examples import get_few_shot_examples
@@ -105,15 +105,18 @@ def _assert_no_empty_groupby_entries(payload: Dict[str, Any]) -> None:
     charts_any = payload.get("charts")
     if not isinstance(charts_any, list):
         return
+    chart_entries = cast(List[Any], charts_any)
 
-    for chart_idx, chart_any in enumerate(charts_any):
+    for chart_idx, chart_any in enumerate(chart_entries):
         if not isinstance(chart_any, dict):
             continue
-        group_by_any = chart_any.get("group_by")
+        chart = cast(Dict[str, Any], chart_any)
+        group_by_any = chart.get("group_by")
         if not isinstance(group_by_any, list):
             continue
+        group_by_entries = cast(List[Any], group_by_any)
 
-        for gb_idx, item in enumerate(group_by_any):
+        for gb_idx, item in enumerate(group_by_entries):
             if isinstance(item, dict) and not item:
                 raise ValueError(f"Invalid AnalysisPlan: charts[{chart_idx}].group_by[{gb_idx}] is an empty object. Use an explicit GroupBy spec or set group_by to null.")
 
@@ -125,7 +128,7 @@ def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
         return response
 
     if isinstance(response, dict):
-        _assert_no_empty_groupby_entries(response)
+        _assert_no_empty_groupby_entries(cast(Dict[str, Any], response))
         return AnalysisPlan.model_validate(response)
 
     text = _extract_text(response)
@@ -133,7 +136,7 @@ def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
     parsed = json.loads(json_block)
     if not isinstance(parsed, dict):
         raise ValueError("Model output JSON must be an object")
-    _assert_no_empty_groupby_entries(parsed)
+    _assert_no_empty_groupby_entries(cast(Dict[str, Any], parsed))
     return AnalysisPlan.model_validate(parsed)
 
 

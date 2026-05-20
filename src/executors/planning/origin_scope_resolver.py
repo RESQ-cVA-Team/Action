@@ -342,7 +342,7 @@ def _resolve_country_scope(value: Any, country_code: Optional[str], user_sub: st
         accessible_countries: List[str] = []
         try:
             all_providers = _list_accessible_providers(user_sub=user_sub, trace_id=trace_id)
-            seen: set = set()
+            seen: set[str] = set()
             for provider in all_providers:
                 country = _provider_country_code(provider)
                 resolved_c = client.resolve_country_code(user_sub=user_sub, country_input=country or "", trace_id=trace_id, raise_on_error=False) if country else None

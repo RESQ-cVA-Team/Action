@@ -248,11 +248,11 @@ def example_dtn_my_hospital_vs_country_average() -> Tuple[str, str]:
                 metrics=[
                     MetricSpec(
                         metric="DTN",
-                        origin_scope=OriginScopeSpec(scopeType="mine", label="My hospital"),
+                        originScope=OriginScopeSpec(scopeType="mine", label="My hospital"),
                     ),
                     MetricSpec(
                         metric="DTN",
-                        origin_scope=OriginScopeSpec(
+                        originScope=OriginScopeSpec(
                             scopeType="country_average",
                             countryCode="IT",
                             label="Italy national average",
@@ -283,11 +283,11 @@ def example_dtn_my_hospital_vs_provider_group_name() -> Tuple[str, str]:
                 metrics=[
                     MetricSpec(
                         metric="DTN",
-                        origin_scope=OriginScopeSpec(scopeType="mine", label="My hospital"),
+                        originScope=OriginScopeSpec(scopeType="mine", label="My hospital"),
                     ),
                     MetricSpec(
                         metric="DTN",
-                        origin_scope=OriginScopeSpec(
+                        originScope=OriginScopeSpec(
                             scopeType="provider_group_name",
                             value="Nordic Stroke Network",
                             label="Nordic Stroke Network",
@@ -318,11 +318,11 @@ def example_mw_my_hospital_vs_national() -> Tuple[str, str]:
                 metrics=[
                     MetricSpec(
                         metric="DTN",
-                        origin_scope=OriginScopeSpec(scopeType="mine", label="My hospital"),
+                        originScope=OriginScopeSpec(scopeType="mine", label="My hospital"),
                     ),
                     MetricSpec(
                         metric="DTN",
-                        origin_scope=OriginScopeSpec(scopeType="country_average", label="National mean"),
+                        originScope=OriginScopeSpec(scopeType="country_average", label="National mean"),
                     ),
                 ],
             )
@@ -349,7 +349,7 @@ def example_mw_hospital_vs_hospital() -> Tuple[str, str]:
                 metrics=[
                     MetricSpec(
                         metric="DTN",
-                        origin_scope=OriginScopeSpec(
+                        originScope=OriginScopeSpec(
                             scopeType="provider_name",
                             value="City Stroke Center",
                             label="City Stroke Center",
@@ -357,7 +357,7 @@ def example_mw_hospital_vs_hospital() -> Tuple[str, str]:
                     ),
                     MetricSpec(
                         metric="DTN",
-                        origin_scope=OriginScopeSpec(
+                        originScope=OriginScopeSpec(
                             scopeType="provider_name",
                             value="University Hospital",
                             label="University Hospital",

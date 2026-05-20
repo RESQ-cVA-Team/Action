@@ -6,9 +6,9 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from threading import Lock
-from typing import Any, Dict, List, Literal, Optional, TypedDict, cast
+from typing import Any, Dict, List, Literal, Mapping, Optional, Protocol, TypedDict, cast, runtime_checkable
 
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 
 from src.actions.i18n import translate
 from src.planners.langchain.llm_factory import create_chat_llm
@@ -30,18 +30,45 @@ class QueryDecision(QueryDecisionBase, total=False):
     clarification_options: List[str]
 
 
+@runtime_checkable
+class SupportsModelDump(Protocol):
+    def model_dump(self, *args: Any, **kwargs: Any) -> object: ...
+
+
+def _mapping_to_dict(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+
+    mapping = cast(Mapping[object, object], value)
+    result: Dict[str, Any] = {}
+    for raw_key, raw_value in mapping.items():
+        if isinstance(raw_key, str):
+            result[raw_key] = raw_value
+    return result
+
+
+def _maybe_model_dump_dict(value: Any, **kwargs: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(value, SupportsModelDump):
+        return None
+    return _mapping_to_dict(value.model_dump(**kwargs))
+
+
 _ENABLE_QUERY_GUARD = env_util.env_flag("ACTIONS_ENABLE_QUERY_GUARD", default=True)
 _QUERY_GUARD_TIMEOUT_SECONDS_RAW = env_util.get_env("ACTIONS_QUERY_GUARD_TIMEOUT_SECONDS", default="8") or "8"
 try:
-    _QUERY_GUARD_TIMEOUT_SECONDS = max(1.0, float(_QUERY_GUARD_TIMEOUT_SECONDS_RAW))
+    _query_guard_timeout_seconds = max(1.0, float(_QUERY_GUARD_TIMEOUT_SECONDS_RAW))
 except Exception:
-    _QUERY_GUARD_TIMEOUT_SECONDS = 8.0
+    _query_guard_timeout_seconds = 8.0
+
+_QUERY_GUARD_TIMEOUT_SECONDS = _query_guard_timeout_seconds
 
 _QUERY_GUARD_TEMPERATURE_RAW = env_util.get_env("ACTIONS_QUERY_GUARD_TEMPERATURE", default="0") or "0"
 try:
-    _QUERY_GUARD_TEMPERATURE = float(_QUERY_GUARD_TEMPERATURE_RAW)
+    _query_guard_temperature = float(_QUERY_GUARD_TEMPERATURE_RAW)
 except Exception:
-    _QUERY_GUARD_TEMPERATURE = 0.0
+    _query_guard_temperature = 0.0
+
+_QUERY_GUARD_TEMPERATURE = _query_guard_temperature
 
 _QUERY_GUARD_FAIL_OPEN = env_util.env_flag("ACTIONS_QUERY_GUARD_FAIL_OPEN", default=False)
 
@@ -312,30 +339,33 @@ def _strip_text_fields(value: Any) -> Any:
 
     if isinstance(value, dict):
         out: Dict[str, Any] = {}
-        for key, child in value.items():
-            if isinstance(key, str) and key in {"title", "description"}:
+        for key, child in _mapping_to_dict(value).items():
+            if key in {"title", "description"}:
                 continue
             out[key] = _strip_text_fields(child)
         return out
     if isinstance(value, list):
-        return [_strip_text_fields(item) for item in value]
+        items = cast(List[object], value)
+        return [_strip_text_fields(item) for item in items]
     return value
 
 
 def serialize_plan_for_frontend(plan: Any) -> Dict[str, Any]:
     """Serialize planner output for frontend consumption without mutating it."""
 
-    if hasattr(plan, "model_dump") and callable(getattr(plan, "model_dump")):
-        payload_any = plan.model_dump(mode="json", by_alias=True, exclude_none=True)
+    payload = _maybe_model_dump_dict(plan, mode="json", by_alias=True, exclude_none=True)
+    if payload is not None:
+        payload_any: object = payload
     elif isinstance(plan, dict):
-        payload_any = dict(plan)
+        payload_any = _mapping_to_dict(plan)
     else:
         return {}
 
-    if not isinstance(payload_any, dict):
+    payload_dict = _mapping_to_dict(payload_any)
+    if not payload_dict:
         return {}
 
-    sanitized_any = _strip_text_fields(payload_any)
+    sanitized_any = _strip_text_fields(payload_dict)
     return cast(Dict[str, Any], sanitized_any) if isinstance(sanitized_any, dict) else {}
 
 
@@ -348,18 +378,18 @@ def format_execution_summary(
     def t(key: str, default: str, params: Optional[Dict[str, Any]] = None) -> str:
         return translate(key, language=language, params=params, default=default)
 
-    if hasattr(summary, "model_dump") and callable(getattr(summary, "model_dump")):
-        summary = cast(Dict[str, Any], summary.model_dump())
-    elif not isinstance(summary, dict):
+    summary_dict = _maybe_model_dump_dict(summary)
+    if summary_dict is None and isinstance(summary, dict):
+        summary_dict = _mapping_to_dict(summary)
+    if summary_dict is None:
         return t("action.summary.complete", "✅ Visualization generation complete.")
 
-    estimated = summary.get("estimated_queries")
-    actual = summary.get("actual_queries")
-    chart_count = summary.get("chart_count")
-    trace_id = summary.get("trace_id")
-    normalization_any = summary.get("normalization")
-    normalization = cast(Dict[str, Any], normalization_any) if isinstance(normalization_any, dict) else None
-    batches_any = summary.get("batches")
+    estimated = summary_dict.get("estimated_queries")
+    actual = summary_dict.get("actual_queries")
+    chart_count = summary_dict.get("chart_count")
+    trace_id = summary_dict.get("trace_id")
+    normalization = _mapping_to_dict(summary_dict.get("normalization")) or None
+    batches_any = summary_dict.get("batches")
     batches: List[Any] = cast(List[Any], batches_any) if isinstance(batches_any, list) else []
 
     lines: List[str] = [t("action.summary.complete", "✅ Visualization generation complete.")]

@@ -6,7 +6,7 @@ import re
 from contextlib import contextmanager
 from contextvars import ContextVar, Token, copy_context
 from copy import copy
-from typing import Any, Callable, Iterator, Mapping, ParamSpec, TypeVar
+from typing import Any, Callable, Generator, Mapping, ParamSpec, TypeVar, cast
 
 DEFAULT_TRACE_ID = "-"
 DEFAULT_LOG_FORMAT = "text"
@@ -32,15 +32,29 @@ _R = TypeVar("_R")
 def _level_names_mapping() -> dict[str, int]:
     get_mapping = getattr(logging, "getLevelNamesMapping", None)
     if callable(get_mapping):
-        return dict(get_mapping())
-    return dict(getattr(logging, "_nameToLevel", {}))
+        mapping_any = get_mapping()
+        if isinstance(mapping_any, Mapping):
+            mapping = cast(Mapping[object, object], mapping_any)
+            resolved: dict[str, int] = {}
+            for key, value in mapping.items():
+                if isinstance(key, str) and isinstance(value, int):
+                    resolved[key] = value
+            return resolved
+
+    legacy_mapping_any = getattr(logging, "_nameToLevel", {})
+    if isinstance(legacy_mapping_any, Mapping):
+        legacy_mapping = cast(Mapping[object, object], legacy_mapping_any)
+        resolved: dict[str, int] = {}
+        for key, value in legacy_mapping.items():
+            if isinstance(key, str) and isinstance(value, int):
+                resolved[key] = value
+        return resolved
+    return {}
 
 
 def _normalize_context_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
     for key, value in fields.items():
-        if not isinstance(key, str):
-            continue
         token = key.strip()
         if not token or value is None:
             continue
@@ -166,7 +180,7 @@ def restore_log_context(token: Token[dict[str, Any]]) -> None:
 
 
 @contextmanager
-def log_context(**fields: Any) -> Iterator[dict[str, Any]]:
+def log_context(**fields: Any) -> Generator[dict[str, Any], None, None]:
     token = set_log_context(**fields)
     try:
         yield get_log_context()
@@ -175,7 +189,7 @@ def log_context(**fields: Any) -> Iterator[dict[str, Any]]:
 
 
 @contextmanager
-def applied_log_context(fields: Mapping[str, Any]) -> Iterator[dict[str, Any]]:
+def applied_log_context(fields: Mapping[str, Any]) -> Generator[dict[str, Any], None, None]:
     token = replace_log_context(fields)
     try:
         yield get_log_context()
@@ -203,7 +217,7 @@ class RequestContextFilter(logging.Filter):
 
         extra_context = getattr(record, "log_context", None)
         if isinstance(extra_context, Mapping):
-            merged.update(_normalize_context_fields(extra_context))
+            merged.update(_normalize_context_fields(cast(Mapping[str, Any], extra_context)))
 
         explicit_trace_id = getattr(record, "trace_id", None)
         if explicit_trace_id is not None:
@@ -217,10 +231,10 @@ class RequestContextFilter(logging.Filter):
         else:
             merged.pop("trace_id", None)
 
-        record.trace_id = trace_id or DEFAULT_TRACE_ID
-        record.log_context = merged
-        record.context_suffix = format_context_suffix(merged)
-        record.source_location = f"{record.pathname}:{record.lineno}"
+        setattr(record, "trace_id", trace_id or DEFAULT_TRACE_ID)
+        setattr(record, "log_context", merged)
+        setattr(record, "context_suffix", format_context_suffix(merged))
+        setattr(record, "source_location", f"{record.pathname}:{record.lineno}")
         return True
 
 
@@ -231,8 +245,13 @@ class TextFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         local_record = copy(record)
-        local_record.context_suffix = getattr(local_record, "context_suffix", "")
-        local_record.source_location = getattr(local_record, "source_location", f"{local_record.pathname}:{local_record.lineno}")
+        context_suffix = getattr(local_record, "context_suffix", "")
+        if not isinstance(context_suffix, str):
+            context_suffix = ""
+        setattr(local_record, "context_suffix", context_suffix)
+
+        source_location_any = getattr(local_record, "source_location", None)
+        source_location = source_location_any if isinstance(source_location_any, str) else f"{local_record.pathname}:{local_record.lineno}"
 
         if self._use_color:
             level_name = local_record.levelname
@@ -240,7 +259,9 @@ class TextFormatter(logging.Formatter):
             if color:
                 local_record.levelname = f"{color}{level_name}{_COLOR_RESET}"
             local_record.name = f"{_COLOR_DIM}{local_record.name}{_COLOR_RESET}"
-            local_record.source_location = f"{_COLOR_LINK}{local_record.source_location}{_COLOR_RESET}"
+            source_location = f"{_COLOR_LINK}{source_location}{_COLOR_RESET}"
+
+        setattr(local_record, "source_location", source_location)
 
         return super().format(local_record)
 
@@ -253,7 +274,7 @@ class ColorFormatter(TextFormatter):
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         context_any = getattr(record, "log_context", None)
-        context = _normalize_context_fields(context_any) if isinstance(context_any, Mapping) else {}
+        context = _normalize_context_fields(cast(Mapping[str, Any], context_any)) if isinstance(context_any, Mapping) else {}
         trace_id = str(context.get("trace_id") or getattr(record, "trace_id", DEFAULT_TRACE_ID)).strip() or DEFAULT_TRACE_ID
 
         payload: dict[str, Any] = {

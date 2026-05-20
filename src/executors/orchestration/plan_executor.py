@@ -4,7 +4,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, cast
+from typing import Any, Callable, Dict, List, Mapping, Optional, cast
 from uuid import uuid4
 
 from src.domain.dto.analytics import StatisticalTestResult
@@ -76,6 +76,18 @@ _AXIS_UNIT_FALLBACKS: Dict[str, str] = {
 }
 
 _AXIS_ACRONYMS = {"NIHSS", "DTN", "IVT", "EVT", "TIA", "LVO", "ICH", "SAH", "CT", "MRI"}
+
+
+def _mapping_to_dict(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+
+    mapping = cast(Mapping[object, object], value)
+    result: Dict[str, Any] = {}
+    for raw_key, raw_value in mapping.items():
+        if isinstance(raw_key, str):
+            result[raw_key] = raw_value
+    return result
 
 
 def _normalize_axis_display_label(raw: str) -> str:
@@ -209,7 +221,7 @@ def _execute_mann_whitney_test(test: StatisticalTestSpec, user_sub: str, trace_i
     base_filter = to_gql_filter(test.filters)
 
     metrics = test.metrics or []
-    metric_values = [m.metric for m in metrics if isinstance(m.metric, str) and m.metric.strip()]
+    metric_values = [metric.metric for metric in metrics if metric.metric.strip()]
     if not metric_values:
         return []
 
@@ -245,8 +257,10 @@ def _execute_mann_whitney_test(test: StatisticalTestSpec, user_sub: str, trace_i
     # hospital-vs-national, etc.) where first two metric entries define cohorts.
     metric_a = metrics[0] if len(metrics) > 0 else None
     metric_b = metrics[1] if len(metrics) > 1 else None
-    metric_a_origin = cast(Optional[Any], getattr(metric_a, "data_origin", None)) if metric_a is not None else None
-    metric_b_origin = cast(Optional[Any], getattr(metric_b, "data_origin", None)) if metric_b is not None else None
+    metric_a_origin = metric_a.data_origin if metric_a is not None else None
+    metric_b_origin = metric_b.data_origin if metric_b is not None else None
+    metric_a_scope = metric_a.origin_scope if metric_a is not None else None
+    metric_b_scope = metric_b.origin_scope if metric_b is not None else None
 
     data_origin_payload_a: Optional[Dict[str, Any]] = None
     data_origin_payload_b: Optional[Dict[str, Any]] = None
@@ -258,12 +272,10 @@ def _execute_mann_whitney_test(test: StatisticalTestSpec, user_sub: str, trace_i
     if metric_a_origin is not None and metric_b_origin is not None:
         data_origin_payload_a = metric_a_origin.model_dump(by_alias=True, exclude_none=True)
         data_origin_payload_b = metric_b_origin.model_dump(by_alias=True, exclude_none=True)
-        label_a = cast(Optional[str], getattr(cast(Any, metric_a), "origin_scope", None).label) if getattr(cast(Any, metric_a), "origin_scope", None) is not None else "Cohort A"
-        label_b = cast(Optional[str], getattr(cast(Any, metric_b), "origin_scope", None).label) if getattr(cast(Any, metric_b), "origin_scope", None) is not None else "Cohort B"
-        if not label_a:
-            label_a = "Cohort A"
-        if not label_b:
-            label_b = "Cohort B"
+        if metric_a_scope is not None and metric_a_scope.label and metric_a_scope.label.strip():
+            label_a = metric_a_scope.label.strip()
+        if metric_b_scope is not None and metric_b_scope.label and metric_b_scope.label.strip():
+            label_b = metric_b_scope.label.strip()
     else:
         # Backward-compatible fallback: derive cohorts from two-way group_by split.
         cohort_split = _cohort_split_from_groupby(test.group_by)
@@ -291,9 +303,6 @@ def _execute_mann_whitney_test(test: StatisticalTestSpec, user_sub: str, trace_i
         data_origin_payload_b = data_origin_payload_default
         label_a = label_a_split
         label_b = label_b_split
-
-    if data_origin_payload_a is None or data_origin_payload_b is None:
-        return []
 
     time_period_payload = _default_time_period_from_filter(base_filter)
 
@@ -328,16 +337,17 @@ query MannWhitney($metric: [StatisticsMetricEnum!]!, $cohortA: CohortFilterInput
     if payload is None:
         return []
 
-    data_any = payload.get("data") if isinstance(payload, dict) else None
-    if not isinstance(data_any, dict):
+    data = _mapping_to_dict(payload.get("data"))
+    if not data:
         return []
 
-    rows_any = data_any.get("getMannWhitneyUTest")
+    rows_any = data.get("getMannWhitneyUTest")
     if not isinstance(rows_any, list):
         return []
 
     out: List[StatisticalTestResult] = []
-    for row_any in rows_any:
+    rows = cast(List[object], rows_any)
+    for row_any in rows:
         if not isinstance(row_any, dict):
             continue
         row = cast(Dict[str, Any], row_any)
@@ -559,14 +569,12 @@ def _sampled_period_from_specs(specs: List[RequestSpec]) -> Optional[str]:
     ends: List[tuple[datetime, str]] = []
 
     for spec in specs:
-        time_period_any = getattr(spec.req, "time_period", None)
+        time_period_any = spec.req.time_period
         periods: List[TimePeriod]
         if isinstance(time_period_any, list):
-            periods = [p for p in time_period_any if isinstance(p, TimePeriod)]
-        elif isinstance(time_period_any, TimePeriod):
-            periods = [time_period_any]
+            periods = list(time_period_any)
         else:
-            periods = []
+            periods = [time_period_any]
 
         for period in periods:
             start_raw = cast(Optional[str], getattr(period, "start_date", None))
@@ -643,10 +651,10 @@ def _emit_progress(context: ExecutionContext, completed: int, total: int, prefix
 
 
 def _request_scope_label(spec: RequestSpec) -> str:
-    if isinstance(spec.scope_label, str) and spec.scope_label.strip():
+    if spec.scope_label and spec.scope_label.strip():
         return spec.scope_label.strip()
     if spec.label_parts:
-        joined = " - ".join([part for part in spec.label_parts if isinstance(part, str) and part.strip()])
+        joined = " - ".join([part for part in spec.label_parts if part.strip()])
         if joined:
             return joined
     return "one requested scope"

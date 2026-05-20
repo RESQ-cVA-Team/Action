@@ -4,7 +4,7 @@ import json
 import logging
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple, cast
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +16,29 @@ _LOCALES_ROOT = Path(__file__).resolve().parents[1] / "locales"
 class _SafeFormatMap(dict[str, Any]):
     def __missing__(self, key: str) -> str:
         return "{" + key + "}"
+
+
+def _mapping_to_dict(value: object) -> Dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+
+    mapping = cast(Mapping[object, object], value)
+    normalized: Dict[str, Any] = {}
+    for key, item in mapping.items():
+        if isinstance(key, str):
+            normalized[key] = item
+    return normalized
+
+
+def _mapping_get(value: object, key: str) -> object | None:
+    if not isinstance(value, Mapping):
+        return None
+
+    mapping = cast(Mapping[object, object], value)
+    for current_key, current_value in mapping.items():
+        if current_key == key:
+            return current_value
+    return None
 
 
 def normalize_language_code(raw_language: Any) -> Optional[str]:
@@ -48,19 +71,20 @@ def _language_from_slots(slots: Mapping[str, Any]) -> Optional[str]:
 
 
 def _tracker_slots(tracker: Any) -> Dict[str, Any]:
-    if hasattr(tracker, "current_state") and callable(getattr(tracker, "current_state")):
+    current_state = getattr(tracker, "current_state", None)
+    if callable(current_state):
         try:
-            state_any = tracker.current_state()
-            if isinstance(state_any, dict):
-                slots_any = state_any.get("slots")
-                if isinstance(slots_any, dict):
-                    return dict(slots_any)
+            state = _mapping_to_dict(current_state())
+            slots = _mapping_to_dict(state.get("slots"))
+            if slots:
+                return slots
         except Exception:
             return {}
 
-    if hasattr(tracker, "get_slot") and callable(getattr(tracker, "get_slot")):
+    get_slot = getattr(tracker, "get_slot", None)
+    if callable(get_slot):
         try:
-            slot_language = tracker.get_slot("language")
+            slot_language = get_slot("language")
         except Exception:
             slot_language = None
         if slot_language is not None:
@@ -75,8 +99,8 @@ def resolve_language(
     slots: Optional[Mapping[str, Any]] = None,
     tracker: Any = None,
 ) -> str:
-    metadata_map = metadata if isinstance(metadata, Mapping) else {}
-    slots_map = slots if isinstance(slots, Mapping) else {}
+    metadata_map = _mapping_to_dict(metadata)
+    slots_map = _mapping_to_dict(slots)
 
     metadata_language = _language_from_metadata(metadata_map)
     if metadata_language is not None:
@@ -96,10 +120,8 @@ def resolve_language(
 
 
 def resolve_language_from_tracker(tracker: Any) -> str:
-    latest_any = getattr(tracker, "latest_message", None)
-    latest = latest_any if isinstance(latest_any, dict) else {}
-    metadata_any = latest.get("metadata")
-    metadata = metadata_any if isinstance(metadata_any, dict) else {}
+    latest = _mapping_to_dict(getattr(tracker, "latest_message", None))
+    metadata = _mapping_to_dict(latest.get("metadata"))
     slots = _tracker_slots(tracker)
     return resolve_language(metadata=metadata, slots=slots, tracker=tracker)
 
@@ -111,9 +133,7 @@ def _load_catalog(language: str) -> Dict[str, Any]:
 
     try:
         with path.open("r", encoding="utf-8") as handle:
-            loaded = json.load(handle)
-            if isinstance(loaded, dict):
-                return loaded
+            return _mapping_to_dict(json.load(handle))
     except Exception:
         logger.exception("Failed to load locale catalog for language='%s' from '%s'", normalized, path)
 
@@ -121,11 +141,11 @@ def _load_catalog(language: str) -> Dict[str, Any]:
 
 
 def _lookup_catalog(catalog: Mapping[str, Any], key: str) -> Optional[str]:
-    node: Any = catalog
+    node: object = catalog
     for part in key.split("."):
-        if not isinstance(node, Mapping):
+        node = _mapping_get(node, part)
+        if node is None:
             return None
-        node = node.get(part)
 
     if isinstance(node, str):
         return node

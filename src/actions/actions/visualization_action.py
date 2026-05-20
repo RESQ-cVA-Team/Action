@@ -675,12 +675,12 @@ class ActionOneShotGenerateVisualization(LongAction):
                     summary_cb=on_summary,
                     trace_id=trace_id,
                 )
-                visualization_payload_any = cast(Any, visualization).model_dump(mode="json")
-                ctx.say(json_message=cast(Dict[str, Any], visualization_payload_any))
+                visualization_payload = visualization.model_dump(mode="json")
+                ctx.say(json_message=visualization_payload)
 
-                warnings_any = visualization_payload_any.get("warnings") if isinstance(visualization_payload_any, dict) else None
+                warnings_any = visualization_payload.get("warnings")
                 if isinstance(warnings_any, list):
-                    for warning in warnings_any:
+                    for warning in cast(List[object], warnings_any):
                         if isinstance(warning, str) and warning.strip():
                             ctx.say(text=f"Note: {warning.strip()}")
 

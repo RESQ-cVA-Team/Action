@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from typing import List, Optional
+from typing import List, Optional, cast
 
 from src.domain.dto.charts.types import ChartSeries
 from src.domain.graphql.request import GraphQLQueryRequest
@@ -125,14 +125,13 @@ async def run_graphql_request(
             kpi_groups = getattr(metric, "kpi_group", None)
             if not isinstance(kpi_groups, list):
                 continue
-            for kpi in kpi_groups:
+            for kpi in cast(List[object], kpi_groups):
                 if getattr(kpi, "kpi1", None) is None:
                     skipped_rows += 1
     except Exception:
         skipped_rows = 0
 
     total_rows = kpi_group_count
-    valid_rows = max(0, total_rows - skipped_rows)
 
     def _append_warning(message: str) -> None:
         if request_warnings is None:

@@ -27,7 +27,7 @@ This README only covers:
 
 1. Open this repository in VS Code.
 2. Choose **Reopen in Container**.
-3. Wait for post-create setup to finish (`pip install -e . && mypy --strict . && ruff check .`).
+3. Wait for post-create setup to finish (`pip install -e . && pyright && ruff check .`).
 4. Configure `.env` (repo root) as shown below.
 5. Run the service command.
 

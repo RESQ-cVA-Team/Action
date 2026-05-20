@@ -554,7 +554,7 @@ def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[s
                 chart_type=chart_type,
                 filters=filter_node,
                 group_by=group_specs or None,
-                metrics=[S.MetricSpec(metric=metric, origin_scope=metric_origin_scope)],
+                metrics=[S.MetricSpec(metric=metric, originScope=metric_origin_scope)],
             )
         ],
         statistical_tests=None,

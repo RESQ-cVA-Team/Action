@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Sequence
 
 from src.domain.graphql.request import (
     DataOrigin,
@@ -125,7 +125,7 @@ def _build_case_filter(chart_filter: Optional[Any], filter_dims: List[Dimension]
 
 def build_primary_request_specs(
     metric_requests: List[MetricRequest],
-    metric_data_origins: Optional[List[Optional[DataOrigin]]],
+    metric_data_origins: Optional[Sequence[Optional[DataOrigin]]],
     chart_filter: Optional[Any],
     filter_dims: List[Dimension],
     combos_list: List[tuple[Any, ...]],
@@ -133,7 +133,7 @@ def build_primary_request_specs(
     batched_time_periods: List[TimePeriod],
     include_metric_alias: bool,
     group_by_field: Optional[str],
-    metric_scope_labels: Optional[List[Optional[str]]] = None,
+    metric_scope_labels: Optional[Sequence[Optional[str]]] = None,
     data_origin: Optional[DataOrigin] = None,
 ) -> tuple[List[RequestSpec], List[ComboContext]]:
     specs: List[RequestSpec] = []

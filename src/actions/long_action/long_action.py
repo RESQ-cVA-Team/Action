@@ -27,6 +27,10 @@ _LOG_CALLBACK_ERRORS = env_util.env_flag("LONG_ACTION_LOG_CALLBACK_ERRORS", defa
 _DEFER_CALLBACK_HANDOFF = env_util.env_flag("LONG_ACTION_DEFER_CALLBACK_HANDOFF", default=False)
 
 
+def _event_list() -> List[Dict[str, Any]]:
+    return []
+
+
 @dataclass
 class PreworkResult:
     """Outcome of LongAction.prework.
@@ -35,7 +39,7 @@ class PreworkResult:
     - proceed: whether async/sync work phase should continue.
     """
 
-    events: List[Dict[str, Any]] = field(default_factory=list)
+    events: List[Dict[str, Any]] = field(default_factory=_event_list)
     proceed: bool = True
 
 

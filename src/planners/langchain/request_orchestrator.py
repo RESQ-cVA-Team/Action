@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any, Callable, Dict, List, Literal, Optional, cast
 
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 
 from src.domain.langchain.schema import AnalysisPlan, ChartType
 from src.planners.langchain.llm_factory import create_chat_llm

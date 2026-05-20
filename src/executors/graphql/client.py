@@ -2,7 +2,7 @@ import hashlib
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, TypedDict
+from typing import Any, Dict, Mapping, Optional, TypedDict, cast
 
 import requests
 
@@ -32,6 +32,18 @@ logger = logging.getLogger(__name__)
 # Privacy/safety defaults: avoid logging raw GraphQL payloads.
 _LOG_GRAPHQL_QUERY = env_util.env_flag("GRAPHQL_LOG_QUERY", default=False)
 _LOG_GRAPHQL_BODY = env_util.env_flag("GRAPHQL_LOG_BODY", default=False)
+
+
+def _mapping_to_dict(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+
+    mapping = cast(Mapping[object, object], value)
+    result: Dict[str, Any] = {}
+    for raw_key, raw_value in mapping.items():
+        if isinstance(raw_key, str):
+            result[raw_key] = raw_value
+    return result
 
 
 @dataclass
@@ -380,9 +392,9 @@ class GraphQLProxyClient:
 
                 if response.status_code == 200:
                     try:
-                        payload_any = response.json()
-                        if isinstance(payload_any, dict):
-                            return payload_any
+                        payload = _mapping_to_dict(response.json())
+                        if payload:
+                            return payload
                         last_error = GraphQLProxyError(
                             kind="invalid_response",
                             message="GraphQL response is not a JSON object",

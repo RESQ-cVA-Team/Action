@@ -16,7 +16,6 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-.mypy_cache/
 .pytest_cache/
 .DS_Store
 .venv/

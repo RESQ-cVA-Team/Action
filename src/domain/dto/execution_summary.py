@@ -3,6 +3,10 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
+def _batch_list() -> List["ExecutionBatchSummary"]:
+    return []
+
+
 class ExecutionBatchSummary(BaseModel):
     chart_title: str
     chart_type: str
@@ -33,5 +37,5 @@ class ExecutionSummary(BaseModel):
     chart_count: int
     estimated_queries: int
     actual_queries: int
-    batches: List[ExecutionBatchSummary] = Field(default_factory=list)
+    batches: List[ExecutionBatchSummary] = Field(default_factory=_batch_list)
     normalization: Optional[PlanNormalizationSummary] = None
