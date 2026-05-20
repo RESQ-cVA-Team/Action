@@ -9,6 +9,7 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol, Tuple, cast
+from urllib.parse import urlsplit
 
 import requests
 from rasa_sdk import Action  # type: ignore
@@ -25,6 +26,15 @@ logger = logging.getLogger(__name__)
 _LOG_CALLBACK_STATUS = env_util.env_flag("LONG_ACTION_LOG_CALLBACK_STATUS", default=False)
 _LOG_CALLBACK_ERRORS = env_util.env_flag("LONG_ACTION_LOG_CALLBACK_ERRORS", default=False)
 _DEFER_CALLBACK_HANDOFF = env_util.env_flag("LONG_ACTION_DEFER_CALLBACK_HANDOFF", default=False)
+
+
+def _callback_endpoint_label(url: str) -> str:
+    parsed = urlsplit(url)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    if parsed.netloc:
+        return parsed.netloc
+    return url
 
 
 def _event_list() -> List[Dict[str, Any]]:
@@ -271,24 +281,77 @@ class LongAction(Action, ABC):
         if isinstance(trace_id, str) and trace_id.strip():
             headers["x-trace-id"] = trace_id.strip()
 
-        try:
-            resp = requests.post(
-                callback_url,
-                headers=headers,
-                data=json.dumps(payload, default=str),
-                timeout=10,
-            )
-            if _LOG_CALLBACK_STATUS:
-                logger.debug(
-                    "LongAction callback posted (status=%s)",
-                    getattr(resp, "status_code", None),
-                    extra={"trace_id": trace_id or "-"},
+        with log_context(
+            trace_id=trace_id or "-",
+            job_id=job_id,
+            callback_mode=True,
+            callback_endpoint=_callback_endpoint_label(callback_url),
+        ):
+            try:
+                resp = requests.post(
+                    callback_url,
+                    headers=headers,
+                    data=json.dumps(payload, default=str),
+                    timeout=10,
                 )
-        except Exception:
-            # Swallow errors from the callback endpoint; they should not
-            # break the long-running job.
-            if _LOG_CALLBACK_ERRORS:
-                logger.debug("LongAction callback post failed", exc_info=True, extra={"trace_id": trace_id or "-"})
+                status_code = getattr(resp, "status_code", None)
+                if isinstance(status_code, int) and 200 <= status_code < 300:
+                    if _LOG_CALLBACK_STATUS:
+                        logger.debug(
+                            "LongAction callback posted (status=%s)",
+                            status_code,
+                        )
+                    return
+
+                body_len = len(getattr(resp, "text", "") or "")
+                log_method = logger.error if isinstance(status_code, int) and status_code >= 500 else logger.warning
+                log_method(
+                    "LongAction callback returned HTTP %s",
+                    status_code,
+                    extra={
+                        "log_context": {
+                            "error_category": "http_error",
+                            "callback_status": status_code if isinstance(status_code, int) else "-",
+                            "body_len": body_len,
+                        }
+                    },
+                )
+            except requests.Timeout as exc:
+                logger.error(
+                    "LongAction callback timeout: %s",
+                    exc,
+                    exc_info=_LOG_CALLBACK_ERRORS,
+                    extra={
+                        "log_context": {
+                            "error_category": "timeout",
+                            "error_type": type(exc).__name__,
+                        }
+                    },
+                )
+            except requests.ConnectionError as exc:
+                logger.error(
+                    "LongAction callback connection failure: %s",
+                    exc,
+                    exc_info=_LOG_CALLBACK_ERRORS,
+                    extra={
+                        "log_context": {
+                            "error_category": "connection_error",
+                            "error_type": type(exc).__name__,
+                        }
+                    },
+                )
+            except requests.RequestException as exc:
+                logger.error(
+                    "LongAction callback request exception: %s",
+                    exc,
+                    exc_info=_LOG_CALLBACK_ERRORS,
+                    extra={
+                        "log_context": {
+                            "error_category": "request_error",
+                            "error_type": type(exc).__name__,
+                        }
+                    },
+                )
 
     def _run_work(self, ctx: LongActionContext, job_id: str, callback_url: str, callback_token: str) -> None:
         try:

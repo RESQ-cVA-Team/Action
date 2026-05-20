@@ -5,6 +5,7 @@ import socket
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, TypedDict, cast
+from urllib.parse import urlsplit
 
 import requests
 
@@ -12,6 +13,15 @@ from src.util import env as env_util
 from src.util.logging_utils import log_context
 
 logger = logging.getLogger(__name__)
+
+
+def _proxy_endpoint_label(url: str) -> str:
+    parsed = urlsplit(url)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    if parsed.netloc:
+        return parsed.netloc
+    return url
 
 
 def _runtime_instance_fields() -> tuple[int, str]:
@@ -98,6 +108,65 @@ class AnalyticsCenterClient:
             raise ValueError(f"trace_id is required for {request_name}")
         return token
 
+    @staticmethod
+    def _transport_log_extra(
+        *,
+        attempt: int,
+        attempts_total: int,
+        retry: bool,
+        error_category: str,
+        exc: Exception,
+        started_at: float,
+    ) -> Dict[str, Dict[str, Any]]:
+        return {
+            "log_context": {
+                "attempt": attempt + 1,
+                "attempts_total": attempts_total,
+                "retry": retry,
+                "error_category": error_category,
+                "error_type": type(exc).__name__,
+                "elapsed_ms": max(0, int((time.monotonic() - started_at) * 1000)),
+            }
+        }
+
+    def _log_transport_failure(
+        self,
+        *,
+        request_name: str,
+        label: str,
+        error_category: str,
+        exc: Exception,
+        attempt: int,
+        attempts_total: int,
+        started_at: float,
+        retry: bool,
+    ) -> None:
+        extra = self._transport_log_extra(
+            attempt=attempt,
+            attempts_total=attempts_total,
+            retry=retry,
+            error_category=error_category,
+            exc=exc,
+            started_at=started_at,
+        )
+        logger.warning(
+            "[AnalyticsCenterClient] %s during %s (attempt=%s/%s): %s",
+            label,
+            request_name,
+            attempt + 1,
+            attempts_total,
+            exc,
+            extra=extra,
+        )
+        if retry:
+            return
+        logger.error(
+            "[AnalyticsCenterClient] %s failed after %s attempt(s)",
+            request_name,
+            attempt + 1,
+            extra=extra,
+        )
+
     def _request_via_proxy(
         self,
         user_sub: str,
@@ -127,6 +196,7 @@ class AnalyticsCenterClient:
 
         attempts_total = self.retry_attempts + 1
         last_error: Optional[AnalyticsCenterError] = None
+        started_at = time.monotonic()
 
         def parse_error_payload() -> Dict[str, Any]:
             try:
@@ -143,6 +213,7 @@ class AnalyticsCenterClient:
             analytics_request=request_name,
             analytics_target=self.target,
             analytics_path=path,
+            proxy_endpoint=_proxy_endpoint_label(self.proxy_url),
         ):
             for attempt in range(attempts_total):
                 try:
@@ -177,14 +248,39 @@ class AnalyticsCenterClient:
                         message=f"{request_name} request timed out",
                         transient=True,
                     )
-                    logger.warning(
-                        "[AnalyticsCenterClient] Timeout during %s (attempt=%s/%s): %s",
-                        request_name,
-                        attempt + 1,
-                        attempts_total,
-                        exc,
+                    should_retry = attempt < self.retry_attempts
+                    self._log_transport_failure(
+                        request_name=request_name,
+                        label="Timeout",
+                        error_category="timeout",
+                        exc=exc,
+                        attempt=attempt,
+                        attempts_total=attempts_total,
+                        started_at=started_at,
+                        retry=should_retry,
                     )
-                    if attempt < self.retry_attempts:
+                    if should_retry:
+                        self._sleep_before_retry(attempt)
+                        continue
+                    break
+                except requests.ConnectionError as exc:
+                    last_error = AnalyticsCenterError(
+                        kind="request_error",
+                        message=f"{request_name} request failed",
+                        transient=True,
+                    )
+                    should_retry = attempt < self.retry_attempts
+                    self._log_transport_failure(
+                        request_name=request_name,
+                        label="Connection failure",
+                        error_category="connection_error",
+                        exc=exc,
+                        attempt=attempt,
+                        attempts_total=attempts_total,
+                        started_at=started_at,
+                        retry=should_retry,
+                    )
+                    if should_retry:
                         self._sleep_before_retry(attempt)
                         continue
                     break
@@ -194,14 +290,18 @@ class AnalyticsCenterClient:
                         message=f"{request_name} request failed",
                         transient=True,
                     )
-                    logger.warning(
-                        "[AnalyticsCenterClient] Request exception during %s (attempt=%s/%s): %s",
-                        request_name,
-                        attempt + 1,
-                        attempts_total,
-                        exc,
+                    should_retry = attempt < self.retry_attempts
+                    self._log_transport_failure(
+                        request_name=request_name,
+                        label="Request exception",
+                        error_category="request_error",
+                        exc=exc,
+                        attempt=attempt,
+                        attempts_total=attempts_total,
+                        started_at=started_at,
+                        retry=should_retry,
                     )
-                    if attempt < self.retry_attempts:
+                    if should_retry:
                         self._sleep_before_retry(attempt)
                         continue
                     break

@@ -3,6 +3,7 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, TypedDict, cast
+from urllib.parse import urlsplit
 
 import requests
 
@@ -32,6 +33,15 @@ logger = logging.getLogger(__name__)
 # Privacy/safety defaults: avoid logging raw GraphQL payloads.
 _LOG_GRAPHQL_QUERY = env_util.env_flag("GRAPHQL_LOG_QUERY", default=False)
 _LOG_GRAPHQL_BODY = env_util.env_flag("GRAPHQL_LOG_BODY", default=False)
+
+
+def _proxy_endpoint_label(url: str) -> str:
+    parsed = urlsplit(url)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    if parsed.netloc:
+        return parsed.netloc
+    return url
 
 
 def _mapping_to_dict(value: Any) -> Dict[str, Any]:
@@ -104,6 +114,65 @@ class GraphQLProxyClient:
             raise ValueError(f"trace_id is required for {operation}")
         return token
 
+    @staticmethod
+    def _transport_log_extra(
+        *,
+        attempt: int,
+        attempts_total: int,
+        retry: bool,
+        error_category: str,
+        exc: Exception,
+        started_at: float,
+    ) -> Dict[str, Dict[str, Any]]:
+        return {
+            "log_context": {
+                "attempt": attempt + 1,
+                "attempts_total": attempts_total,
+                "retry": retry,
+                "error_category": error_category,
+                "error_type": type(exc).__name__,
+                "elapsed_ms": max(0, int((time.monotonic() - started_at) * 1000)),
+            }
+        }
+
+    def _log_transport_failure(
+        self,
+        *,
+        operation: str,
+        label: str,
+        error_category: str,
+        exc: Exception,
+        attempt: int,
+        attempts_total: int,
+        started_at: float,
+        retry: bool,
+    ) -> None:
+        extra = self._transport_log_extra(
+            attempt=attempt,
+            attempts_total=attempts_total,
+            retry=retry,
+            error_category=error_category,
+            exc=exc,
+            started_at=started_at,
+        )
+        logger.warning(
+            "[GraphQLProxyClient] %s during %s (attempt=%s/%s): %s",
+            label,
+            operation,
+            attempt + 1,
+            attempts_total,
+            exc,
+            extra=extra,
+        )
+        if retry:
+            return
+        logger.error(
+            "[GraphQLProxyClient] %s failed after %s attempt(s)",
+            operation.capitalize(),
+            attempt + 1,
+            extra=extra,
+        )
+
     def query(
         self,
         query_str: str,
@@ -135,7 +204,15 @@ class GraphQLProxyClient:
         last_error: Optional[GraphQLProxyError] = None
         started_at = time.monotonic()
 
-        with log_context(trace_id=trace_label, user_sub=user_sub, graphql_target=self.target, graphql_hash=q_hash, graphql_operation="query"):
+        with log_context(
+            trace_id=trace_label,
+            user_sub=user_sub,
+            graphql_target=self.target,
+            graphql_path=self.path,
+            graphql_hash=q_hash,
+            graphql_operation="query",
+            proxy_endpoint=_proxy_endpoint_label(self.proxy_url),
+        ):
             for attempt in range(attempts_total):
                 elapsed = time.monotonic() - started_at
                 remaining_budget = self.max_total_timeout_seconds - elapsed
@@ -180,13 +257,42 @@ class GraphQLProxyClient:
                         message="GraphQL request timed out",
                         transient=True,
                     )
-                    logger.warning(
-                        "[GraphQLProxyClient] Timeout (attempt=%s/%s): %s",
-                        attempt + 1,
-                        attempts_total,
-                        exc,
+                    should_retry = attempt < self.retry_attempts
+                    self._log_transport_failure(
+                        operation="request",
+                        label="Timeout",
+                        error_category="timeout",
+                        exc=exc,
+                        attempt=attempt,
+                        attempts_total=attempts_total,
+                        started_at=started_at,
+                        retry=should_retry,
                     )
-                    if attempt < self.retry_attempts:
+                    if should_retry:
+                        retry_budget = self.max_total_timeout_seconds - (time.monotonic() - started_at)
+                        if retry_budget <= 0:
+                            break
+                        self._sleep_before_retry(attempt, remaining_budget=retry_budget)
+                        continue
+                    break
+                except requests.ConnectionError as exc:
+                    last_error = GraphQLProxyError(
+                        kind="request_error",
+                        message="GraphQL request failed",
+                        transient=True,
+                    )
+                    should_retry = attempt < self.retry_attempts
+                    self._log_transport_failure(
+                        operation="request",
+                        label="Connection failure",
+                        error_category="connection_error",
+                        exc=exc,
+                        attempt=attempt,
+                        attempts_total=attempts_total,
+                        started_at=started_at,
+                        retry=should_retry,
+                    )
+                    if should_retry:
                         retry_budget = self.max_total_timeout_seconds - (time.monotonic() - started_at)
                         if retry_budget <= 0:
                             break
@@ -199,13 +305,18 @@ class GraphQLProxyClient:
                         message="GraphQL request failed",
                         transient=True,
                     )
-                    logger.warning(
-                        "[GraphQLProxyClient] Request exception (attempt=%s/%s): %s",
-                        attempt + 1,
-                        attempts_total,
-                        exc,
+                    should_retry = attempt < self.retry_attempts
+                    self._log_transport_failure(
+                        operation="request",
+                        label="Request exception",
+                        error_category="request_error",
+                        exc=exc,
+                        attempt=attempt,
+                        attempts_total=attempts_total,
+                        started_at=started_at,
+                        retry=should_retry,
                     )
-                    if attempt < self.retry_attempts:
+                    if should_retry:
                         retry_budget = self.max_total_timeout_seconds - (time.monotonic() - started_at)
                         if retry_budget <= 0:
                             break
@@ -312,7 +423,15 @@ class GraphQLProxyClient:
         last_error: Optional[GraphQLProxyError] = None
         started_at = time.monotonic()
 
-        with log_context(trace_id=trace_label, user_sub=user_sub, graphql_target=self.target, graphql_hash=q_hash, graphql_operation="query_raw"):
+        with log_context(
+            trace_id=trace_label,
+            user_sub=user_sub,
+            graphql_target=self.target,
+            graphql_path=self.path,
+            graphql_hash=q_hash,
+            graphql_operation="query_raw",
+            proxy_endpoint=_proxy_endpoint_label(self.proxy_url),
+        ):
             for attempt in range(attempts_total):
                 elapsed = time.monotonic() - started_at
                 remaining_budget = self.max_total_timeout_seconds - elapsed
@@ -357,13 +476,42 @@ class GraphQLProxyClient:
                         message="GraphQL request timed out",
                         transient=True,
                     )
-                    logger.warning(
-                        "[GraphQLProxyClient] Timeout (attempt=%s/%s): %s",
-                        attempt + 1,
-                        attempts_total,
-                        exc,
+                    should_retry = attempt < self.retry_attempts
+                    self._log_transport_failure(
+                        operation="raw request",
+                        label="Timeout",
+                        error_category="timeout",
+                        exc=exc,
+                        attempt=attempt,
+                        attempts_total=attempts_total,
+                        started_at=started_at,
+                        retry=should_retry,
                     )
-                    if attempt < self.retry_attempts:
+                    if should_retry:
+                        retry_budget = self.max_total_timeout_seconds - (time.monotonic() - started_at)
+                        if retry_budget <= 0:
+                            break
+                        self._sleep_before_retry(attempt, remaining_budget=retry_budget)
+                        continue
+                    break
+                except requests.ConnectionError as exc:
+                    last_error = GraphQLProxyError(
+                        kind="request_error",
+                        message="GraphQL request failed",
+                        transient=True,
+                    )
+                    should_retry = attempt < self.retry_attempts
+                    self._log_transport_failure(
+                        operation="raw request",
+                        label="Connection failure",
+                        error_category="connection_error",
+                        exc=exc,
+                        attempt=attempt,
+                        attempts_total=attempts_total,
+                        started_at=started_at,
+                        retry=should_retry,
+                    )
+                    if should_retry:
                         retry_budget = self.max_total_timeout_seconds - (time.monotonic() - started_at)
                         if retry_budget <= 0:
                             break
@@ -376,13 +524,18 @@ class GraphQLProxyClient:
                         message="GraphQL request failed",
                         transient=True,
                     )
-                    logger.warning(
-                        "[GraphQLProxyClient] Request exception (attempt=%s/%s): %s",
-                        attempt + 1,
-                        attempts_total,
-                        exc,
+                    should_retry = attempt < self.retry_attempts
+                    self._log_transport_failure(
+                        operation="raw request",
+                        label="Request exception",
+                        error_category="request_error",
+                        exc=exc,
+                        attempt=attempt,
+                        attempts_total=attempts_total,
+                        started_at=started_at,
+                        retry=should_retry,
                     )
-                    if attempt < self.retry_attempts:
+                    if should_retry:
                         retry_budget = self.max_total_timeout_seconds - (time.monotonic() - started_at)
                         if retry_budget <= 0:
                             break
