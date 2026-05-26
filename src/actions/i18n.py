@@ -13,6 +13,18 @@ DEFAULT_LANGUAGE = "en"
 _LOCALES_ROOT = Path(__file__).resolve().parents[1] / "locales"
 
 
+def _i18n_log_context(event: str, operation: str, **fields: Any) -> Dict[str, Dict[str, Any]]:
+    context: Dict[str, Any] = {
+        "event": event,
+        "operation": operation,
+    }
+    for key, value in fields.items():
+        if value is None:
+            continue
+        context[key] = value
+    return {"log_context": context}
+
+
 class _SafeFormatMap(dict[str, Any]):
     def __missing__(self, key: str) -> str:
         return "{" + key + "}"
@@ -135,7 +147,18 @@ def _load_catalog(language: str) -> Dict[str, Any]:
         with path.open("r", encoding="utf-8") as handle:
             return _mapping_to_dict(json.load(handle))
     except Exception:
-        logger.exception("Failed to load locale catalog for language='%s' from '%s'", normalized, path)
+        logger.exception(
+            "Failed to load locale catalog for language='%s' from '%s'",
+            normalized,
+            path,
+            extra=_i18n_log_context(
+                event="actions.i18n.catalog_load_failed",
+                operation="_load_catalog",
+                outcome="failure",
+                language=normalized,
+                path=str(path),
+            ),
+        )
 
     return {}
 
@@ -170,7 +193,18 @@ def translate(
             template = default
         else:
             template = key
-            logger.warning("Missing translation key='%s' for language='%s'", key, normalized_language)
+            logger.warning(
+                "Missing translation key='%s' for language='%s'",
+                key,
+                normalized_language,
+                extra=_i18n_log_context(
+                    event="actions.i18n.translation_key_missing",
+                    operation="translate",
+                    outcome="degraded",
+                    key=key,
+                    language=normalized_language,
+                ),
+            )
 
     if not params:
         return template
@@ -179,5 +213,16 @@ def translate(
     try:
         return template.format_map(format_params)
     except Exception:
-        logger.exception("Failed formatting translation key='%s' with params", key)
+        logger.exception(
+            "Failed formatting translation key='%s' with params",
+            key,
+            extra=_i18n_log_context(
+                event="actions.i18n.translation_format_failed",
+                operation="translate",
+                outcome="failure",
+                key=key,
+                language=normalized_language,
+                param_keys=sorted(str(param_key) for param_key in params.keys()),
+            ),
+        )
         return template

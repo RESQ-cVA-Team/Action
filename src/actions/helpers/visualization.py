@@ -58,6 +58,19 @@ _QUERY_GUARD_TIMEOUT_SECONDS_RAW = env_util.get_env("ACTIONS_QUERY_GUARD_TIMEOUT
 try:
     _query_guard_timeout_seconds = max(1.0, float(_QUERY_GUARD_TIMEOUT_SECONDS_RAW))
 except Exception:
+    logger.debug(
+        "Invalid ACTIONS_QUERY_GUARD_TIMEOUT_SECONDS; using fallback",
+        exc_info=True,
+        extra={
+            "log_context": {
+                "event": "actions.query_guard.config.timeout_fallback",
+                "operation": "module_init",
+                "outcome": "degraded",
+                "raw_value": _QUERY_GUARD_TIMEOUT_SECONDS_RAW,
+                "fallback_value": 8.0,
+            }
+        },
+    )
     _query_guard_timeout_seconds = 8.0
 
 _QUERY_GUARD_TIMEOUT_SECONDS = _query_guard_timeout_seconds
@@ -66,6 +79,19 @@ _QUERY_GUARD_TEMPERATURE_RAW = env_util.get_env("ACTIONS_QUERY_GUARD_TEMPERATURE
 try:
     _query_guard_temperature = float(_QUERY_GUARD_TEMPERATURE_RAW)
 except Exception:
+    logger.debug(
+        "Invalid ACTIONS_QUERY_GUARD_TEMPERATURE; using fallback",
+        exc_info=True,
+        extra={
+            "log_context": {
+                "event": "actions.query_guard.config.temperature_fallback",
+                "operation": "module_init",
+                "outcome": "degraded",
+                "raw_value": _QUERY_GUARD_TEMPERATURE_RAW,
+                "fallback_value": 0.0,
+            }
+        },
+    )
     _query_guard_temperature = 0.0
 
 _QUERY_GUARD_TEMPERATURE = _query_guard_temperature
@@ -120,7 +146,19 @@ def _get_query_guard_llm() -> Optional[Any]:
         try:
             _query_guard_llm = create_chat_llm(temperature=_QUERY_GUARD_TEMPERATURE)
         except Exception:
-            logger.exception("Failed to initialize query-guard LLM")
+            logger.exception(
+                "Failed to initialize query-guard LLM",
+                extra={
+                    "log_context": {
+                        "event": "actions.query_guard.llm_init.failed",
+                        "operation": "_get_query_guard_llm",
+                        "outcome": "failure",
+                        "fail_open_enabled": _QUERY_GUARD_FAIL_OPEN,
+                        "timeout_seconds": _QUERY_GUARD_TIMEOUT_SECONDS,
+                        "temperature": _QUERY_GUARD_TEMPERATURE,
+                    }
+                },
+            )
             _query_guard_llm = None
     return _query_guard_llm
 
@@ -255,12 +293,44 @@ def evaluate_visualization_query(
     language: Optional[str] = None,
 ) -> QueryDecision:
     if not _ENABLE_QUERY_GUARD:
+        logger.debug(
+            "Query guard disabled; proceeding without guard",
+            extra={
+                "log_context": {
+                    "event": "actions.query_guard.disabled",
+                    "operation": "evaluate_visualization_query",
+                    "outcome": "degraded",
+                }
+            },
+        )
         return {"decision": "proceed", "reason": "guard_disabled", "message": None}
 
     guard_llm = _get_query_guard_llm()
     if guard_llm is None:
         if _QUERY_GUARD_FAIL_OPEN:
+            logger.warning(
+                "Query-guard LLM unavailable; proceeding via fail-open",
+                extra={
+                    "log_context": {
+                        "event": "actions.query_guard.llm_unavailable_fail_open",
+                        "operation": "evaluate_visualization_query",
+                        "outcome": "degraded",
+                        "fail_open_enabled": True,
+                    }
+                },
+            )
             return {"decision": "proceed", "reason": "guard_llm_unavailable", "message": None}
+        logger.warning(
+            "Query-guard LLM unavailable; returning clarification fallback",
+            extra={
+                "log_context": {
+                    "event": "actions.query_guard.llm_unavailable_clarify",
+                    "operation": "evaluate_visualization_query",
+                    "outcome": "degraded",
+                    "fail_open_enabled": False,
+                }
+            },
+        )
         return {
             "decision": "clarify",
             "reason": "guard_llm_unavailable",
@@ -268,19 +338,54 @@ def evaluate_visualization_query(
         }
 
     chain = _QUERY_GUARD_PROMPT | guard_llm
+    metric_candidates = _metric_candidates(question or "")
     payload = {
         "language": (language or "en").strip() or "en",
         "question": question or "",
         "entities_json": json.dumps(entities or {}, ensure_ascii=False),
-        "metric_candidates_json": json.dumps(_metric_candidates(question or ""), ensure_ascii=False),
+        "metric_candidates_json": json.dumps(metric_candidates, ensure_ascii=False),
     }
 
     try:
         return _invoke_query_guard(chain, payload)
     except Exception:
-        logger.exception("LLM query guard failed")
+        logger.exception(
+            "LLM query guard failed",
+            extra={
+                "log_context": {
+                    "event": "actions.query_guard.failed",
+                    "operation": "evaluate_visualization_query",
+                    "outcome": "failure",
+                    "fail_open_enabled": _QUERY_GUARD_FAIL_OPEN,
+                    "language": payload["language"],
+                    "metric_candidate_count": len(metric_candidates),
+                }
+            },
+        )
         if _QUERY_GUARD_FAIL_OPEN:
+            logger.warning(
+                "Query guard failed; proceeding via fail-open",
+                extra={
+                    "log_context": {
+                        "event": "actions.query_guard.failed_fail_open",
+                        "operation": "evaluate_visualization_query",
+                        "outcome": "degraded",
+                        "fail_open_enabled": True,
+                    }
+                },
+            )
             return {"decision": "proceed", "reason": "guard_llm_failed", "message": None}
+        logger.warning(
+            "Query guard failed; returning clarification fallback",
+            extra={
+                "log_context": {
+                    "event": "actions.query_guard.failed_clarify",
+                    "operation": "evaluate_visualization_query",
+                    "outcome": "degraded",
+                    "fail_open_enabled": False,
+                }
+            },
+        )
         return {
             "decision": "clarify",
             "reason": "guard_llm_failed",

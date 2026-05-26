@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import re
@@ -308,18 +309,45 @@ def _extract_example_entities(example: Dict[str, str]) -> Dict[str, Any]:
     if not payload:
         return {}
 
+    example_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
     try:
         parsed = json.loads(payload)
         if isinstance(parsed, dict):
             return cast(Dict[str, Any], parsed)
-    except Exception:
-        pass
+    except json.JSONDecodeError:
+        logger.debug(
+            "[Planner] Few-shot example entity JSON parse failed; trying fallback parser",
+            extra={
+                "log_context": {
+                    "event": "planner.example_entities.parse_fallback",
+                    "operation": "extract_example_entities",
+                    "outcome": "degraded",
+                    "error_kind": "json_decode_error",
+                    "example_hash": example_hash,
+                }
+            },
+            exc_info=True,
+        )
 
     try:
         parsed_fallback = json.loads(_extract_json_block(payload))
         if isinstance(parsed_fallback, dict):
             return cast(Dict[str, Any], parsed_fallback)
-    except Exception:
+    except (json.JSONDecodeError, ValueError):
+        logger.debug(
+            "[Planner] Few-shot example entity fallback parse failed; skipping entity extraction",
+            extra={
+                "log_context": {
+                    "event": "planner.example_entities.parse_skipped",
+                    "operation": "extract_example_entities",
+                    "outcome": "degraded",
+                    "error_kind": "fallback_parse_failed",
+                    "example_hash": example_hash,
+                }
+            },
+            exc_info=True,
+        )
         return {}
 
     return {}

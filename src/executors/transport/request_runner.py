@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from typing import List, Optional, cast
+from typing import Any, Dict, List, Optional, cast
 
 from src.domain.dto.charts.types import ChartSeries
 from src.domain.graphql.request import GraphQLQueryRequest
@@ -12,6 +12,30 @@ from src.executors.mapping.series_mapper import map_metrics_payload_to_series
 from src.util.logging_utils import log_context
 
 logger = logging.getLogger(__name__)
+
+
+def _runner_log_context(
+    *,
+    event: str,
+    outcome: str,
+    request_label: str,
+    query_hash: str,
+    group_by_field: Optional[str],
+    **fields: Any,
+) -> Dict[str, Dict[str, Any]]:
+    context: Dict[str, Any] = {
+        "event": event,
+        "operation": "run_graphql_request",
+        "outcome": outcome,
+        "request_label": request_label,
+        "graphql_hash": query_hash,
+        "graphql_group_by": group_by_field or "-",
+    }
+    for key, value in fields.items():
+        if value is None:
+            continue
+        context[key] = value
+    return {"log_context": context}
 
 
 async def run_graphql_request(
@@ -67,12 +91,32 @@ async def run_graphql_request(
                     "[plan_executor] GraphQL request failed (kind=%s, status=%s)",
                     exc.kind,
                     exc.status_code,
+                    extra=_runner_log_context(
+                        event="request_runner.graphql_request_failed",
+                        outcome="failure",
+                        request_label=request_label,
+                        query_hash=q_hash,
+                        group_by_field=group_by_field,
+                        error_kind=exc.kind,
+                        status_code=exc.status_code,
+                        failure_reason=request_failures[-1],
+                    ),
                 )
                 return []
 
     if resp is None:
         request_failures.append("upstream_error")
-        logger.error("[plan_executor] GraphQL returned empty response", extra={"trace_id": trace_label})
+        logger.error(
+            "[plan_executor] GraphQL returned empty response",
+            extra=_runner_log_context(
+                event="request_runner.graphql_response_empty",
+                outcome="failure",
+                request_label=request_label,
+                query_hash=q_hash,
+                group_by_field=group_by_field,
+                failure_reason="upstream_error",
+            ),
+        )
         return []
 
     metrics_payload = None
@@ -82,7 +126,18 @@ async def run_graphql_request(
     if getattr(resp, "errors", None):
         request_failures.append("graphql_error")
         error_count = len(resp.errors or [])
-        logger.error("[plan_executor] GraphQL errors returned (count=%s)", error_count, extra={"trace_id": trace_label})
+        logger.error(
+            "[plan_executor] GraphQL errors returned (count=%s)",
+            error_count,
+            extra=_runner_log_context(
+                event="request_runner.graphql_errors_returned",
+                outcome="failure",
+                request_label=request_label,
+                query_hash=q_hash,
+                group_by_field=group_by_field,
+                error_count=error_count,
+            ),
+        )
 
     if not metrics_payload:
         logger.warning(
@@ -91,7 +146,14 @@ async def run_graphql_request(
             request_label,
             q_hash,
             bool(getattr(resp, "errors", None)),
-            extra={"trace_id": trace_label},
+            extra=_runner_log_context(
+                event="request_runner.metrics_payload_missing",
+                outcome="degraded",
+                request_label=request_label,
+                query_hash=q_hash,
+                group_by_field=group_by_field,
+                has_errors=bool(getattr(resp, "errors", None)),
+            ),
         )
         return []
 
@@ -99,15 +161,39 @@ async def run_graphql_request(
     kpi_group_count = 0
     try:
         metric_count = len(metrics_payload)
-        for metric in metrics_payload.values():
+        for metric_alias, metric in metrics_payload.items():
             kpi_groups = getattr(metric, "kpi_group", None)
             if kpi_groups is None:
                 continue
             try:
                 kpi_group_count += len(kpi_groups)
             except Exception:
+                logger.debug(
+                    "[plan_executor] Failed to count KPI groups; using fallback count",
+                    extra=_runner_log_context(
+                        event="request_runner.kpi_group_count_fallback",
+                        outcome="degraded",
+                        request_label=request_label,
+                        query_hash=q_hash,
+                        group_by_field=group_by_field,
+                        metric_alias=str(metric_alias),
+                        fallback_count=1,
+                    ),
+                    exc_info=True,
+                )
                 kpi_group_count += 1
     except Exception:
+        logger.debug(
+            "[plan_executor] Failed to inspect metrics payload counts; using zero-count fallback",
+            extra=_runner_log_context(
+                event="request_runner.metrics_payload_count_fallback",
+                outcome="degraded",
+                request_label=request_label,
+                query_hash=q_hash,
+                group_by_field=group_by_field,
+            ),
+            exc_info=True,
+        )
         metric_count = 0
 
     series = map_metrics_payload_to_series(
@@ -120,8 +206,10 @@ async def run_graphql_request(
     )
 
     skipped_rows = 0
+    metric_alias_for_rows: Optional[str] = None
     try:
-        for metric in metrics_payload.values():
+        for metric_alias, metric in metrics_payload.items():
+            metric_alias_for_rows = str(metric_alias)
             kpi_groups = getattr(metric, "kpi_group", None)
             if not isinstance(kpi_groups, list):
                 continue
@@ -129,6 +217,18 @@ async def run_graphql_request(
                 if getattr(kpi, "kpi1", None) is None:
                     skipped_rows += 1
     except Exception:
+        logger.debug(
+            "[plan_executor] Failed to inspect skipped KPI rows; using zero skipped-row fallback",
+            extra=_runner_log_context(
+                event="request_runner.skipped_rows_count_fallback",
+                outcome="degraded",
+                request_label=request_label,
+                query_hash=q_hash,
+                group_by_field=group_by_field,
+                metric_alias=metric_alias_for_rows,
+            ),
+            exc_info=True,
+        )
         skipped_rows = 0
 
     total_rows = kpi_group_count
@@ -158,7 +258,17 @@ async def run_graphql_request(
             q_hash,
             metric_count,
             kpi_group_count,
-            extra={"trace_id": trace_label},
+            extra=_runner_log_context(
+                event="request_runner.zero_series_generated",
+                outcome="degraded",
+                request_label=request_label,
+                query_hash=q_hash,
+                group_by_field=group_by_field,
+                metric_count=metric_count,
+                kpi_group_count=kpi_group_count,
+                skipped_rows=skipped_rows,
+                has_graphql_errors=bool(getattr(resp, "errors", None)),
+            ),
         )
         return series
 

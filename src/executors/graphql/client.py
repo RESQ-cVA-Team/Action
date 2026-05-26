@@ -56,6 +56,10 @@ def _mapping_to_dict(value: Any) -> Dict[str, Any]:
     return result
 
 
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, int((time.monotonic() - started_at) * 1000))
+
+
 @dataclass
 class GraphQLProxyError(Exception):
     kind: str
@@ -131,7 +135,7 @@ class GraphQLProxyClient:
                 "retry": retry,
                 "error_category": error_category,
                 "error_type": type(exc).__name__,
-                "elapsed_ms": max(0, int((time.monotonic() - started_at) * 1000)),
+                "elapsed_ms": _elapsed_ms(started_at),
             }
         }
 
@@ -155,21 +159,23 @@ class GraphQLProxyClient:
             exc=exc,
             started_at=started_at,
         )
-        logger.warning(
-            "[GraphQLProxyClient] %s during %s (attempt=%s/%s): %s",
+        if retry:
+            logger.warning(
+                "[GraphQLProxyClient] %s during %s (attempt=%s/%s): %s",
+                label,
+                operation,
+                attempt + 1,
+                attempts_total,
+                exc,
+                extra=extra,
+            )
+            return
+        logger.error(
+            "[GraphQLProxyClient] %s during %s after %s attempt(s): %s",
             label,
             operation,
             attempt + 1,
-            attempts_total,
             exc,
-            extra=extra,
-        )
-        if retry:
-            return
-        logger.error(
-            "[GraphQLProxyClient] %s failed after %s attempt(s)",
-            operation.capitalize(),
-            attempt + 1,
             extra=extra,
         )
 
@@ -203,6 +209,27 @@ class GraphQLProxyClient:
         attempts_total = self.retry_attempts + 1
         last_error: Optional[GraphQLProxyError] = None
         started_at = time.monotonic()
+
+        def parse_error_payload() -> Dict[str, Any]:
+            try:
+                payload_any: Any = response.json()
+            except ValueError:
+                logger.debug(
+                    "[GraphQLProxyClient] Failed to parse proxy error payload as JSON",
+                    extra={
+                        "log_context": {
+                            "event": "graphql.error_payload_parse_failed",
+                            "operation": "query",
+                            "outcome": "degraded",
+                            "status_code": response.status_code,
+                            "body_len": len(response.text or ""),
+                            "elapsed_ms": _elapsed_ms(started_at),
+                        }
+                    },
+                    exc_info=True,
+                )
+                return {}
+            return _mapping_to_dict(payload_any)
 
         with log_context(
             trace_id=trace_label,
@@ -250,6 +277,7 @@ class GraphQLProxyClient:
                         attempt + 1,
                         attempts_total,
                         response.status_code,
+                        extra={"log_context": {"elapsed_ms": _elapsed_ms(started_at)}},
                     )
                 except requests.Timeout as exc:
                     last_error = GraphQLProxyError(
@@ -329,12 +357,36 @@ class GraphQLProxyClient:
                         return gqlr.MetricsQueryResponse.model_validate(response.json())
                     except Exception as exc:
                         if _LOG_GRAPHQL_BODY:
-                            logger.error("[GraphQLProxyClient] Validation error: %s. Raw: %s", exc, response.text)
+                            logger.error(
+                                "[GraphQLProxyClient] Validation error: %s. Raw: %s",
+                                exc,
+                                response.text,
+                                extra={
+                                    "log_context": {
+                                        "event": "graphql.invalid_response_validation",
+                                        "operation": "query",
+                                        "outcome": "failure",
+                                        "status_code": 200,
+                                        "body_len": len(response.text or ""),
+                                        "elapsed_ms": _elapsed_ms(started_at),
+                                    }
+                                },
+                            )
                         else:
                             logger.error(
                                 "[GraphQLProxyClient] Validation error: %s (body_len=%s)",
                                 exc,
                                 len(response.text or ""),
+                                extra={
+                                    "log_context": {
+                                        "event": "graphql.invalid_response_validation",
+                                        "operation": "query",
+                                        "outcome": "failure",
+                                        "status_code": 200,
+                                        "body_len": len(response.text or ""),
+                                        "elapsed_ms": _elapsed_ms(started_at),
+                                    }
+                                },
                             )
                         last_error = GraphQLProxyError(
                             kind="invalid_response",
@@ -346,28 +398,35 @@ class GraphQLProxyClient:
 
                 content_type = response.headers.get("Content-Type", "")
                 transient_status = self._is_transient_status(response.status_code)
-                if _LOG_GRAPHQL_BODY or _LOG_GRAPHQL_QUERY:
-                    body_preview = response.text[:1000] if _LOG_GRAPHQL_BODY else "(body logging disabled)"
-                    query_preview = query_str[:300] if _LOG_GRAPHQL_QUERY else "(query logging disabled)"
-                    logger.error(
-                        "[GraphQLProxyClient] Proxy error %s (attempt=%s/%s, Content-Type=%s). Body preview: %s. Query preview: %s",
-                        response.status_code,
-                        attempt + 1,
-                        attempts_total,
-                        content_type,
-                        body_preview,
-                        query_preview,
-                    )
-                else:
-                    logger.error(
-                        "[GraphQLProxyClient] Proxy error %s (attempt=%s/%s, Content-Type=%s, body_len=%s, query_len=%s)",
-                        response.status_code,
-                        attempt + 1,
-                        attempts_total,
-                        content_type,
-                        len(response.text or ""),
-                        len(query_str),
-                    )
+                error_payload = parse_error_payload()
+                proxy_info = _mapping_to_dict(error_payload.get("proxy"))
+                proxy_reason_any = proxy_info.get("reason")
+                proxy_reason = proxy_reason_any.strip() if isinstance(proxy_reason_any, str) and proxy_reason_any.strip() else None
+                log_context_fields: Dict[str, Any] = {
+                    "status_code": response.status_code,
+                    "attempt": attempt + 1,
+                    "attempts_total": attempts_total,
+                    "content_type": content_type,
+                    "body_len": len(response.text or ""),
+                    "query_len": len(query_str),
+                    "proxy_reason": proxy_reason or "-",
+                    "elapsed_ms": _elapsed_ms(started_at),
+                }
+                if _LOG_GRAPHQL_BODY:
+                    log_context_fields["body_preview"] = response.text[:1000]
+                if _LOG_GRAPHQL_QUERY:
+                    log_context_fields["query_preview"] = query_str[:300]
+
+                logger.error(
+                    "[GraphQLProxyClient] Proxy error %s during %s (attempt=%s/%s, content_type=%s, body_len=%s)",
+                    response.status_code,
+                    "query",
+                    attempt + 1,
+                    attempts_total,
+                    content_type,
+                    len(response.text or ""),
+                    extra={"log_context": log_context_fields},
+                )
 
                 last_error = GraphQLProxyError(
                     kind="http_error",
@@ -423,6 +482,27 @@ class GraphQLProxyClient:
         last_error: Optional[GraphQLProxyError] = None
         started_at = time.monotonic()
 
+        def parse_error_payload() -> Dict[str, Any]:
+            try:
+                payload_any: Any = response.json()
+            except ValueError:
+                logger.debug(
+                    "[GraphQLProxyClient] Failed to parse proxy error payload as JSON",
+                    extra={
+                        "log_context": {
+                            "event": "graphql.error_payload_parse_failed",
+                            "operation": "query_raw",
+                            "outcome": "degraded",
+                            "status_code": response.status_code,
+                            "body_len": len(response.text or ""),
+                            "elapsed_ms": _elapsed_ms(started_at),
+                        }
+                    },
+                    exc_info=True,
+                )
+                return {}
+            return _mapping_to_dict(payload_any)
+
         with log_context(
             trace_id=trace_label,
             user_sub=user_sub,
@@ -469,6 +549,7 @@ class GraphQLProxyClient:
                         attempt + 1,
                         attempts_total,
                         response.status_code,
+                        extra={"log_context": {"elapsed_ms": _elapsed_ms(started_at)}},
                     )
                 except requests.Timeout as exc:
                     last_error = GraphQLProxyError(
@@ -557,12 +638,36 @@ class GraphQLProxyClient:
                         break
                     except Exception as exc:
                         if _LOG_GRAPHQL_BODY:
-                            logger.error("[GraphQLProxyClient] JSON parse error: %s. Raw: %s", exc, response.text)
+                            logger.error(
+                                "[GraphQLProxyClient] JSON parse error: %s. Raw: %s",
+                                exc,
+                                response.text,
+                                extra={
+                                    "log_context": {
+                                        "event": "graphql.invalid_response_json",
+                                        "operation": "query_raw",
+                                        "outcome": "failure",
+                                        "status_code": 200,
+                                        "body_len": len(response.text or ""),
+                                        "elapsed_ms": _elapsed_ms(started_at),
+                                    }
+                                },
+                            )
                         else:
                             logger.error(
                                 "[GraphQLProxyClient] JSON parse error: %s (body_len=%s)",
                                 exc,
                                 len(response.text or ""),
+                                extra={
+                                    "log_context": {
+                                        "event": "graphql.invalid_response_json",
+                                        "operation": "query_raw",
+                                        "outcome": "failure",
+                                        "status_code": 200,
+                                        "body_len": len(response.text or ""),
+                                        "elapsed_ms": _elapsed_ms(started_at),
+                                    }
+                                },
                             )
                         last_error = GraphQLProxyError(
                             kind="invalid_response",
@@ -574,28 +679,35 @@ class GraphQLProxyClient:
 
                 content_type = response.headers.get("Content-Type", "")
                 transient_status = self._is_transient_status(response.status_code)
-                if _LOG_GRAPHQL_BODY or _LOG_GRAPHQL_QUERY:
-                    body_preview = response.text[:1000] if _LOG_GRAPHQL_BODY else "(body logging disabled)"
-                    query_preview = query_str[:300] if _LOG_GRAPHQL_QUERY else "(query logging disabled)"
-                    logger.error(
-                        "[GraphQLProxyClient] Proxy error %s (attempt=%s/%s, Content-Type=%s). Body preview: %s. Query preview: %s",
-                        response.status_code,
-                        attempt + 1,
-                        attempts_total,
-                        content_type,
-                        body_preview,
-                        query_preview,
-                    )
-                else:
-                    logger.error(
-                        "[GraphQLProxyClient] Proxy error %s (attempt=%s/%s, Content-Type=%s, body_len=%s, query_len=%s)",
-                        response.status_code,
-                        attempt + 1,
-                        attempts_total,
-                        content_type,
-                        len(response.text or ""),
-                        len(query_str),
-                    )
+                error_payload = parse_error_payload()
+                proxy_info = _mapping_to_dict(error_payload.get("proxy"))
+                proxy_reason_any = proxy_info.get("reason")
+                proxy_reason = proxy_reason_any.strip() if isinstance(proxy_reason_any, str) and proxy_reason_any.strip() else None
+                log_context_fields: Dict[str, Any] = {
+                    "status_code": response.status_code,
+                    "attempt": attempt + 1,
+                    "attempts_total": attempts_total,
+                    "content_type": content_type,
+                    "body_len": len(response.text or ""),
+                    "query_len": len(query_str),
+                    "proxy_reason": proxy_reason or "-",
+                    "elapsed_ms": _elapsed_ms(started_at),
+                }
+                if _LOG_GRAPHQL_BODY:
+                    log_context_fields["body_preview"] = response.text[:1000]
+                if _LOG_GRAPHQL_QUERY:
+                    log_context_fields["query_preview"] = query_str[:300]
+
+                logger.error(
+                    "[GraphQLProxyClient] Proxy error %s during %s (attempt=%s/%s, content_type=%s, body_len=%s)",
+                    response.status_code,
+                    "query_raw",
+                    attempt + 1,
+                    attempts_total,
+                    content_type,
+                    len(response.text or ""),
+                    extra={"log_context": log_context_fields},
+                )
 
                 last_error = GraphQLProxyError(
                     kind="http_error",

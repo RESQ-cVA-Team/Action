@@ -42,6 +42,19 @@ _executor_default_concurrency_raw = env_util.get_env("EXECUTOR_DEFAULT_MAX_CONCU
 try:
     _executor_default_concurrency = max(1, int(_executor_default_concurrency_raw))
 except Exception:
+    logger.debug(
+        "[plan_executor] Invalid EXECUTOR_DEFAULT_MAX_CONCURRENCY; using fallback",
+        exc_info=True,
+        extra={
+            "log_context": {
+                "event": "plan_executor.config.default_concurrency_fallback",
+                "operation": "module_init",
+                "outcome": "degraded",
+                "raw_value": _executor_default_concurrency_raw,
+                "fallback_value": 4,
+            }
+        },
+    )
     _executor_default_concurrency = 4
 _EXECUTOR_DEFAULT_MAX_CONCURRENCY = _executor_default_concurrency
 
@@ -49,6 +62,19 @@ _executor_sync_concurrency_raw = env_util.get_env("EXECUTOR_SYNC_MAX_CONCURRENCY
 try:
     _executor_sync_concurrency = max(1, int(_executor_sync_concurrency_raw))
 except Exception:
+    logger.debug(
+        "[plan_executor] Invalid EXECUTOR_SYNC_MAX_CONCURRENCY; using fallback",
+        exc_info=True,
+        extra={
+            "log_context": {
+                "event": "plan_executor.config.sync_concurrency_fallback",
+                "operation": "module_init",
+                "outcome": "degraded",
+                "raw_value": _executor_sync_concurrency_raw,
+                "fallback_value": 1,
+            }
+        },
+    )
     _executor_sync_concurrency = 1
 _EXECUTOR_SYNC_MAX_CONCURRENCY = _executor_sync_concurrency
 
@@ -126,6 +152,18 @@ def _parse_int_csv(raw: str) -> List[int]:
         try:
             out.append(int(token))
         except Exception:
+            logger.debug(
+                "[plan_executor] Failed to parse integer CSV token; skipping token",
+                exc_info=True,
+                extra={
+                    "log_context": {
+                        "event": "plan_executor.config.int_csv_token_skipped",
+                        "operation": "_parse_int_csv",
+                        "outcome": "degraded",
+                        "token": token,
+                    }
+                },
+            )
             continue
     return out
 
@@ -241,7 +279,16 @@ def _execute_mann_whitney_test(test: StatisticalTestSpec, user_sub: str, trace_i
         logger.warning(
             "[plan_executor] Skipping MANN_WHITNEY_U_TEST: %s",
             reason,
-            extra={"trace_id": trace_id or "-"},
+            extra={
+                "log_context": {
+                    "trace_id": trace_id or "-",
+                    "event": "plan_executor.statistical_test.skipped_ineligible_metrics",
+                    "operation": "_execute_mann_whitney_test",
+                    "outcome": "degraded",
+                    "test_type": "MANN_WHITNEY_U_TEST",
+                    "ineligible_metric_count": len(ineligible),
+                }
+            },
         )
         return [
             StatisticalTestResult(
@@ -284,7 +331,15 @@ def _execute_mann_whitney_test(test: StatisticalTestSpec, user_sub: str, trace_i
             logger.warning(
                 "[plan_executor] Skipping MANN_WHITNEY_U_TEST: %s",
                 reason,
-                extra={"trace_id": trace_id or "-"},
+                extra={
+                    "log_context": {
+                        "trace_id": trace_id or "-",
+                        "event": "plan_executor.statistical_test.skipped_missing_cohorts",
+                        "operation": "_execute_mann_whitney_test",
+                        "outcome": "degraded",
+                        "test_type": "MANN_WHITNEY_U_TEST",
+                    }
+                },
             )
             return [
                 StatisticalTestResult(
@@ -404,15 +459,49 @@ def _execute_statistical_tests(plan: AnalysisPlan, user_sub: str, trace_id: str)
             if test_type == "MANN_WHITNEY_U_TEST":
                 results.extend(_execute_mann_whitney_test(test=test, user_sub=user_sub, trace_id=trace_id))
             else:
-                logger.warning("[plan_executor] Statistical test type '%s' is not implemented yet", test_type, extra={"trace_id": trace_id})
+                logger.warning(
+                    "[plan_executor] Statistical test type '%s' is not implemented yet",
+                    test_type,
+                    extra={
+                        "log_context": {
+                            "trace_id": trace_id,
+                            "event": "plan_executor.statistical_test.not_implemented",
+                            "operation": "_execute_statistical_tests",
+                            "outcome": "degraded",
+                            "test_type": test_type or "-",
+                        }
+                    },
+                )
         except Exception:
-            logger.exception("[plan_executor] Statistical test execution failed for test type '%s'", test_type, extra={"trace_id": trace_id})
+            logger.exception(
+                "[plan_executor] Statistical test execution failed for test type '%s'",
+                test_type,
+                extra={
+                    "log_context": {
+                        "trace_id": trace_id,
+                        "event": "plan_executor.statistical_test.failed",
+                        "operation": "_execute_statistical_tests",
+                        "outcome": "failure",
+                        "test_type": test_type or "-",
+                    }
+                },
+            )
 
     return results
 
 
 def _emit_compiler_diagnostics(progress_cb: Optional[Callable[[str], None]], payload: Dict[str, Any], trace_id: str) -> None:
-    logger.debug("[plan_executor] compiler_diagnostics=%s", json.dumps(payload, default=str, sort_keys=True), extra={"trace_id": trace_id})
+    log_context_fields: Dict[str, Any] = {
+        "trace_id": trace_id,
+        "event": "plan_executor.compiler_diagnostics",
+        "operation": "_emit_compiler_diagnostics",
+        "outcome": "info",
+    }
+    log_context_fields.update(payload)
+    logger.debug(
+        "[plan_executor] Compiler diagnostics emitted",
+        extra={"log_context": log_context_fields},
+    )
     if progress_cb is not None:
         progress_cb(f"Compiler diagnostics: {json.dumps(payload, default=str, sort_keys=True)}")
 
@@ -516,11 +605,41 @@ def _derive_distribution_defaults(metric_code: str) -> tuple[int, int, int]:
     try:
         bins = int(bins)
     except Exception:
+        logger.debug(
+            "[plan_executor] Failed to parse distribution bucket count; using fallback",
+            exc_info=True,
+            extra={
+                "log_context": {
+                    "event": "plan_executor.distribution_defaults.bins_fallback",
+                    "operation": "_derive_distribution_defaults",
+                    "outcome": "degraded",
+                    "metric_code": metric_code,
+                    "raw_bins": bins,
+                    "fallback_bins": 20,
+                }
+            },
+        )
         bins = 20
     try:
         rmin = int(rmin)
         rmax = int(rmax)
     except Exception:
+        logger.debug(
+            "[plan_executor] Failed to parse distribution range; using fallback range",
+            exc_info=True,
+            extra={
+                "log_context": {
+                    "event": "plan_executor.distribution_defaults.range_fallback",
+                    "operation": "_derive_distribution_defaults",
+                    "outcome": "degraded",
+                    "metric_code": metric_code,
+                    "raw_range_min": rmin,
+                    "raw_range_max": rmax,
+                    "fallback_range_min": 0,
+                    "fallback_range_max": 200,
+                }
+            },
+        )
         rmin, rmax = 0, 200
     if rmin > rmax:
         rmin, rmax = rmax, rmin
@@ -551,6 +670,18 @@ def _format_iso_date(value: str) -> str:
         parsed = datetime.fromisoformat(token.replace("Z", "+00:00"))
         return parsed.date().isoformat()
     except Exception:
+        logger.debug(
+            "[plan_executor] Failed to format ISO date; using raw token fallback",
+            exc_info=True,
+            extra={
+                "log_context": {
+                    "event": "plan_executor.date.format_fallback",
+                    "operation": "_format_iso_date",
+                    "outcome": "degraded",
+                    "raw_value": token,
+                }
+            },
+        )
         return token.split("T", 1)[0]
 
 
@@ -561,6 +692,18 @@ def _parse_iso_date(value: str) -> Optional[datetime]:
     try:
         return datetime.fromisoformat(token.replace("Z", "+00:00"))
     except Exception:
+        logger.debug(
+            "[plan_executor] Failed to parse ISO date; returning None",
+            exc_info=True,
+            extra={
+                "log_context": {
+                    "event": "plan_executor.date.parse_fallback",
+                    "operation": "_parse_iso_date",
+                    "outcome": "degraded",
+                    "raw_value": token,
+                }
+            },
+        )
         return None
 
 
@@ -890,7 +1033,17 @@ async def execute_plan_async(
                     "[plan_executor] Batched multi-period request timed out; retrying with per-period requests (period_count=%s, combos=%s)",
                     len(batched_time_periods),
                     len(combo_contexts),
-                    extra={"trace_id": trace_id_resolved},
+                    extra={
+                        "log_context": {
+                            "trace_id": trace_id_resolved,
+                            "event": "plan_executor.unbatched_time_fallback",
+                            "operation": "execute_plan_async",
+                            "outcome": "degraded",
+                            "batched_time_period_count": len(batched_time_periods),
+                            "combo_count": len(combo_contexts),
+                            "request_failure_count": len(request_failures),
+                        }
+                    },
                 )
                 request_failures.clear()
 
@@ -921,10 +1074,36 @@ async def execute_plan_async(
             for scope_label in sorted(set(empty_scope_labels)):
                 warning_msg = f"No data was returned for {scope_label}. The chart includes the data that is available."
                 if warning_msg not in response.warnings:
+                    logger.debug(
+                        "[plan_executor] Appending partial-result warning for empty scope",
+                        extra={
+                            "log_context": {
+                                "trace_id": trace_id_resolved,
+                                "event": "plan_executor.warning.empty_scope_appended",
+                                "operation": "execute_plan_async",
+                                "outcome": "degraded",
+                                "scope_label": scope_label,
+                                "chart_type": planChart.chart_type or "Chart",
+                            }
+                        },
+                    )
                     response.warnings.append(warning_msg)
 
             for warning_msg in request_warnings:
                 if warning_msg not in response.warnings:
+                    logger.debug(
+                        "[plan_executor] Appending request warning",
+                        extra={
+                            "log_context": {
+                                "trace_id": trace_id_resolved,
+                                "event": "plan_executor.warning.request_warning_appended",
+                                "operation": "execute_plan_async",
+                                "outcome": "degraded",
+                                "chart_type": planChart.chart_type or "Chart",
+                                "warning_text": warning_msg,
+                            }
+                        },
+                    )
                     response.warnings.append(warning_msg)
 
             all_series = merge_series_by_name(all_series)
@@ -934,7 +1113,17 @@ async def execute_plan_async(
                     "[plan_executor] No series generated for chart '%s'%s. This often indicates a backend error or empty results.",
                     planChart.chart_type or "Chart",
                     "",
-                    extra={"trace_id": trace_id_resolved},
+                    extra={
+                        "log_context": {
+                            "trace_id": trace_id_resolved,
+                            "event": "plan_executor.chart.no_series_generated",
+                            "operation": "execute_plan_async",
+                            "outcome": "degraded",
+                            "chart_type": planChart.chart_type or "Chart",
+                            "request_failure_count": len(request_failures),
+                            "warning_count": len(request_warnings),
+                        }
+                    },
                 )
                 if request_failures:
                     raise _to_execution_error(request_failures, trace_id=trace_id_resolved)
@@ -963,6 +1152,19 @@ async def execute_plan_async(
         try:
             summary_cb(payload)
         except Exception:
-            logger.debug("Failed to emit execution summary callback", exc_info=True, extra={"trace_id": trace_id_resolved})
+            logger.warning(
+                "Failed to emit execution summary callback",
+                exc_info=True,
+                extra={
+                    "log_context": {
+                        "trace_id": trace_id_resolved,
+                        "event": "plan_executor.summary_callback.failed",
+                        "operation": "execute_plan_async",
+                        "outcome": "degraded",
+                        "chart_count": len(plan_charts),
+                        "warning_count": len(response.warnings),
+                    }
+                },
+            )
 
     return response

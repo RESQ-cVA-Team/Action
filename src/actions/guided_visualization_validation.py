@@ -41,6 +41,26 @@ SKIP_TOKENS = {
 }
 
 
+def _guided_scope_log_context(
+    *,
+    trace_id: Optional[str],
+    event: str,
+    operation: str,
+    **fields: Any,
+) -> Dict[str, Dict[str, Any]]:
+    context: Dict[str, Any] = {
+        "trace_id": trace_id or "-",
+        "event": event,
+        "operation": operation,
+        "outcome": "degraded",
+    }
+    for key, value in fields.items():
+        if value is None:
+            continue
+        context[key] = value
+    return {"log_context": context}
+
+
 class DispatcherLike(Protocol):
     def utter_message(self, text: Optional[str] = None, **kwargs: Any) -> None: ...
 
@@ -409,7 +429,7 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
         return {"guided_hospital_scope": None}
 
 
-def parse_guided_scope(scope_raw: Any) -> Optional[Dict[str, Any]]:
+def parse_guided_scope(scope_raw: Any, trace_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     if isinstance(scope_raw, dict):
         return cast(Dict[str, Any], scope_raw)
     if isinstance(scope_raw, str) and scope_raw.strip():
@@ -418,6 +438,17 @@ def parse_guided_scope(scope_raw: Any) -> Optional[Dict[str, Any]]:
             if isinstance(parsed, dict):
                 return cast(Dict[str, Any], parsed)
         except Exception:
+            logger.debug(
+                "Failed to parse guided scope JSON; falling back to None",
+                exc_info=True,
+                extra=_guided_scope_log_context(
+                    trace_id=trace_id,
+                    event="actions.guided.scope_parse_failed",
+                    operation="parse_guided_scope",
+                    raw_scope_type=type(scope_raw).__name__,
+                    raw_scope_length=len(scope_raw),
+                ),
+            )
             return None
     return None
 
@@ -523,7 +554,7 @@ def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[s
     group_by = _optional_slot_value(slots, "group_by")
     stroke_type = _optional_slot_value(slots, "stroke_type")
     sex = _optional_slot_value(slots, "sex")
-    guided_scope = parse_guided_scope(slots.get("guided_hospital_scope"))
+    guided_scope = parse_guided_scope(slots.get("guided_hospital_scope"), trace_id=trace_id)
 
     filters: List[S.FilterNode] = []
     if isinstance(stroke_type, str) and stroke_type.strip():
@@ -546,6 +577,18 @@ def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[s
         try:
             metric_origin_scope = S.OriginScopeSpec.model_validate(guided_scope)
         except Exception:
+            logger.debug(
+                "Failed to validate guided origin scope; falling back to None",
+                exc_info=True,
+                extra=_guided_scope_log_context(
+                    trace_id=trace_id,
+                    event="actions.guided.scope_validation_failed",
+                    operation="build_guided_plan",
+                    raw_scope_keys=sorted(str(key) for key in guided_scope.keys()),
+                    scope_type=guided_scope.get("scope_type"),
+                    scope_value=guided_scope.get("value"),
+                ),
+            )
             metric_origin_scope = None
 
     return S.AnalysisPlan(

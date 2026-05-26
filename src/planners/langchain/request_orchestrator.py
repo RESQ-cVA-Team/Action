@@ -149,7 +149,16 @@ def _get_llm() -> Optional[Any]:
         try:
             _llm = create_chat_llm(temperature=_ORCHESTRATOR_TEMPERATURE)
         except Exception:
-            logger.exception("Failed to initialize LLM request orchestrator")
+            logger.exception(
+                "Failed to initialize LLM request orchestrator",
+                extra={
+                    "log_context": {
+                        "event": "orchestrator.llm_init.failed",
+                        "operation": "_get_llm",
+                        "outcome": "failure",
+                    }
+                },
+            )
             _llm = None
     return _llm
 
@@ -417,7 +426,16 @@ def orchestrate_visualization_request(
 
             if stage1.decision == "clarify":
                 if _ASSUME_DEFAULT_TIME_SCOPE and _should_assume_default_time_scope(stage1):
-                    logger.debug("Assuming default time scope; skipping clarification")
+                    logger.debug(
+                        "Assuming default time scope; skipping clarification",
+                        extra={
+                            "log_context": {
+                                "event": "orchestrator.default_time_scope_assumed",
+                                "operation": "orchestrate_visualization_request",
+                                "outcome": "degraded",
+                            }
+                        },
+                    )
                     return VisualizationRequestOutcome(
                         decision="proceed",
                         reason="default_time_scope_assumed",
@@ -461,8 +479,29 @@ def orchestrate_visualization_request(
                 plan=plan,
             )
         except Exception:
-            logger.exception("Visualization request orchestration failed")
+            logger.exception(
+                "Visualization request orchestration failed",
+                extra={
+                    "log_context": {
+                        "event": "orchestrator.request.failed",
+                        "operation": "orchestrate_visualization_request",
+                        "outcome": "failure",
+                        "include_plan": include_plan,
+                        "fail_open_enabled": _ORCHESTRATOR_FAIL_OPEN,
+                    }
+                },
+            )
             if _ORCHESTRATOR_FAIL_OPEN and include_plan:
+                logger.warning(
+                    "Orchestrator failed; activating direct-plan fallback",
+                    extra={
+                        "log_context": {
+                            "event": "orchestrator.request.fail_open_fallback",
+                            "operation": "orchestrate_visualization_request",
+                            "outcome": "degraded",
+                        }
+                    },
+                )
                 report("Orchestration fallback: generating plan directly")
                 plan = generate_analysis_plan(
                     question=question,

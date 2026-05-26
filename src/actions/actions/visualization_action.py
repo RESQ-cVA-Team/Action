@@ -48,6 +48,27 @@ DomainDict = Dict[str, Any]
 RasaEventList = List[Any]
 
 
+def _action_log_context(
+    *,
+    trace_id: str,
+    action_name: str,
+    event: str,
+    outcome: str,
+    **fields: Any,
+) -> Dict[str, Dict[str, Any]]:
+    context: Dict[str, Any] = {
+        "trace_id": trace_id,
+        "action": action_name,
+        "event": event,
+        "outcome": outcome,
+    }
+    for key, value in fields.items():
+        if value is None:
+            continue
+        context[key] = value
+    return {"log_context": context}
+
+
 class DispatcherLike(Protocol):
     def utter_message(
         self,
@@ -323,7 +344,15 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                     FollowupAction("action_oneshot_generate_visualization"),
                 ]
             except Exception as e:
-                logger.exception("Error routing visualization request")
+                logger.exception(
+                    "Error routing visualization request",
+                    extra=_action_log_context(
+                        trace_id=trace_id,
+                        action_name=self.name(),
+                        event="actions.visualization.routing.failed",
+                        outcome="failure",
+                    ),
+                )
                 language = resolve_language(metadata=metadata, slots=slots, tracker=tracker)
                 payload = visualization_error_payload(e, trace_id=trace_id, language=language)
                 dispatcher.utter_message(
@@ -453,7 +482,7 @@ class ActionOneShotGenerateVisualization(LongAction):
 
     async def prework(self, ctx: LongActionContext) -> PreworkResult:
         trace_id = _ensure_context_trace_id(ctx)
-        with log_context(trace_id=trace_id):
+        with log_context(trace_id=trace_id, action=self.name()):
             logger.info("Starting one-shot prework")
             try:
                 if _is_guided_visualization_request(ctx.slots):
@@ -566,7 +595,15 @@ class ActionOneShotGenerateVisualization(LongAction):
                 )
                 return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=True)
             except Exception as e:
-                logger.exception("Error generating visualization during prework")
+                logger.exception(
+                    "Error generating visualization during prework",
+                    extra=_action_log_context(
+                        trace_id=trace_id,
+                        action_name=self.name(),
+                        event="actions.visualization.prework.failed",
+                        outcome="failure",
+                    ),
+                )
                 language = resolve_language(metadata=ctx.metadata, slots=ctx.slots)
                 payload = visualization_error_payload(e, trace_id=trace_id, language=language)
                 ctx.say(
@@ -605,7 +642,7 @@ class ActionOneShotGenerateVisualization(LongAction):
         planner_diagnostics: Optional[Dict[str, Any]] = None
         trace_id = _ensure_context_trace_id(ctx)
         language = resolve_language(metadata=ctx.metadata, slots=ctx.slots)
-        with log_context(trace_id=trace_id):
+        with log_context(trace_id=trace_id, action=self.name()):
             try:
                 request_ctx = _extract_request_context(ctx)
                 user_message = cast(str, request_ctx["user_message"])
@@ -642,7 +679,15 @@ class ActionOneShotGenerateVisualization(LongAction):
                     planner_diagnostics = cast(Optional[Dict[str, Any]], diagnostics_any) if isinstance(diagnostics_any, dict) else None
                     progress("Using prepared plan from prework")
                 else:
-                    logger.warning("Prepared plan missing in work fallback; regenerating plan in work")
+                    logger.warning(
+                        "Prepared plan missing in work fallback; regenerating plan in work",
+                        extra=_action_log_context(
+                            trace_id=trace_id,
+                            action_name=self.name(),
+                            event="actions.visualization.prepared_plan_missing",
+                            outcome="degraded",
+                        ),
+                    )
                     planner_question = cast(str, request_ctx.get("planner_question") or user_message)
                     extracted_entities = cast(Dict[str, Any], request_ctx["extracted_entities"])
                     override_language = cast(Optional[str], request_ctx["override_language"])
@@ -701,7 +746,15 @@ class ActionOneShotGenerateVisualization(LongAction):
                     ctx.say(text=e.user_message)
                     return None
 
-                logger.exception("Error generating visualization")
+                logger.exception(
+                    "Error generating visualization",
+                    extra=_action_log_context(
+                        trace_id=trace_id,
+                        action_name=self.name(),
+                        event="actions.visualization.work.failed",
+                        outcome="failure",
+                    ),
+                )
                 payload = visualization_error_payload(e, trace_id=trace_id, language=language)
                 ctx.say(
                     json_message={

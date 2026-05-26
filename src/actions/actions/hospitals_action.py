@@ -19,6 +19,27 @@ DomainDict = Dict[str, Any]
 RasaEventList = List[Dict[Text, Any]]
 
 
+def _action_log_context(
+    *,
+    trace_id: str,
+    action_name: str,
+    event: str,
+    outcome: str,
+    **fields: Any,
+) -> Dict[str, Dict[str, Any]]:
+    context: Dict[str, Any] = {
+        "trace_id": trace_id,
+        "action": action_name,
+        "event": event,
+        "outcome": outcome,
+    }
+    for key, value in fields.items():
+        if value is None:
+            continue
+        context[key] = value
+    return {"log_context": context}
+
+
 class DispatcherLike(Protocol):
     def utter_message(self, text: Optional[str] = None, **kwargs: Any) -> None: ...
 
@@ -203,7 +224,15 @@ class ActionListHospitals(Action):  # pyright: ignore
                 dispatcher.utter_message(text=text_message)
                 return []
             except Exception as exc:
-                logger.exception("Error listing hospitals")
+                logger.exception(
+                    "Error listing hospitals",
+                    extra=_action_log_context(
+                        trace_id=trace_id,
+                        action_name=self.name(),
+                        event="actions.hospitals.list.failed",
+                        outcome="failure",
+                    ),
+                )
                 language = resolve_language_from_tracker(tracker)
                 dispatcher.utter_message(text=f"❌ {friendly_hospital_error(exc, language=language)}")
                 if _ECHO_INTERNAL_ERRORS:

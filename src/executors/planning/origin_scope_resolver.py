@@ -25,6 +25,39 @@ def _parse_max_provider_ids(raw: str) -> int:
 _MAX_PROVIDER_IDS = _parse_max_provider_ids(_MAX_PROVIDER_IDS_RAW)
 
 
+def _origin_scope_log_context(
+    *,
+    trace_id: str,
+    event: str,
+    outcome: str,
+    metric_code: str,
+    scope: Optional[S.OriginScopeSpec],
+    fail_open_for_metric: bool,
+    fallback_expected: bool,
+    inferred_country_code: Optional[str],
+) -> Dict[str, Dict[str, Any]]:
+    context: Dict[str, Any] = {
+        "trace_id": trace_id,
+        "event": event,
+        "operation": "_resolve_metric_origin",
+        "outcome": outcome,
+        "metric_code": metric_code,
+        "fail_open_for_metric": fail_open_for_metric,
+        "fallback_expected": fallback_expected,
+    }
+    if scope is not None:
+        context["scope_type"] = (scope.scope_type or "").strip().lower() or "-"
+        if scope.value is not None:
+            context["scope_value"] = scope.value
+        if isinstance(scope.label, str) and scope.label.strip():
+            context["scope_label"] = scope.label.strip()
+        if isinstance(scope.country_code, str) and scope.country_code.strip():
+            context["scope_country_code"] = scope.country_code.strip().upper()
+    if inferred_country_code:
+        context["inferred_country_code"] = inferred_country_code
+    return {"log_context": context}
+
+
 @dataclass
 class OriginScopeResolutionError(RuntimeError):
     message: str
@@ -544,12 +577,38 @@ def _resolve_metric_origin(
         except OriginScopeResolutionError:
             if not fail_open_for_metric:
                 raise
-            logger.warning("Origin scope resolution failed; falling back to executor default data origin", exc_info=True)
+            logger.warning(
+                "Origin scope resolution failed; falling back to executor default data origin",
+                exc_info=True,
+                extra=_origin_scope_log_context(
+                    trace_id=trace_id,
+                    event="origin_scope.metric_resolution.fail_open",
+                    outcome="degraded",
+                    metric_code=metric.metric,
+                    scope=scope_ref,
+                    fail_open_for_metric=fail_open_for_metric,
+                    fallback_expected=True,
+                    inferred_country_code=inferred_country_code,
+                ),
+            )
             resolved_data_origin = None
         except Exception:
             if not fail_open_for_metric:
                 raise OriginScopeResolutionError("Origin scope resolution failed unexpectedly.")
-            logger.warning("Unexpected origin scope resolution failure; falling back to executor default data origin", exc_info=True)
+            logger.warning(
+                "Unexpected origin scope resolution failure; falling back to executor default data origin",
+                exc_info=True,
+                extra=_origin_scope_log_context(
+                    trace_id=trace_id,
+                    event="origin_scope.metric_resolution.fail_open_unexpected",
+                    outcome="degraded",
+                    metric_code=metric.metric,
+                    scope=scope_ref,
+                    fail_open_for_metric=fail_open_for_metric,
+                    fallback_expected=False,
+                    inferred_country_code=inferred_country_code,
+                ),
+            )
             resolved_data_origin = None
 
     return S.MetricSpec(

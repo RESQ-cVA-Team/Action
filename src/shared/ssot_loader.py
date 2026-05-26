@@ -10,6 +10,7 @@ All existing code should prefer this module instead of ad-hoc YAML parsing.
 
 from __future__ import annotations
 
+import logging
 import re
 from enum import Enum
 from functools import lru_cache
@@ -19,6 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 import yaml
 
 BASE_SSOT = Path(__file__).resolve().parent / "SSOT"
+_LOGGER = logging.getLogger(__name__)
 
 
 class SSOTLoadError(FileNotFoundError):
@@ -437,15 +439,13 @@ def validate_metric_metadata_complete(logger: Optional[Any] = None) -> List[str]
 
     Returns list of warning strings.
     """
-    import logging as _logging
-
-    lg = logger or _logging.getLogger(__name__)
+    active_logger = logger or _LOGGER
     warnings: List[str] = []
 
     try:
         items = _load_yaml("MetricType.yml")
     except Exception as e:
-        lg.warning("SSOT validation skipped: %s", e)
+        active_logger.warning("SSOT validation skipped: %s", e)
         return warnings
 
     for item in items:
@@ -462,7 +462,7 @@ def validate_metric_metadata_complete(logger: Optional[Any] = None) -> List[str]
             if not isinstance(numeric_any, dict):
                 msg = f"SSOT incomplete [NUMERIC]: {code} missing Numeric block"
                 warnings.append(msg)
-                lg.warning(msg)
+                active_logger.warning(msg)
                 continue
             numeric: Dict[str, Any] = cast(Dict[str, Any], numeric_any)
             unit = _ci_get(numeric, "unit")
@@ -482,28 +482,43 @@ def validate_metric_metadata_complete(logger: Optional[Any] = None) -> List[str]
             if missing:
                 msg = f"SSOT incomplete [NUMERIC]: {code} missing {', '.join(missing)}"
                 warnings.append(msg)
-                lg.warning(msg)
+                active_logger.warning(msg)
             # Type and logical validation
             try:
                 rmin_v = float(rmin) if rmin is not None else None
                 rmax_v = float(rmax) if rmax is not None else None
                 buckets_v = int(buckets) if buckets is not None else None
             except Exception:
+                active_logger.debug(
+                    "SSOT numeric validation fallback: failed to parse range or buckets",
+                    exc_info=True,
+                    extra={
+                        "log_context": {
+                            "event": "ssot_loader.metric_metadata.numeric_parse_fallback",
+                            "operation": "validate_metric_metadata_complete",
+                            "outcome": "degraded",
+                            "metric_code": code,
+                            "raw_range_min": rmin,
+                            "raw_range_max": rmax,
+                            "raw_buckets": buckets,
+                        }
+                    },
+                )
                 rmin_v = rmax_v = None
                 buckets_v = None
             if rmin_v is None or rmax_v is None or buckets_v is None:
                 msg = f"SSOT invalid [NUMERIC]: {code} non-numeric range/buckets"
                 warnings.append(msg)
-                lg.warning(msg)
+                active_logger.warning(msg)
             else:
                 if rmin_v >= rmax_v:
                     msg = f"SSOT invalid [NUMERIC]: {code} range_min ({rmin_v}) >= range_max ({rmax_v})"
                     warnings.append(msg)
-                    lg.warning(msg)
+                    active_logger.warning(msg)
                 if buckets_v <= 0:
                     msg = f"SSOT invalid [NUMERIC]: {code} default_buckets ({buckets_v}) must be > 0"
                     warnings.append(msg)
-                    lg.warning(msg)
+                    active_logger.warning(msg)
 
         elif data_type_str == "enum":
             # Support both simplified 'Enum' list and nested 'enum.options'
@@ -521,14 +536,14 @@ def validate_metric_metadata_complete(logger: Optional[Any] = None) -> List[str]
             if not options_raw:
                 msg = f"SSOT incomplete [ENUM]: {code} has no options"
                 warnings.append(msg)
-                lg.warning(msg)
+                active_logger.warning(msg)
                 continue
             seen_keys: set[str] = set()
             for idx, opt_any in enumerate(options_raw):
                 if not isinstance(opt_any, dict):
                     msg = f"SSOT invalid [ENUM]: {code} option #{idx + 1} is not a dict"
                     warnings.append(msg)
-                    lg.warning(msg)
+                    active_logger.warning(msg)
                     continue
                 opt: Dict[str, Any] = cast(Dict[str, Any], opt_any)
                 key = _ci_get(opt, "key")
@@ -536,24 +551,24 @@ def validate_metric_metadata_complete(logger: Optional[Any] = None) -> List[str]
                 if not isinstance(key, str) or not key.strip():
                     msg = f"SSOT incomplete [ENUM]: {code} option #{idx + 1} missing key"
                     warnings.append(msg)
-                    lg.warning(msg)
+                    active_logger.warning(msg)
                 else:
                     k = key.strip()
                     if k in seen_keys:
                         msg = f"SSOT invalid [ENUM]: {code} duplicate option key '{k}'"
                         warnings.append(msg)
-                        lg.warning(msg)
+                        active_logger.warning(msg)
                     seen_keys.add(k)
                 syns_list: List[Any] = cast(List[Any], syns) if isinstance(syns, list) else []
                 if not (syns_list and all(isinstance(s, str) and s.strip() for s in syns_list)):
                     msg = f"SSOT incomplete [ENUM]: {code} option '{key}' missing synonyms"
                     warnings.append(msg)
-                    lg.warning(msg)
+                    active_logger.warning(msg)
         else:
             # Unknown or missing data_type
             msg = f"SSOT incomplete: {code} has unknown or missing data_type"
             warnings.append(msg)
-            lg.warning(msg)
+            active_logger.warning(msg)
 
     return warnings
 
@@ -631,7 +646,19 @@ def get_canonical_display_name(canonical: str) -> str:
                 if lbl:
                     return lbl
     except Exception:
-        pass
+        _LOGGER.debug(
+            "Failed to resolve GroupByType display label; using canonical fallback",
+            exc_info=True,
+            extra={
+                "log_context": {
+                    "event": "ssot_loader.groupby_display_name.fallback",
+                    "operation": "get_canonical_display_name",
+                    "outcome": "degraded",
+                    "canonical": code,
+                    "filename": "GroupByType.yml",
+                }
+            },
+        )
     return code
 
 
@@ -648,6 +675,19 @@ def _label_from_simple_type_file(filename: str, value: str) -> Optional[str]:
             if isinstance(can, str) and can.upper() == val_up:
                 return _first_synonym(it) or can
     except Exception:
+        _LOGGER.debug(
+            "Failed to resolve SSOT simple-type label; returning None",
+            exc_info=True,
+            extra={
+                "log_context": {
+                    "event": "ssot_loader.simple_type_label.fallback",
+                    "operation": "_label_from_simple_type_file",
+                    "outcome": "degraded",
+                    "filename": filename,
+                    "value": value,
+                }
+            },
+        )
         return None
     return None
 

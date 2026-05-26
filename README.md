@@ -70,6 +70,15 @@ LOG_FILE_BACKUP_COUNT=3
 LOG_FILE_RETENTION_DAYS=7
 LOG_COLOR=false
 
+# Optional: targeted debug logging for analytics-center proxy calls.
+# Keep disabled in normal environments.
+ANALYTICS_CENTER_LOG_QUERY=false
+# When true, logs the full analytics-center query payload at debug level.
+# Default is false, which logs only a safe summary of query keys.
+ANALYTICS_CENTER_LOG_UPSTREAM_PREVIEW=false
+# When true, logs a truncated preview of the upstream error body for analytics-center proxy failures.
+# Default is false, which logs only metadata such as status code, body length, and proxy reason.
+
 # Optional: reduce repeated low-level third-party HTTP logs
 LOG_NOISY_LIB_LEVEL=WARNING
 # Leave empty (default) to disable per-library suppression, or opt in:

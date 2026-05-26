@@ -146,6 +146,26 @@ def _resolve_progress_trace_id(ctx: LongActionContext, message: Dict[str, Any]) 
     return None
 
 
+def _long_action_worker_log_context(
+    *,
+    trace_id: Optional[str],
+    action_name: str,
+    job_id: str,
+    callback_url: str,
+) -> Dict[str, Dict[str, Any]]:
+    context: Dict[str, Any] = {
+        "trace_id": trace_id or "-",
+        "action": action_name,
+        "event": "actions.long_action.worker.failed",
+        "operation": "_run_work",
+        "outcome": "failure",
+        "job_id": job_id,
+        "callback_mode": True,
+        "callback_endpoint": _callback_endpoint_label(callback_url),
+    }
+    return {"log_context": context}
+
+
 class LongAction(Action, ABC):
     def __init__(self):
         registry.register(self)
@@ -354,10 +374,26 @@ class LongAction(Action, ABC):
                 )
 
     def _run_work(self, ctx: LongActionContext, job_id: str, callback_url: str, callback_token: str) -> None:
+        trace_id = _resolve_progress_trace_id(ctx, {})
         try:
-            asyncio.run(self.work(ctx))
+            with log_context(
+                trace_id=trace_id or "-",
+                action=self.name(),
+                job_id=job_id,
+                callback_mode=True,
+                callback_endpoint=_callback_endpoint_label(callback_url),
+            ):
+                asyncio.run(self.work(ctx))
         except Exception:
-            logger.exception("LongAction work failed")
+            logger.exception(
+                "LongAction work failed",
+                extra=_long_action_worker_log_context(
+                    trace_id=trace_id,
+                    action_name=self.name(),
+                    job_id=job_id,
+                    callback_url=callback_url,
+                ),
+            )
             # Fail closed: emit an error as a normal message so the user sees
             # something, but do not propagate the exception.
             ctx.say(text="Something went wrong.")

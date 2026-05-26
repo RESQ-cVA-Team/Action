@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from itertools import product
 from typing import Any, List, Optional, Sequence, Tuple
@@ -11,11 +12,34 @@ from src.domain.langchain.schema import GroupByAge, GroupByCanonicalField, Group
 from src.shared.ssot_loader import get_sex_label, get_stroke_label
 from src.util.coalesce import coalesce
 
+logger = logging.getLogger(__name__)
+
+
+def _compiler_log_context(event: str, operation: str, **fields: Any) -> dict[str, dict[str, Any]]:
+    context: dict[str, Any] = {
+        "event": event,
+        "operation": operation,
+        "outcome": "degraded",
+    }
+    for key, value in fields.items():
+        if value is None:
+            continue
+        context[key] = value
+    return {"log_context": context}
+
 
 def _groupby_type_values() -> set[str]:
     try:
         return {str(member.value).upper() for member in GroupByType}
     except Exception:
+        logger.debug(
+            "Failed to enumerate server-supported group-by fields; using empty supported-field set",
+            exc_info=True,
+            extra=_compiler_log_context(
+                event="query_compiler.groupby_type_values.fallback",
+                operation="_groupby_type_values",
+            ),
+        )
         return set()
 
 
@@ -62,6 +86,7 @@ class Dimension:
         if isinstance(self.spec, GroupByStrokeType):
             return list(self.spec.categories or list(StrokeType))
         if isinstance(self.spec, GroupByTime):
+            time_spec = self.spec
             from calendar import monthrange
             from datetime import date, datetime
 
@@ -86,10 +111,21 @@ class Dimension:
                     try:
                         return datetime.fromisoformat(text).date()
                     except Exception:
+                        logger.debug(
+                            "Failed to parse GroupByTime date; returning None",
+                            exc_info=True,
+                            extra=_compiler_log_context(
+                                event="query_compiler.groupby_time.date_parse_fallback",
+                                operation="Dimension.categories",
+                                dimension_type=type(self.spec).__name__,
+                                grain=str(time_spec.grain).upper(),
+                                raw_value=text,
+                            ),
+                        )
                         return None
 
-            window = self.spec.window
-            grain = str(self.spec.grain).upper()
+            window = time_spec.window
+            grain = str(time_spec.grain).upper()
             if isinstance(window, S.TimeWindow) and grain == "MONTH":
                 unit = str(window.unit).upper()
                 month_span = 0
@@ -147,11 +183,22 @@ class Dimension:
         if isinstance(self.spec, GroupByCanonicalField):
             return self.spec.field
         if isinstance(self.spec, GroupByTime):
+            time_spec = self.spec
             try:
                 start, end = cat
                 return f"{start.isoformat()} to {end.isoformat()}"
             except Exception:
-                return self.spec.grain
+                logger.debug(
+                    "Failed to format GroupByTime label; using grain fallback",
+                    exc_info=True,
+                    extra=_compiler_log_context(
+                        event="query_compiler.groupby_time.label_fallback",
+                        operation="Dimension.label_for",
+                        dimension_type=type(self.spec).__name__,
+                        grain=str(time_spec.grain).upper(),
+                    ),
+                )
+                return time_spec.grain
         return str(cat)
 
     def filter_for(self, cat: Any) -> Optional[Any]:
@@ -178,9 +225,20 @@ class Dimension:
                 ],
             )
         if isinstance(self.spec, GroupByTime):
+            time_spec = self.spec
             try:
                 start, end = cat
             except Exception:
+                logger.debug(
+                    "Failed to unpack GroupByTime category; skipping filter generation",
+                    exc_info=True,
+                    extra=_compiler_log_context(
+                        event="query_compiler.groupby_time.filter_fallback",
+                        operation="Dimension.filter_for",
+                        dimension_type=type(self.spec).__name__,
+                        grain=str(time_spec.grain).upper(),
+                    ),
+                )
                 return None
             return LogicalFilter(
                 operator="AND",
@@ -236,12 +294,28 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
     batched_time_enabled = len(time_dims) == 1
     batched_time_dim: Optional[Dimension] = time_dims[0] if batched_time_enabled else None
     if batched_time_enabled and batched_time_dim is not None:
-        for cat in batched_time_dim.categories():
-            try:
-                start, end = cat
-                batched_time_periods.append(TimePeriod(startDate=start.isoformat(), endDate=end.isoformat()))
-            except Exception:
-                continue
+        batched_time_spec = batched_time_dim.spec
+        if not isinstance(batched_time_spec, GroupByTime):
+            batched_time_enabled = False
+            batched_time_dim = None
+        else:
+            for cat in batched_time_dim.categories():
+                try:
+                    start, end = cat
+                    batched_time_periods.append(TimePeriod(startDate=start.isoformat(), endDate=end.isoformat()))
+                except Exception:
+                    logger.debug(
+                        "Failed to build batched time period; skipping invalid time bucket",
+                        exc_info=True,
+                        extra=_compiler_log_context(
+                            event="query_compiler.batched_time_period.skipped",
+                            operation="compile_chart_grouping",
+                            chart_type=chart.chart_type,
+                            dimension_type=type(batched_time_dim.spec).__name__,
+                            grain=str(batched_time_spec.grain).upper(),
+                        ),
+                    )
+                    continue
     if batched_time_enabled and not batched_time_periods:
         batched_time_enabled = False
         batched_time_dim = None

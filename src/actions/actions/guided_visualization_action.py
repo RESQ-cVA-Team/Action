@@ -43,6 +43,27 @@ DomainDict = Dict[str, Any]
 RasaEventList = List[Any]
 
 
+def _action_log_context(
+    *,
+    trace_id: str,
+    action_name: str,
+    event: str,
+    outcome: str,
+    **fields: Any,
+) -> Dict[str, Dict[str, Any]]:
+    context: Dict[str, Any] = {
+        "trace_id": trace_id,
+        "action": action_name,
+        "event": event,
+        "outcome": outcome,
+    }
+    for key, value in fields.items():
+        if value is None:
+            continue
+        context[key] = value
+    return {"log_context": context}
+
+
 def _normalize_trace_id(value: Any) -> Optional[str]:
     if value is None:
         return None
@@ -137,7 +158,15 @@ class ActionGuidedGenerateVisualization(Action):  # pyright: ignore
 
                 return [SlotSet("awaiting_visualization_clarification", False), *guided_slots_clear_events()]
             except Exception as e:
-                logger.exception("Error generating guided visualization")
+                logger.exception(
+                    "Error generating guided visualization",
+                    extra=_action_log_context(
+                        trace_id=trace_id,
+                        action_name=self.name(),
+                        event="actions.guided_visualization.failed",
+                        outcome="failure",
+                    ),
+                )
                 payload = visualization_error_payload(e, trace_id=trace_id, language=language)
                 dispatcher.utter_message(
                     json_message={

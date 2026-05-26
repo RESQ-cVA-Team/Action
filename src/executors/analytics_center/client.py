@@ -14,6 +14,9 @@ from src.util.logging_utils import log_context
 
 logger = logging.getLogger(__name__)
 
+_LOG_ANALYTICS_QUERY = env_util.env_flag("ANALYTICS_CENTER_LOG_QUERY", default=False)
+_LOG_ANALYTICS_UPSTREAM_PREVIEW = env_util.env_flag("ANALYTICS_CENTER_LOG_UPSTREAM_PREVIEW", default=False)
+
 
 def _proxy_endpoint_label(url: str) -> str:
     parsed = urlsplit(url)
@@ -26,6 +29,18 @@ def _proxy_endpoint_label(url: str) -> str:
 
 def _runtime_instance_fields() -> tuple[int, str]:
     return os.getpid(), socket.gethostname()
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, int((time.monotonic() - started_at) * 1000))
+
+
+def _summarize_query(query: Dict[str, Any]) -> Dict[str, Any]:
+    keys = sorted(str(key) for key in query.keys())
+    return {
+        "query_key_count": len(keys),
+        "query_keys": keys,
+    }
 
 
 @dataclass
@@ -125,7 +140,7 @@ class AnalyticsCenterClient:
                 "retry": retry,
                 "error_category": error_category,
                 "error_type": type(exc).__name__,
-                "elapsed_ms": max(0, int((time.monotonic() - started_at) * 1000)),
+                "elapsed_ms": _elapsed_ms(started_at),
             }
         }
 
@@ -149,21 +164,23 @@ class AnalyticsCenterClient:
             exc=exc,
             started_at=started_at,
         )
-        logger.warning(
-            "[AnalyticsCenterClient] %s during %s (attempt=%s/%s): %s",
+        if retry:
+            logger.warning(
+                "[AnalyticsCenterClient] %s during %s (attempt=%s/%s): %s",
+                label,
+                request_name,
+                attempt + 1,
+                attempts_total,
+                exc,
+                extra=extra,
+            )
+            return
+        logger.error(
+            "[AnalyticsCenterClient] %s during %s after %s attempt(s): %s",
             label,
             request_name,
             attempt + 1,
-            attempts_total,
             exc,
-            extra=extra,
-        )
-        if retry:
-            return
-        logger.error(
-            "[AnalyticsCenterClient] %s failed after %s attempt(s)",
-            request_name,
-            attempt + 1,
             extra=extra,
         )
 
@@ -201,7 +218,21 @@ class AnalyticsCenterClient:
         def parse_error_payload() -> Dict[str, Any]:
             try:
                 payload_any: Any = response.json()
-            except Exception:
+            except ValueError:
+                logger.debug(
+                    "[AnalyticsCenterClient] Failed to parse proxy error payload as JSON",
+                    extra={
+                        "log_context": {
+                            "event": "analytics_center.error_payload_parse_failed",
+                            "operation": request_name,
+                            "outcome": "degraded",
+                            "status_code": response.status_code,
+                            "body_len": len(response.text or ""),
+                            "elapsed_ms": _elapsed_ms(started_at),
+                        }
+                    },
+                    exc_info=True,
+                )
                 return {}
             if isinstance(payload_any, dict):
                 return cast(Dict[str, Any], payload_any)
@@ -226,7 +257,7 @@ class AnalyticsCenterClient:
                             "log_context": {
                                 "pid": process_id,
                                 "host": hostname,
-                                "query": query,
+                                **(_summarize_query(query) if not _LOG_ANALYTICS_QUERY else {"query": query}),
                             }
                         },
                     )
@@ -241,6 +272,7 @@ class AnalyticsCenterClient:
                         attempt + 1,
                         attempts_total,
                         response.status_code,
+                        extra={"log_context": {"elapsed_ms": _elapsed_ms(started_at)}},
                     )
                 except requests.Timeout as exc:
                     last_error = AnalyticsCenterError(
@@ -328,15 +360,27 @@ class AnalyticsCenterClient:
                     if proxy_reason:
                         error_message = f"{error_message}: {proxy_reason}"
 
+                    log_context_fields: Dict[str, Any] = {
+                        "status_code": response.status_code,
+                        "attempt": attempt + 1,
+                        "attempts_total": attempts_total,
+                        "body_len": len(response.text or ""),
+                        "proxy_reason": proxy_reason or "-",
+                        "elapsed_ms": _elapsed_ms(started_at),
+                        "has_upstream_body": upstream_body is not None,
+                    }
+                    if _LOG_ANALYTICS_UPSTREAM_PREVIEW and upstream_preview:
+                        log_context_fields["upstream_preview"] = upstream_preview
+
                     logger.error(
-                        "[AnalyticsCenterClient] Proxy error %s during %s (attempt=%s/%s, body_len=%s, proxy_reason=%s, upstream=%s)",
+                        "[AnalyticsCenterClient] Proxy error %s during %s (attempt=%s/%s, body_len=%s, proxy_reason=%s)",
                         response.status_code,
                         request_name,
                         attempt + 1,
                         attempts_total,
                         len(response.text or ""),
                         proxy_reason or "-",
-                        upstream_preview or "-",
+                        extra={"log_context": log_context_fields},
                     )
                     transient = self._is_transient_status(response.status_code)
                     last_error = AnalyticsCenterError(
@@ -360,7 +404,18 @@ class AnalyticsCenterClient:
                     message=f"Unexpected response format during {request_name}",
                     transient=False,
                 )
-                logger.error("[AnalyticsCenterClient] Unexpected response shape during %s", request_name)
+                logger.error(
+                    "[AnalyticsCenterClient] Unexpected response shape during %s",
+                    request_name,
+                    extra={
+                        "log_context": {
+                            "event": "analytics_center.invalid_response_shape",
+                            "operation": request_name,
+                            "outcome": "failure",
+                            "elapsed_ms": _elapsed_ms(started_at),
+                        }
+                    },
+                )
                 break
 
         if raise_on_error and last_error is not None:
@@ -431,7 +486,17 @@ class AnalyticsCenterClient:
                 "offset": out_offset,
             }
 
-        logger.error("[AnalyticsCenterClient] Unexpected response format from providers list")
+        logger.error(
+            "[AnalyticsCenterClient] Unexpected response format from providers list",
+            extra={
+                "log_context": {
+                    "trace_id": trace_id,
+                    "event": "analytics_center.providers.invalid_response",
+                    "operation": "list_providers",
+                    "outcome": "failure",
+                }
+            },
+        )
         if raise_on_error:
             raise AnalyticsCenterError(
                 kind="invalid_response",
@@ -495,7 +560,17 @@ class AnalyticsCenterClient:
                 "offset": out_offset,
             }
 
-        logger.error("[AnalyticsCenterClient] Unexpected response format from provider-groups list")
+        logger.error(
+            "[AnalyticsCenterClient] Unexpected response format from provider-groups list",
+            extra={
+                "log_context": {
+                    "trace_id": trace_id,
+                    "event": "analytics_center.provider_groups.invalid_response",
+                    "operation": "list_provider_groups",
+                    "outcome": "failure",
+                }
+            },
+        )
         if raise_on_error:
             raise AnalyticsCenterError(
                 kind="invalid_response",
@@ -596,7 +671,17 @@ class AnalyticsCenterClient:
             country_results: List[Dict[str, Any]] = [cast(Dict[str, Any], r) for r in results_list if isinstance(r, dict)]
             return {"results": country_results}
 
-        logger.error("[AnalyticsCenterClient] Unexpected response format from countries list")
+        logger.error(
+            "[AnalyticsCenterClient] Unexpected response format from countries list",
+            extra={
+                "log_context": {
+                    "trace_id": trace_id,
+                    "event": "analytics_center.countries.invalid_response",
+                    "operation": "list_countries",
+                    "outcome": "failure",
+                }
+            },
+        )
         if raise_on_error:
             raise AnalyticsCenterError(
                 kind="invalid_response",
