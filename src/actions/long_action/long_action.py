@@ -21,6 +21,8 @@ from . import long_action_registry as registry
 from .long_action_context import DispatcherLike, LongActionContext
 
 _CALLBACK_TOKEN_ENV = "LONG_TASK_CALLBACK_TOKEN"
+_CALLBACK_BASE_URL_ENV = "CALLBACK_BASE_URL"
+_CALLBACK_ALLOWED_ORIGINS_ENV = "LONG_TASK_CALLBACK_ALLOWED_ORIGINS"
 logger = logging.getLogger(__name__)
 # Privacy/safety defaults: do not log callback payloads or URLs.
 _LOG_CALLBACK_STATUS = env_util.env_flag("LONG_ACTION_LOG_CALLBACK_STATUS", default=False)
@@ -35,6 +37,27 @@ def _callback_endpoint_label(url: str) -> str:
     if parsed.netloc:
         return parsed.netloc
     return url
+
+
+def _normalize_callback_origin(url: str) -> Optional[str]:
+    parsed = urlsplit(url.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _allowed_callback_origins() -> List[str]:
+    configured_origins = env_util.get_env(_CALLBACK_ALLOWED_ORIGINS_ENV, "") or ""
+    base_callback_url = env_util.get_env(_CALLBACK_BASE_URL_ENV, "") or ""
+    candidates = [*configured_origins.replace(";", "\n").replace(",", "\n").splitlines(), base_callback_url]
+
+    allowed: List[str] = []
+    for candidate in candidates:
+        normalized = _normalize_callback_origin(candidate)
+        if normalized and normalized not in allowed:
+            allowed.append(normalized)
+
+    return allowed
 
 
 def _event_list() -> List[Dict[str, Any]]:
@@ -88,7 +111,59 @@ def _get_callback_config(tracker: TrackerLike) -> Optional[Tuple[str, str]]:
 
     token = os.getenv(_CALLBACK_TOKEN_ENV) or ""
     if not token:
+        logger.warning(
+            "Callback URL present but %s is not configured; falling back to synchronous execution",
+            _CALLBACK_TOKEN_ENV,
+            extra={
+                "log_context": {
+                    "callback_endpoint": _callback_endpoint_label(callback_url),
+                    "callback_mode": False,
+                    "misconfiguration": True,
+                }
+            },
+        )
         return None
+
+    callback_origin = _normalize_callback_origin(callback_url)
+    if not callback_origin:
+        logger.warning(
+            "Callback URL present but invalid; falling back to synchronous execution",
+            extra={
+                "log_context": {
+                    "callback_endpoint": _callback_endpoint_label(callback_url),
+                    "callback_mode": False,
+                    "misconfiguration": True,
+                }
+            },
+        )
+        return None
+
+    allowed_origins = _allowed_callback_origins()
+    if allowed_origins and callback_origin not in allowed_origins:
+        logger.warning(
+            "Callback URL origin is not allowed; falling back to synchronous execution",
+            extra={
+                "log_context": {
+                    "callback_endpoint": callback_origin,
+                    "callback_mode": False,
+                    "misconfiguration": True,
+                    "allowed_callback_origins": allowed_origins,
+                }
+            },
+        )
+        return None
+
+    if not allowed_origins:
+        logger.warning(
+            "Callback URL present but no callback origin allowlist is configured; accepting callback URL without origin validation",
+            extra={
+                "log_context": {
+                    "callback_endpoint": callback_origin,
+                    "callback_mode": True,
+                    "misconfiguration": True,
+                }
+            },
+        )
 
     return callback_url, token
 
@@ -276,7 +351,7 @@ class LongAction(Action, ABC):
         trace_id = _resolve_progress_trace_id(ctx, message)
         headers: Dict[str, str] = {
             "Content-Type": "application/json",
-            "x-action-server-token": callback_token,
+            "x-long-task-callback-token": callback_token,
         }
         if isinstance(trace_id, str) and trace_id.strip():
             headers["x-trace-id"] = trace_id.strip()
