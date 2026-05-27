@@ -45,7 +45,12 @@ pip install -r requirements.txt
 ```env
 RASA_PROXY_URL=http://host.docker.internal:3000/api/rasa-proxy
 ACTION_SERVER_TOKEN=<set-a-shared-token>
-LONG_TASK_CALLBACK_TOKEN=<set-a-shared-token>
+LONG_TASK_CALLBACK_TOKEN=<set-a-callback-token>
+
+# Optional: explicit callback origin allowlist for long-task callbacks.
+# Defaults to the origin from CALLBACK_BASE_URL when unset.
+# Example: http://webapp:3000;https://chat.example.org
+# LONG_TASK_CALLBACK_ALLOWED_ORIGINS=http://webapp:3000
 
 RASA_PROXY_GRAPHQL_TARGET=graphql
 RASA_PROXY_ANALYTICS_TARGET=analytics
@@ -89,6 +94,11 @@ LOG_NOISY_LIB_LOGGERS=
 LOG_MODULE_LEVELS=
 # LOG_MODULE_LEVELS=src.executors.graphql.client=DEBUG,src.executors.analytics_center.client=DEBUG,src.planners=DEBUG
 ```
+
+`ACTION_SERVER_TOKEN` authenticates Action -> Webapp proxy requests.
+`LONG_TASK_CALLBACK_TOKEN` authenticates Action -> Webapp long-task callback requests.
+`LONG_TASK_CALLBACK_ALLOWED_ORIGINS` optionally overrides which callback URL origins Action will trust.
+When it is unset, Action trusts the origin derived from `CALLBACK_BASE_URL`.
 
 If using OpenAI:
 
@@ -178,7 +188,7 @@ services:
     image: ghcr.io/09c7b0ed-f907-45d2-bc7c-48b17f2d9940/action:latest
     environment:
       ACTION_SERVER_TOKEN: <shared-action-token>
-      LONG_TASK_CALLBACK_TOKEN: <shared-action-token>
+      LONG_TASK_CALLBACK_TOKEN: <shared-callback-token>
       RASA_PROXY_URL: http://webapp:3000/api/rasa-proxy
       GRAPHQL_API_URL: https://<your-domain>/api/graphql/aggregation
       RASA_PROXY_GRAPHQL_TARGET: graphql
@@ -202,9 +212,8 @@ docker compose up -d
 - Action endpoint is reachable at `http://<action-host>:5055/webhook`
 - Rasa can reach `http://action:5055/webhook`
 - Action can reach Webapp proxy endpoint `/api/rasa-proxy`
-- Shared tokens match across services:
-  - `ACTION_SERVER_TOKEN`
-  - `LONG_TASK_CALLBACK_TOKEN`
+- `ACTION_SERVER_TOKEN` matches between Action and Webapp for proxy requests
+- `LONG_TASK_CALLBACK_TOKEN` matches between Action and Webapp for callback requests
 
 ---
 
