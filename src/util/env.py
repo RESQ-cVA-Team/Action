@@ -4,6 +4,21 @@ from typing import Tuple, overload
 from dotenv import load_dotenv
 
 _loaded = False
+_DOTENV_OVERRIDE_ENV = "ACTION_DOTENV_OVERRIDE"
+_TRUTHY_VALUES = {"1", "true", "yes", "y", "on"}
+_FALSY_VALUES = {"0", "false", "no", "n", "off", ""}
+
+
+def _parse_bool(value: str | None, default: bool) -> bool:
+    if value is None:
+        return default
+
+    norm = value.strip().lower()
+    if norm in _TRUTHY_VALUES:
+        return True
+    if norm in _FALSY_VALUES:
+        return False
+    return default
 
 
 def _ensure_loaded() -> None:
@@ -11,12 +26,14 @@ def _ensure_loaded() -> None:
 
     This keeps behavior consistent across the codebase: any env access via
     this module will see values from a local .env file without requiring each
-    caller to remember to call load_dotenv.
+    caller to remember to call load_dotenv. Existing process environment
+    variables win by default; set ACTION_DOTENV_OVERRIDE=1 to opt into the
+    older overriding behavior for local troubleshooting.
     """
 
     global _loaded
     if not _loaded:
-        load_dotenv(override=True)
+        load_dotenv(override=_parse_bool(os.getenv(_DOTENV_OVERRIDE_ENV), default=False))
         _loaded = True
 
 
@@ -31,15 +48,7 @@ def env_flag(name: str, default: bool = False) -> bool:
     """
 
     _ensure_loaded()
-    val = os.getenv(name)
-    if val is None:
-        return default
-    norm = val.strip().lower()
-    if norm in {"1", "true", "yes", "y", "on"}:
-        return True
-    if norm in {"0", "false", "no", "n", "off", ""}:
-        return False
-    return default
+    return _parse_bool(os.getenv(name), default)
 
 
 def get_env(name: str, default: str | None = None) -> str | None:

@@ -155,15 +155,16 @@ def _get_callback_config(tracker: TrackerLike) -> Optional[Tuple[str, str]]:
 
     if not allowed_origins:
         logger.warning(
-            "Callback URL present but no callback origin allowlist is configured; accepting callback URL without origin validation",
+            "Callback URL present but no callback origin allowlist is configured; falling back to synchronous execution",
             extra={
                 "log_context": {
                     "callback_endpoint": callback_origin,
-                    "callback_mode": True,
+                    "callback_mode": False,
                     "misconfiguration": True,
                 }
             },
         )
+        return None
 
     return callback_url, token
 
