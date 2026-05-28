@@ -1,4 +1,4 @@
-FROM rasa/rasa-sdk:3.6.2
+FROM rasa/rasa-sdk:3.6.2@sha256:9ebc0abc5b36d9420343a197bdfd9c478155ca86871dc08f8e823c76f484c948
 
 USER root
 

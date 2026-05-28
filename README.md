@@ -46,11 +46,17 @@ pip install -r requirements.txt
 RASA_PROXY_URL=http://host.docker.internal:3000/api/rasa-proxy
 ACTION_SERVER_TOKEN=<set-a-shared-token>
 LONG_TASK_CALLBACK_TOKEN=<set-a-callback-token>
+CALLBACK_BASE_URL=http://host.docker.internal:3000
 
 # Optional: explicit callback origin allowlist for long-task callbacks.
 # Defaults to the origin from CALLBACK_BASE_URL when unset.
 # Example: http://webapp:3000;https://chat.example.org
 # LONG_TASK_CALLBACK_ALLOWED_ORIGINS=http://webapp:3000
+
+# Optional: local-only escape hatch. By default, values already present in the
+# process environment win over .env entries. Set this only when you explicitly
+# want .env to override existing environment variables during local debugging.
+# ACTION_DOTENV_OVERRIDE=1
 
 RASA_PROXY_GRAPHQL_TARGET=graphql
 RASA_PROXY_ANALYTICS_TARGET=analytics
@@ -99,6 +105,10 @@ LOG_MODULE_LEVELS=
 `LONG_TASK_CALLBACK_TOKEN` authenticates Action -> Webapp long-task callback requests.
 `LONG_TASK_CALLBACK_ALLOWED_ORIGINS` optionally overrides which callback URL origins Action will trust.
 When it is unset, Action trusts the origin derived from `CALLBACK_BASE_URL`.
+If neither `LONG_TASK_CALLBACK_ALLOWED_ORIGINS` nor `CALLBACK_BASE_URL` is set,
+callback mode is disabled and long actions fall back to synchronous execution.
+`.env` loading fills in missing values only; set `ACTION_DOTENV_OVERRIDE=1` only
+when you explicitly need `.env` to override the existing process environment.
 
 If using OpenAI:
 
@@ -165,6 +175,7 @@ This is the recommended way to temporarily increase verbosity for one subsystem 
 
 - `ACTION_SERVER_TOKEN`
 - `LONG_TASK_CALLBACK_TOKEN`
+- `CALLBACK_BASE_URL` or `LONG_TASK_CALLBACK_ALLOWED_ORIGINS`
 - `RASA_PROXY_URL`
 - `RASA_PROXY_GRAPHQL_TARGET`
 - `RASA_PROXY_ANALYTICS_TARGET`
@@ -189,6 +200,7 @@ services:
     environment:
       ACTION_SERVER_TOKEN: <shared-action-token>
       LONG_TASK_CALLBACK_TOKEN: <shared-callback-token>
+      CALLBACK_BASE_URL: http://webapp:3000
       RASA_PROXY_URL: http://webapp:3000/api/rasa-proxy
       GRAPHQL_API_URL: https://<your-domain>/api/graphql/aggregation
       RASA_PROXY_GRAPHQL_TARGET: graphql
@@ -214,6 +226,7 @@ docker compose up -d
 - Action can reach Webapp proxy endpoint `/api/rasa-proxy`
 - `ACTION_SERVER_TOKEN` matches between Action and Webapp for proxy requests
 - `LONG_TASK_CALLBACK_TOKEN` matches between Action and Webapp for callback requests
+- `CALLBACK_BASE_URL` or `LONG_TASK_CALLBACK_ALLOWED_ORIGINS` allows the Webapp callback origin
 
 ---
 
