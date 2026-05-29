@@ -37,6 +37,9 @@ jobs:
       - name: Select image tags for branch
         run: |
           SHORT_SHA="${GITHUB_SHA::7}"
+          BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+          echo "BUILD_DATE=$BUILD_DATE" >> "$GITHUB_ENV"
 
           case "${GITHUB_REF_NAME}" in
             master)
@@ -69,6 +72,9 @@ jobs:
             --provenance=mode=max \
             --sbom=true \
             --push \
+            --build-arg ACTION_COMMIT_SHA=$GITHUB_SHA \
+            --build-arg ACTION_IMAGE_TAG=$IMAGE_TAG \
+            --build-arg ACTION_BUILD_DATE=$BUILD_DATE \
             -t ghcr.io/$REPO_NAME_LC:$IMAGE_TAG \
             -t ghcr.io/$REPO_NAME_LC:$IMAGE_SHA_TAG \
             .

@@ -8,6 +8,20 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 WORKDIR /app
 
+ARG ACTION_VERSION=""
+ARG ACTION_COMMIT_SHA=""
+ARG ACTION_IMAGE_TAG=""
+ARG ACTION_BUILD_DATE=""
+
+ENV ACTION_VERSION=${ACTION_VERSION}
+ENV ACTION_COMMIT_SHA=${ACTION_COMMIT_SHA}
+ENV ACTION_IMAGE_TAG=${ACTION_IMAGE_TAG}
+ENV ACTION_BUILD_DATE=${ACTION_BUILD_DATE}
+
+LABEL org.opencontainers.image.version=${ACTION_VERSION}
+LABEL org.opencontainers.image.revision=${ACTION_COMMIT_SHA}
+LABEL org.opencontainers.image.created=${ACTION_BUILD_DATE}
+
 COPY src/ ./src
 COPY rasa_sdk_plugins/ ./rasa_sdk_plugins
 
