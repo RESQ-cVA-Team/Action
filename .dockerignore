@@ -7,6 +7,9 @@
 !README.md
 !LICENSE
 
+# Include root files and directories
+!VERSION
+
 # Include entire src tree (recursively) so that nested YAML (shared/SSOT/*.yml) are not dropped
 !src/
 !src/**
