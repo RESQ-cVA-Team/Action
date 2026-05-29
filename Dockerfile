@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 WORKDIR /app
 
 COPY src/ ./src
+COPY rasa_sdk_plugins/ ./rasa_sdk_plugins
 
 # --- Build-time assertion: ensure SSOT YAML files are present ---
 # If this fails, you likely forgot:

@@ -32,5 +32,6 @@
 
 # Add source
 !/src/**
+!/rasa_sdk_plugins/**
 
 __pycache__
