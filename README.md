@@ -53,6 +53,12 @@ CALLBACK_BASE_URL=http://host.docker.internal:3000
 # Example: http://webapp:3000;https://chat.example.org
 # LONG_TASK_CALLBACK_ALLOWED_ORIGINS=http://webapp:3000
 
+# Optional: explicit callback path allowlist for long-task callbacks.
+# Defaults to /api/rasa/long-task-callback, or to the path derived from
+# CALLBACK_BASE_URL when CALLBACK_BASE_URL includes a path prefix.
+# Example: /api/rasa/long-task-callback
+# LONG_TASK_CALLBACK_ALLOWED_PATHS=/api/rasa/long-task-callback
+
 # Optional: local-only escape hatch. By default, values already present in the
 # process environment win over .env entries. Set this only when you explicitly
 # want .env to override existing environment variables during local debugging.
@@ -105,6 +111,8 @@ LOG_MODULE_LEVELS=
 `LONG_TASK_CALLBACK_TOKEN` authenticates Action -> Webapp long-task callback requests.
 `LONG_TASK_CALLBACK_ALLOWED_ORIGINS` optionally overrides which callback URL origins Action will trust.
 When it is unset, Action trusts the origin derived from `CALLBACK_BASE_URL`.
+`LONG_TASK_CALLBACK_ALLOWED_PATHS` optionally overrides which callback URL paths Action will trust.
+When it is unset, Action trusts the default Webapp callback path derived from `CALLBACK_BASE_URL`.
 If neither `LONG_TASK_CALLBACK_ALLOWED_ORIGINS` nor `CALLBACK_BASE_URL` is set,
 callback mode is disabled and long actions fall back to synchronous execution.
 `.env` loading fills in missing values only; set `ACTION_DOTENV_OVERRIDE=1` only
@@ -176,6 +184,7 @@ This is the recommended way to temporarily increase verbosity for one subsystem 
 - `ACTION_SERVER_TOKEN`
 - `LONG_TASK_CALLBACK_TOKEN`
 - `CALLBACK_BASE_URL` or `LONG_TASK_CALLBACK_ALLOWED_ORIGINS`
+- Optional: `LONG_TASK_CALLBACK_ALLOWED_PATHS`
 - `RASA_PROXY_URL`
 - `RASA_PROXY_GRAPHQL_TARGET`
 - `RASA_PROXY_ANALYTICS_TARGET`
@@ -227,6 +236,7 @@ docker compose up -d
 - `ACTION_SERVER_TOKEN` matches between Action and Webapp for proxy requests
 - `LONG_TASK_CALLBACK_TOKEN` matches between Action and Webapp for callback requests
 - `CALLBACK_BASE_URL` or `LONG_TASK_CALLBACK_ALLOWED_ORIGINS` allows the Webapp callback origin
+- `LONG_TASK_CALLBACK_ALLOWED_PATHS` allows the Webapp callback path when you override the default
 
 ---
 

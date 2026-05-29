@@ -23,6 +23,8 @@ from .long_action_context import DispatcherLike, LongActionContext
 _CALLBACK_TOKEN_ENV = "LONG_TASK_CALLBACK_TOKEN"
 _CALLBACK_BASE_URL_ENV = "CALLBACK_BASE_URL"
 _CALLBACK_ALLOWED_ORIGINS_ENV = "LONG_TASK_CALLBACK_ALLOWED_ORIGINS"
+_CALLBACK_ALLOWED_PATHS_ENV = "LONG_TASK_CALLBACK_ALLOWED_PATHS"
+_DEFAULT_CALLBACK_PATH = "/api/rasa/long-task-callback"
 logger = logging.getLogger(__name__)
 # Privacy/safety defaults: do not log callback payloads or URLs.
 _LOG_CALLBACK_STATUS = env_util.env_flag("LONG_ACTION_LOG_CALLBACK_STATUS", default=False)
@@ -46,6 +48,24 @@ def _normalize_callback_origin(url: str) -> Optional[str]:
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
+def _normalize_callback_path(value: str) -> Optional[str]:
+    candidate = value.strip()
+    if not candidate:
+        return None
+
+    parsed = urlsplit(candidate)
+    if parsed.scheme or parsed.netloc:
+        if parsed.scheme not in {"http", "https"}:
+            return None
+        path = parsed.path
+    else:
+        path = candidate
+
+    normalized = path if path.startswith("/") else f"/{path}"
+    normalized = normalized.rstrip("/") or "/"
+    return normalized
+
+
 def _allowed_callback_origins() -> List[str]:
     configured_origins = env_util.get_env(_CALLBACK_ALLOWED_ORIGINS_ENV, "") or ""
     base_callback_url = env_util.get_env(_CALLBACK_BASE_URL_ENV, "") or ""
@@ -54,6 +74,32 @@ def _allowed_callback_origins() -> List[str]:
     allowed: List[str] = []
     for candidate in candidates:
         normalized = _normalize_callback_origin(candidate)
+        if normalized and normalized not in allowed:
+            allowed.append(normalized)
+
+    return allowed
+
+
+def _default_callback_path() -> str:
+    base_callback_url = env_util.get_env(_CALLBACK_BASE_URL_ENV, "") or ""
+    if not base_callback_url:
+        return _DEFAULT_CALLBACK_PATH
+
+    candidate = f"{base_callback_url.rstrip('/')}{_DEFAULT_CALLBACK_PATH}"
+    normalized = _normalize_callback_path(candidate)
+    return normalized or _DEFAULT_CALLBACK_PATH
+
+
+def _allowed_callback_paths() -> List[str]:
+    configured_paths = env_util.get_env(_CALLBACK_ALLOWED_PATHS_ENV, "") or ""
+    candidates = [
+        *configured_paths.replace(";", "\n").replace(",", "\n").splitlines(),
+        _default_callback_path(),
+    ]
+
+    allowed: List[str] = []
+    for candidate in candidates:
+        normalized = _normalize_callback_path(candidate)
         if normalized and normalized not in allowed:
             allowed.append(normalized)
 
@@ -138,6 +184,20 @@ def _get_callback_config(tracker: TrackerLike) -> Optional[Tuple[str, str]]:
         )
         return None
 
+    callback_path = _normalize_callback_path(callback_url)
+    if not callback_path:
+        logger.warning(
+            "Callback URL present but callback path is invalid; falling back to synchronous execution",
+            extra={
+                "log_context": {
+                    "callback_endpoint": _callback_endpoint_label(callback_url),
+                    "callback_mode": False,
+                    "misconfiguration": True,
+                }
+            },
+        )
+        return None
+
     allowed_origins = _allowed_callback_origins()
     if allowed_origins and callback_origin not in allowed_origins:
         logger.warning(
@@ -161,6 +221,22 @@ def _get_callback_config(tracker: TrackerLike) -> Optional[Tuple[str, str]]:
                     "callback_endpoint": callback_origin,
                     "callback_mode": False,
                     "misconfiguration": True,
+                }
+            },
+        )
+        return None
+
+    allowed_paths = _allowed_callback_paths()
+    if callback_path not in allowed_paths:
+        logger.warning(
+            "Callback URL path is not allowed; falling back to synchronous execution",
+            extra={
+                "log_context": {
+                    "callback_endpoint": callback_origin,
+                    "callback_path": callback_path,
+                    "callback_mode": False,
+                    "misconfiguration": True,
+                    "allowed_callback_paths": allowed_paths,
                 }
             },
         )
