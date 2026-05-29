@@ -67,7 +67,7 @@ jobs:
         run: |
           set -euo pipefail
           ACTION_VERSION="$(tr -d '[:space:]' < VERSION)"
-          SSOT_SHA="$(git ls-tree HEAD src/shared/SSOT | awk '{print $3}')"
+          SSOT_SHA="$(git ls-files -s src/shared/SSOT | awk '{print $2}' || echo 'unknown')"
           docker buildx build \
             --platform linux/amd64 \
             --progress=plain \
