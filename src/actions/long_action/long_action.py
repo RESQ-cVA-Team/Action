@@ -322,6 +322,14 @@ class LongAction(Action, ABC):
     def __init__(self):
         registry.register(self)
 
+    @staticmethod
+    def _lock_message() -> Dict[str, str]:
+        return {"type": "lock"}
+
+    @staticmethod
+    def _release_message() -> Dict[str, str]:
+        return {"type": "release"}
+
     async def prework(self, ctx: LongActionContext) -> PreworkResult:
         """Optional in-band phase before work() starts.
 
@@ -396,7 +404,23 @@ class LongAction(Action, ABC):
                     )
                 )
                 with log_context(job_id=job_id, callback_mode=True):
-                    await self.work(ctx)
+                    self._post_progress(
+                        ctx,
+                        job_id,
+                        callback_url,
+                        callback_token,
+                        self._lock_message(),
+                    )
+                    try:
+                        await self.work(ctx)
+                    finally:
+                        self._post_progress(
+                            ctx,
+                            job_id,
+                            callback_url,
+                            callback_token,
+                            self._release_message(),
+                        )
                 return [*immediate_events, *ctx.pending_events]
 
             ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot)
@@ -535,6 +559,13 @@ class LongAction(Action, ABC):
                 callback_mode=True,
                 callback_endpoint=_callback_endpoint_label(callback_url),
             ):
+                self._post_progress(
+                    ctx,
+                    job_id,
+                    callback_url,
+                    callback_token,
+                    self._lock_message(),
+                )
                 asyncio.run(self.work(ctx))
         except Exception:
             logger.exception(
@@ -549,6 +580,14 @@ class LongAction(Action, ABC):
             # Fail closed: emit an error as a normal message so the user sees
             # something, but do not propagate the exception.
             ctx.say(text="Something went wrong.")
+        finally:
+            self._post_progress(
+                ctx,
+                job_id,
+                callback_url,
+                callback_token,
+                self._release_message(),
+            )
             ctx.done()
 
     @abstractmethod
