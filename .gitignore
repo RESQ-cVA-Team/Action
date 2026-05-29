@@ -25,6 +25,9 @@
 !/.dockerignore
 !/Dockerfile
 
+# Add version
+!/VERSION
+
 # Add Devtools
 !/envgen.sh
 !/envgen.config

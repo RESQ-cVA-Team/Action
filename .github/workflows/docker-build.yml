@@ -66,15 +66,19 @@ jobs:
       - name: Build and push Docker image (fail-fast if SSOT missing)
         run: |
           set -euo pipefail
+          ACTION_VERSION="$(tr -d '[:space:]' < VERSION)"
+          SSOT_SHA="$(git ls-tree HEAD src/shared/SSOT | awk '{print $3}')"
           docker buildx build \
             --platform linux/amd64 \
             --progress=plain \
             --provenance=mode=max \
             --sbom=true \
             --push \
+            --build-arg ACTION_VERSION=$ACTION_VERSION \
             --build-arg ACTION_COMMIT_SHA=$GITHUB_SHA \
             --build-arg ACTION_IMAGE_TAG=$IMAGE_TAG \
             --build-arg ACTION_BUILD_DATE=$BUILD_DATE \
+            --build-arg ACTION_SSOT_VERSION=$SSOT_SHA \
             -t ghcr.io/$REPO_NAME_LC:$IMAGE_TAG \
             -t ghcr.io/$REPO_NAME_LC:$IMAGE_SHA_TAG \
             .
