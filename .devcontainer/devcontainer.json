@@ -12,18 +12,16 @@
 				"bungcip.better-toml"
 			],
 			"settings": {
-				"python.defaultInterpreterPath": "/usr/local/bin/python",
+				"python.defaultInterpreterPath": "/opt/venv/bin/python",
 				"editor.formatOnSave": true,
 				"editor.codeActionsOnSave": {
 					"source.fixAll": "always",
 					"source.organizeImports": "always"
 				},
-				"python.linting.enabled": true,
-				"python.linting.mypyEnabled": true,
-				"python.linting.ruffEnabled": true,
-				"python.analysis.typeCheckingMode": "strict"
+				"python.analysis.typeCheckingMode": "strict",
+				"python.analysis.diagnosticMode": "workspace"
 			}
 		}
 	},
-	"postCreateCommand": "pip install -e . && mypy --strict . && ruff check ."
+	"postCreateCommand": "/opt/venv/bin/pip install -e . && pyright && /opt/venv/bin/python -m ruff check ."
 }

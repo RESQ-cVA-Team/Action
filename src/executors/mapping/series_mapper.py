@@ -74,15 +74,23 @@ def map_metrics_payload_to_series(
     include_metric_alias: bool,
     group_by_field: Optional[str],
     add_time_period_labels: bool,
+    scope_label: Optional[str] = None,
 ) -> List[ChartSeries]:
     series: List[ChartSeries] = []
 
     for metric_name, metric in metrics_payload.items():
         for kpi in metric.kpi_group:
+            if getattr(kpi, "kpi1", None) is None:
+                continue
+
             server_label = kpi.grouped_by.group_item_name if kpi.grouped_by else None
             origin_label = _origin_label_from_kpi_group(kpi)
 
-            is_grouped_or_time = bool(group_by_field) or add_time_period_labels
+            # Some plans (e.g., GroupBySex when backend groupBy enum is unavailable)
+            # are compiled into multiple filtered requests, one per category.
+            # In that case `group_by_field` is None, but non-empty label_parts
+            # still indicate grouped-style output should be produced from stats.
+            is_grouped_or_time = bool(group_by_field) or add_time_period_labels or bool(label_parts)
             if is_grouped_or_time:
                 y_value: Optional[float] = None
                 if isinstance(kpi.kpi1.mean, (int, float)):
@@ -124,6 +132,8 @@ def map_metrics_payload_to_series(
                 name_parts.extend([part for part in label_parts if part])
                 if origin_label:
                     name_parts.append(origin_label)
+                if scope_label and scope_label not in name_parts:
+                    name_parts.append(scope_label)
                 if not name_parts:
                     name_parts.append(metric_label_from_alias(metric_name))
                 series_name = " — ".join(name_parts)
@@ -147,6 +157,8 @@ def map_metrics_payload_to_series(
             if server_label:
                 mapped = get_enum_option_label(group_by_field, server_label) if group_by_field else None
                 parts.append(mapped or server_label)
+            if scope_label and scope_label not in parts:
+                parts.append(scope_label)
 
             if add_time_period_labels and kpi.time_period is not None:
                 start = kpi.time_period.start_date

@@ -5,16 +5,42 @@ import socket
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, TypedDict, cast
+from urllib.parse import urlsplit
 
 import requests
 
 from src.util import env as env_util
+from src.util.logging_utils import log_context
 
 logger = logging.getLogger(__name__)
+
+_LOG_ANALYTICS_QUERY = env_util.env_flag("ANALYTICS_CENTER_LOG_QUERY", default=False)
+_LOG_ANALYTICS_UPSTREAM_PREVIEW = env_util.env_flag("ANALYTICS_CENTER_LOG_UPSTREAM_PREVIEW", default=False)
+
+
+def _proxy_endpoint_label(url: str) -> str:
+    parsed = urlsplit(url)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    if parsed.netloc:
+        return parsed.netloc
+    return url
 
 
 def _runtime_instance_fields() -> tuple[int, str]:
     return os.getpid(), socket.gethostname()
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, int((time.monotonic() - started_at) * 1000))
+
+
+def _summarize_query(query: Dict[str, Any]) -> Dict[str, Any]:
+    keys = sorted(str(key) for key in query.keys())
+    return {
+        "query_key_count": len(keys),
+        "query_keys": keys,
+    }
 
 
 @dataclass
@@ -97,6 +123,67 @@ class AnalyticsCenterClient:
             raise ValueError(f"trace_id is required for {request_name}")
         return token
 
+    @staticmethod
+    def _transport_log_extra(
+        *,
+        attempt: int,
+        attempts_total: int,
+        retry: bool,
+        error_category: str,
+        exc: Exception,
+        started_at: float,
+    ) -> Dict[str, Dict[str, Any]]:
+        return {
+            "log_context": {
+                "attempt": attempt + 1,
+                "attempts_total": attempts_total,
+                "retry": retry,
+                "error_category": error_category,
+                "error_type": type(exc).__name__,
+                "elapsed_ms": _elapsed_ms(started_at),
+            }
+        }
+
+    def _log_transport_failure(
+        self,
+        *,
+        request_name: str,
+        label: str,
+        error_category: str,
+        exc: Exception,
+        attempt: int,
+        attempts_total: int,
+        started_at: float,
+        retry: bool,
+    ) -> None:
+        extra = self._transport_log_extra(
+            attempt=attempt,
+            attempts_total=attempts_total,
+            retry=retry,
+            error_category=error_category,
+            exc=exc,
+            started_at=started_at,
+        )
+        if retry:
+            logger.warning(
+                "[AnalyticsCenterClient] %s during %s (attempt=%s/%s): %s",
+                label,
+                request_name,
+                attempt + 1,
+                attempts_total,
+                exc,
+                extra=extra,
+            )
+            return
+        logger.error(
+            "[AnalyticsCenterClient] %s during %s after %s attempt(s): %s",
+            label,
+            request_name,
+            attempt + 1,
+            exc,
+            extra=extra,
+        )
+
     def _request_via_proxy(
         self,
         user_sub: str,
@@ -126,146 +213,210 @@ class AnalyticsCenterClient:
 
         attempts_total = self.retry_attempts + 1
         last_error: Optional[AnalyticsCenterError] = None
+        started_at = time.monotonic()
 
         def parse_error_payload() -> Dict[str, Any]:
             try:
                 payload_any: Any = response.json()
-            except Exception:
+            except ValueError:
+                logger.debug(
+                    "[AnalyticsCenterClient] Failed to parse proxy error payload as JSON",
+                    extra={
+                        "log_context": {
+                            "event": "analytics_center.error_payload_parse_failed",
+                            "operation": request_name,
+                            "outcome": "degraded",
+                            "status_code": response.status_code,
+                            "body_len": len(response.text or ""),
+                            "elapsed_ms": _elapsed_ms(started_at),
+                        }
+                    },
+                    exc_info=True,
+                )
                 return {}
             if isinstance(payload_any, dict):
                 return cast(Dict[str, Any], payload_any)
             return {}
 
-        for attempt in range(attempts_total):
-            try:
-                process_id, hostname = _runtime_instance_fields()
-                logger.debug(
-                    "[AnalyticsCenterClient] Outbound request %s (trace_id=%s, attempt=%s/%s, path=%s)",
-                    request_name,
-                    trace_label,
-                    attempt + 1,
-                    attempts_total,
-                    path,
-                )
-                logger.info(
-                    "[AnalyticsCenterClient] Proxy dispatch (trace_id=%s, pid=%s, host=%s, request=%s, user_sub=%r, path=%s, query=%s)",
-                    trace_label,
-                    process_id,
-                    hostname,
-                    request_name,
-                    user_sub,
-                    path,
-                    json.dumps(query, ensure_ascii=False, sort_keys=True, default=str),
-                )
-                response = requests.post(
-                    self.proxy_url,
-                    headers=headers,
-                    json=request_payload,
-                    timeout=self.timeout_seconds,
-                )
-                logger.info(
-                    "[AnalyticsCenterClient] Outbound response %s (trace_id=%s, attempt=%s/%s, status=%s)",
-                    request_name,
-                    trace_label,
-                    attempt + 1,
-                    attempts_total,
-                    response.status_code,
-                )
-            except requests.Timeout as exc:
+        with log_context(
+            trace_id=trace_label,
+            user_sub=user_sub,
+            analytics_request=request_name,
+            analytics_target=self.target,
+            analytics_path=path,
+            proxy_endpoint=_proxy_endpoint_label(self.proxy_url),
+        ):
+            for attempt in range(attempts_total):
+                try:
+                    process_id, hostname = _runtime_instance_fields()
+                    logger.debug(
+                        "[AnalyticsCenterClient] Proxy dispatch (attempt=%s/%s)",
+                        attempt + 1,
+                        attempts_total,
+                        extra={
+                            "log_context": {
+                                "pid": process_id,
+                                "host": hostname,
+                                **(_summarize_query(query) if not _LOG_ANALYTICS_QUERY else {"query": query}),
+                            }
+                        },
+                    )
+                    response = requests.post(
+                        self.proxy_url,
+                        headers=headers,
+                        json=request_payload,
+                        timeout=self.timeout_seconds,
+                    )
+                    logger.debug(
+                        "[AnalyticsCenterClient] Outbound response (attempt=%s/%s, status=%s)",
+                        attempt + 1,
+                        attempts_total,
+                        response.status_code,
+                        extra={"log_context": {"elapsed_ms": _elapsed_ms(started_at)}},
+                    )
+                except requests.Timeout as exc:
+                    last_error = AnalyticsCenterError(
+                        kind="timeout",
+                        message=f"{request_name} request timed out",
+                        transient=True,
+                    )
+                    should_retry = attempt < self.retry_attempts
+                    self._log_transport_failure(
+                        request_name=request_name,
+                        label="Timeout",
+                        error_category="timeout",
+                        exc=exc,
+                        attempt=attempt,
+                        attempts_total=attempts_total,
+                        started_at=started_at,
+                        retry=should_retry,
+                    )
+                    if should_retry:
+                        self._sleep_before_retry(attempt)
+                        continue
+                    break
+                except requests.ConnectionError as exc:
+                    last_error = AnalyticsCenterError(
+                        kind="request_error",
+                        message=f"{request_name} request failed",
+                        transient=True,
+                    )
+                    should_retry = attempt < self.retry_attempts
+                    self._log_transport_failure(
+                        request_name=request_name,
+                        label="Connection failure",
+                        error_category="connection_error",
+                        exc=exc,
+                        attempt=attempt,
+                        attempts_total=attempts_total,
+                        started_at=started_at,
+                        retry=should_retry,
+                    )
+                    if should_retry:
+                        self._sleep_before_retry(attempt)
+                        continue
+                    break
+                except requests.RequestException as exc:
+                    last_error = AnalyticsCenterError(
+                        kind="request_error",
+                        message=f"{request_name} request failed",
+                        transient=True,
+                    )
+                    should_retry = attempt < self.retry_attempts
+                    self._log_transport_failure(
+                        request_name=request_name,
+                        label="Request exception",
+                        error_category="request_error",
+                        exc=exc,
+                        attempt=attempt,
+                        attempts_total=attempts_total,
+                        started_at=started_at,
+                        retry=should_retry,
+                    )
+                    if should_retry:
+                        self._sleep_before_retry(attempt)
+                        continue
+                    break
+
+                if response.status_code != 200:
+                    error_payload = parse_error_payload()
+                    proxy_any = error_payload.get("proxy")
+                    proxy_info = cast(Dict[str, Any], proxy_any) if isinstance(proxy_any, dict) else {}
+                    proxy_reason_any = proxy_info.get("reason")
+                    proxy_reason = proxy_reason_any.strip() if isinstance(proxy_reason_any, str) and proxy_reason_any.strip() else None
+
+                    upstream_any = error_payload.get("upstream")
+                    upstream_info = cast(Dict[str, Any], upstream_any) if isinstance(upstream_any, dict) else {}
+                    upstream_body = upstream_info.get("body")
+                    upstream_preview = ""
+                    if upstream_body is not None:
+                        try:
+                            upstream_preview = json.dumps(upstream_body, ensure_ascii=False, default=str)[:400]
+                        except Exception:
+                            upstream_preview = str(upstream_body)[:400]
+
+                    message_any = error_payload.get("message")
+                    error_message = message_any.strip() if isinstance(message_any, str) and message_any.strip() else f"Proxy returned HTTP {response.status_code} during {request_name}"
+                    if proxy_reason:
+                        error_message = f"{error_message}: {proxy_reason}"
+
+                    log_context_fields: Dict[str, Any] = {
+                        "status_code": response.status_code,
+                        "attempt": attempt + 1,
+                        "attempts_total": attempts_total,
+                        "body_len": len(response.text or ""),
+                        "proxy_reason": proxy_reason or "-",
+                        "elapsed_ms": _elapsed_ms(started_at),
+                        "has_upstream_body": upstream_body is not None,
+                    }
+                    if _LOG_ANALYTICS_UPSTREAM_PREVIEW and upstream_preview:
+                        log_context_fields["upstream_preview"] = upstream_preview
+
+                    logger.error(
+                        "[AnalyticsCenterClient] Proxy error %s during %s (attempt=%s/%s, body_len=%s, proxy_reason=%s)",
+                        response.status_code,
+                        request_name,
+                        attempt + 1,
+                        attempts_total,
+                        len(response.text or ""),
+                        proxy_reason or "-",
+                        extra={"log_context": log_context_fields},
+                    )
+                    transient = self._is_transient_status(response.status_code)
+                    last_error = AnalyticsCenterError(
+                        kind="http_error",
+                        message=error_message,
+                        status_code=response.status_code,
+                        transient=transient,
+                        details=error_payload or None,
+                    )
+                    if transient and attempt < self.retry_attempts:
+                        self._sleep_before_retry(attempt)
+                        continue
+                    break
+
+                response_payload_any: Any = response.json()
+                if isinstance(response_payload_any, dict):
+                    return cast(Dict[str, Any], response_payload_any)
+
                 last_error = AnalyticsCenterError(
-                    kind="timeout",
-                    message=f"{request_name} request timed out",
-                    transient=True,
+                    kind="invalid_response",
+                    message=f"Unexpected response format during {request_name}",
+                    transient=False,
                 )
-                logger.warning(
-                    "[AnalyticsCenterClient] Timeout during %s (trace_id=%s, attempt=%s/%s): %s",
-                    request_name,
-                    trace_label,
-                    attempt + 1,
-                    attempts_total,
-                    exc,
-                )
-                if attempt < self.retry_attempts:
-                    self._sleep_before_retry(attempt)
-                    continue
-                break
-            except requests.RequestException as exc:
-                last_error = AnalyticsCenterError(
-                    kind="request_error",
-                    message=f"{request_name} request failed",
-                    transient=True,
-                )
-                logger.warning(
-                    "[AnalyticsCenterClient] Request exception during %s (trace_id=%s, attempt=%s/%s): %s",
-                    request_name,
-                    trace_label,
-                    attempt + 1,
-                    attempts_total,
-                    exc,
-                )
-                if attempt < self.retry_attempts:
-                    self._sleep_before_retry(attempt)
-                    continue
-                break
-
-            if response.status_code != 200:
-                error_payload = parse_error_payload()
-                proxy_any = error_payload.get("proxy")
-                proxy_info = cast(Dict[str, Any], proxy_any) if isinstance(proxy_any, dict) else {}
-                proxy_reason_any = proxy_info.get("reason")
-                proxy_reason = proxy_reason_any.strip() if isinstance(proxy_reason_any, str) and proxy_reason_any.strip() else None
-
-                upstream_any = error_payload.get("upstream")
-                upstream_info = cast(Dict[str, Any], upstream_any) if isinstance(upstream_any, dict) else {}
-                upstream_body = upstream_info.get("body")
-                upstream_preview = ""
-                if upstream_body is not None:
-                    try:
-                        upstream_preview = json.dumps(upstream_body, ensure_ascii=False, default=str)[:400]
-                    except Exception:
-                        upstream_preview = str(upstream_body)[:400]
-
-                message_any = error_payload.get("message")
-                error_message = message_any.strip() if isinstance(message_any, str) and message_any.strip() else f"Proxy returned HTTP {response.status_code} during {request_name}"
-                if proxy_reason:
-                    error_message = f"{error_message}: {proxy_reason}"
-
                 logger.error(
-                    "[AnalyticsCenterClient] Proxy error %s during %s (trace_id=%s, attempt=%s/%s, target=%s, body_len=%s, proxy_reason=%s, upstream=%s)",
-                    response.status_code,
+                    "[AnalyticsCenterClient] Unexpected response shape during %s",
                     request_name,
-                    trace_label,
-                    attempt + 1,
-                    attempts_total,
-                    self.target,
-                    len(response.text or ""),
-                    proxy_reason or "-",
-                    upstream_preview or "-",
+                    extra={
+                        "log_context": {
+                            "event": "analytics_center.invalid_response_shape",
+                            "operation": request_name,
+                            "outcome": "failure",
+                            "elapsed_ms": _elapsed_ms(started_at),
+                        }
+                    },
                 )
-                transient = self._is_transient_status(response.status_code)
-                last_error = AnalyticsCenterError(
-                    kind="http_error",
-                    message=error_message,
-                    status_code=response.status_code,
-                    transient=transient,
-                    details=error_payload or None,
-                )
-                if transient and attempt < self.retry_attempts:
-                    self._sleep_before_retry(attempt)
-                    continue
                 break
-
-            response_payload_any: Any = response.json()
-            if isinstance(response_payload_any, dict):
-                return cast(Dict[str, Any], response_payload_any)
-
-            last_error = AnalyticsCenterError(
-                kind="invalid_response",
-                message=f"Unexpected response format during {request_name}",
-                transient=False,
-            )
-            logger.error("[AnalyticsCenterClient] Unexpected response shape during %s (trace_id=%s)", request_name, trace_label)
-            break
 
         if raise_on_error and last_error is not None:
             raise last_error
@@ -335,7 +486,17 @@ class AnalyticsCenterClient:
                 "offset": out_offset,
             }
 
-        logger.error("[AnalyticsCenterClient] Unexpected response format from providers list")
+        logger.error(
+            "[AnalyticsCenterClient] Unexpected response format from providers list",
+            extra={
+                "log_context": {
+                    "trace_id": trace_id,
+                    "event": "analytics_center.providers.invalid_response",
+                    "operation": "list_providers",
+                    "outcome": "failure",
+                }
+            },
+        )
         if raise_on_error:
             raise AnalyticsCenterError(
                 kind="invalid_response",
@@ -399,7 +560,17 @@ class AnalyticsCenterClient:
                 "offset": out_offset,
             }
 
-        logger.error("[AnalyticsCenterClient] Unexpected response format from provider-groups list")
+        logger.error(
+            "[AnalyticsCenterClient] Unexpected response format from provider-groups list",
+            extra={
+                "log_context": {
+                    "trace_id": trace_id,
+                    "event": "analytics_center.provider_groups.invalid_response",
+                    "operation": "list_provider_groups",
+                    "outcome": "failure",
+                }
+            },
+        )
         if raise_on_error:
             raise AnalyticsCenterError(
                 kind="invalid_response",
@@ -500,7 +671,17 @@ class AnalyticsCenterClient:
             country_results: List[Dict[str, Any]] = [cast(Dict[str, Any], r) for r in results_list if isinstance(r, dict)]
             return {"results": country_results}
 
-        logger.error("[AnalyticsCenterClient] Unexpected response format from countries list")
+        logger.error(
+            "[AnalyticsCenterClient] Unexpected response format from countries list",
+            extra={
+                "log_context": {
+                    "trace_id": trace_id,
+                    "event": "analytics_center.countries.invalid_response",
+                    "operation": "list_countries",
+                    "outcome": "failure",
+                }
+            },
+        )
         if raise_on_error:
             raise AnalyticsCenterError(
                 kind="invalid_response",

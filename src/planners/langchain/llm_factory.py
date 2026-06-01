@@ -72,7 +72,7 @@ def create_chat_llm(temperature: float = 0) -> Any:
     model = env.require_all_env("LLM_MODEL")
     extra_kwargs = _load_extra_kwargs()
     plugin = registry.get(provider)
-    logger.info("[LLM Factory] Creating chat model provider=%s model=%s", provider, model)
+    logger.debug("[LLM Factory] Creating chat model provider=%s model=%s", provider, model)
     return plugin.create_chat_model(
         model=model,
         temperature=temperature,

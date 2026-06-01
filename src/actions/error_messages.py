@@ -1,6 +1,20 @@
+from typing import Any, Mapping, cast
+
 from src.actions.i18n import translate
 from src.executors.analytics_center.client import AnalyticsCenterError
 from src.executors.orchestration.plan_executor import VisualizationExecutionError
+
+
+def _mapping_to_dict(value: Any) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        return {}
+
+    mapping = cast(Mapping[object, object], value)
+    result: dict[str, object] = {}
+    for raw_key, raw_value in mapping.items():
+        if isinstance(raw_key, str):
+            result[raw_key] = raw_value
+    return result
 
 
 def visualization_error_payload(
@@ -34,9 +48,8 @@ def friendly_visualization_error(exc: Exception, language: str | None = None) ->
 
 def friendly_hospital_error(exc: Exception, language: str | None = None) -> str:
     if isinstance(exc, AnalyticsCenterError):
-        details = exc.details if isinstance(exc.details, dict) else {}
-        proxy_any = details.get("proxy")
-        proxy_info = proxy_any if isinstance(proxy_any, dict) else {}
+        details = _mapping_to_dict(exc.details)
+        proxy_info = _mapping_to_dict(details.get("proxy"))
         reason_any = proxy_info.get("reason")
         reason = reason_any.strip().lower() if isinstance(reason_any, str) and reason_any.strip() else ""
 

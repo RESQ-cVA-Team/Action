@@ -1,11 +1,28 @@
+import logging
 import shlex
-from typing import Any, Dict, List, Tuple, cast
+from typing import Any, Dict, List, Optional, Protocol, Tuple, cast
 
 from rasa_sdk import Action  # type: ignore
 from rasa_sdk.events import EventType  # type: ignore
 
+from src.util.logging_utils import log_context
+
 from .commands import get as get_command  # type: ignore
 from .commands import names as list_command_names
+
+logger = logging.getLogger(__name__)
+
+
+DomainDict = Dict[str, Any]
+
+
+class DispatcherLike(Protocol):
+    def utter_message(self, text: Optional[str] = None, **kwargs: Any) -> None: ...
+
+
+class TrackerLike(Protocol):
+    sender_id: str
+    latest_message: Dict[str, Any]
 
 
 def _coerce_scalar(val: str) -> Any:
@@ -72,8 +89,10 @@ class ActionCliRouter(Action):
     def name(self) -> str:
         return "action_cli_router"
 
-    def run(self, dispatcher, tracker, domain) -> List[EventType]:  # type: ignore[override]
-        md_any = tracker.latest_message.get("metadata")  # type: ignore[call-arg]
+    def run(self, dispatcher: DispatcherLike, tracker: TrackerLike, domain: DomainDict) -> List[EventType]:  # type: ignore[override]
+        latest_message_any = getattr(tracker, "latest_message", None)
+        latest_message = cast(Dict[str, Any], latest_message_any) if isinstance(latest_message_any, dict) else {}
+        md_any = latest_message.get("metadata")
         md: Dict[str, Any] = cast(Dict[str, Any], md_any) if isinstance(md_any, dict) else {}
         cmdline: str = str(md.get("cli_command_text", ""))
         sub, args, opts = _parse_cmd(cmdline)
@@ -82,13 +101,23 @@ class ActionCliRouter(Action):
         if not sub:
             sub = "help"
 
-        # Try pluggable command handlers first
-        handler = get_command(sub)
-        if handler is not None:
-            return handler(dispatcher, tracker, domain, args, opts)
+        with log_context(
+            sender_id=str(getattr(tracker, "sender_id", "")),
+            action=self.name(),
+            cli_subcommand=sub,
+            cli_arg_count=len(args),
+            cli_option_count=len(opts),
+        ):
+            logger.info("Routing CLI command")
 
-        # No static duplicates; registry owns all commands now
+            # Try pluggable command handlers first
+            handler = get_command(sub)
+            if handler is not None:
+                return handler(dispatcher, tracker, domain, args, opts)
 
-        # Fallback: unknown command
-        dispatcher.utter_message(text=f"Unknown CLI command: {sub}. Try one of: {', '.join(sorted(list_command_names()))}")
-        return []
+            # No static duplicates; registry owns all commands now
+
+            # Fallback: unknown command
+            logger.warning("Unknown CLI command")
+            dispatcher.utter_message(text=f"Unknown CLI command: {sub}. Try one of: {', '.join(sorted(list_command_names()))}")
+            return []

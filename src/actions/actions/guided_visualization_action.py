@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Dict, List, Optional, Text, cast
 from uuid import uuid4
@@ -21,10 +20,11 @@ from src.actions.guided_visualization_validation import (
     validate_optional_catalog_slot,
     validate_required_metric,
 )
+from src.actions.helpers.visualization import format_execution_summary, serialize_plan_for_frontend
 from src.actions.i18n import resolve_language_from_tracker, translate
-from src.actions.utils.visualization import format_execution_summary, serialize_plan_for_frontend
 from src.executors import execute_plan_async
 from src.util import env as env_util
+from src.util.logging_utils import log_context
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,27 @@ DomainDict = Dict[str, Any]
 RasaEventList = List[Any]
 
 
+def _action_log_context(
+    *,
+    trace_id: str,
+    action_name: str,
+    event: str,
+    outcome: str,
+    **fields: Any,
+) -> Dict[str, Dict[str, Any]]:
+    context: Dict[str, Any] = {
+        "trace_id": trace_id,
+        "action": action_name,
+        "event": event,
+        "outcome": outcome,
+    }
+    for key, value in fields.items():
+        if value is None:
+            continue
+        context[key] = value
+    return {"log_context": context}
+
+
 def _normalize_trace_id(value: Any) -> Optional[str]:
     if value is None:
         return None
@@ -54,7 +75,7 @@ def _normalize_trace_id(value: Any) -> Optional[str]:
 
 
 def _tracker_trace_id(tracker: TrackerLike) -> Optional[str]:
-    latest = tracker.latest_message if isinstance(tracker.latest_message, dict) else {}
+    latest = tracker.latest_message
     metadata_any = latest.get("metadata")
     metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
 
@@ -86,80 +107,96 @@ class ActionGuidedGenerateVisualization(Action):  # pyright: ignore
         trace_id = _tracker_trace_id(tracker) or uuid4().hex
         language = resolve_language_from_tracker(tracker)
         execution_summary: Any = None
-        try:
-            logger.info("Starting guided visualization generation (trace_id=%s)", trace_id)
-            slots_any = tracker.current_state().get("slots", {})
-            slots = cast(Dict[str, Any], slots_any) if isinstance(slots_any, dict) else {}
-            user_sub = str(tracker.sender_id)
+        with log_context(trace_id=trace_id, sender_id=str(tracker.sender_id), action=self.name()):
+            try:
+                logger.info("Starting guided visualization generation")
+                slots_any = tracker.current_state().get("slots", {})
+                slots = cast(Dict[str, Any], slots_any) if isinstance(slots_any, dict) else {}
+                user_sub = str(tracker.sender_id)
 
-            def on_summary(summary: Any) -> None:
-                nonlocal execution_summary
-                execution_summary = summary
+                def on_summary(summary: Any) -> None:
+                    nonlocal execution_summary
+                    execution_summary = summary
 
-            plan_obj = build_guided_plan(slots=slots, user_sub=user_sub, trace_id=trace_id)
-            dispatcher.utter_message(
-                json_message={
-                    "type": "visualization_plan",
-                    "trace_id": trace_id,
-                    "plan": serialize_plan_for_frontend(plan_obj),
-                }
-            )
-
-            visualization = await execute_plan_async(
-                plan_obj,
-                user_sub=user_sub,
-                max_concurrency=_EXECUTOR_MAX_CONCURRENCY,
-                progress_cb=None,
-                summary_cb=on_summary,
-                trace_id=trace_id,
-            )
-            visualization_json = cast(Any, visualization).model_dump_json()
-            dispatcher.utter_message(json_message=json.loads(cast(str, visualization_json)))
-            if _SHOW_EXECUTION_SUMMARY and execution_summary is not None:
+                plan_obj = build_guided_plan(slots=slots, user_sub=user_sub, trace_id=trace_id)
                 dispatcher.utter_message(
-                    text=format_execution_summary(
-                        execution_summary,
-                        show_normalization=_SHOW_NORMALIZATION_SUMMARY,
-                        planner_diagnostics=None,
-                        language=language,
-                    )
+                    json_message={
+                        "type": "visualization_plan",
+                        "trace_id": trace_id,
+                        "plan": serialize_plan_for_frontend(plan_obj),
+                    }
                 )
-            else:
-                dispatcher.utter_message(text=translate("action.visualization.success_complete", language=language))
 
-            return [SlotSet("awaiting_visualization_clarification", False), *guided_slots_clear_events()]
-        except Exception as e:
-            logger.exception("Error generating guided visualization (trace_id=%s)", trace_id)
-            payload = visualization_error_payload(e, trace_id=trace_id, language=language)
-            dispatcher.utter_message(
-                json_message={
-                    "type": "visualization_error",
-                    "trace_id": payload.get("trace_id"),
-                    "error_code": payload.get("code"),
-                    "reason": payload.get("reason"),
-                    "message": payload.get("message"),
-                }
-            )
-            dispatcher.utter_message(
-                text=translate(
-                    "action.common.error_with_context",
-                    language=language,
-                    params={
-                        "message": payload.get("message") or "",
-                        "code": payload.get("code") or "-",
-                        "trace_id": payload.get("trace_id") or "-",
-                    },
+                visualization = await execute_plan_async(
+                    plan_obj,
+                    user_sub=user_sub,
+                    max_concurrency=_EXECUTOR_MAX_CONCURRENCY,
+                    progress_cb=None,
+                    summary_cb=on_summary,
+                    trace_id=trace_id,
                 )
-            )
-            if _ECHO_INTERNAL_ERRORS:
+                visualization_payload = visualization.model_dump(mode="json")
+                dispatcher.utter_message(json_message=visualization_payload)
+
+                warnings_any = visualization_payload.get("warnings")
+                if isinstance(warnings_any, list):
+                    for warning in cast(List[object], warnings_any):
+                        if isinstance(warning, str) and warning.strip():
+                            dispatcher.utter_message(text=f"Note: {warning.strip()}")
+
+                if _SHOW_EXECUTION_SUMMARY and execution_summary is not None:
+                    dispatcher.utter_message(
+                        text=format_execution_summary(
+                            execution_summary,
+                            show_normalization=_SHOW_NORMALIZATION_SUMMARY,
+                            planner_diagnostics=None,
+                            language=language,
+                        )
+                    )
+                else:
+                    dispatcher.utter_message(text=translate("action.visualization.success_complete", language=language))
+
+                return [SlotSet("awaiting_visualization_clarification", False), *guided_slots_clear_events()]
+            except Exception as e:
+                logger.exception(
+                    "Error generating guided visualization",
+                    extra=_action_log_context(
+                        trace_id=trace_id,
+                        action_name=self.name(),
+                        event="actions.guided_visualization.failed",
+                        outcome="failure",
+                    ),
+                )
+                payload = visualization_error_payload(e, trace_id=trace_id, language=language)
+                dispatcher.utter_message(
+                    json_message={
+                        "type": "visualization_error",
+                        "trace_id": payload.get("trace_id"),
+                        "error_code": payload.get("code"),
+                        "reason": payload.get("reason"),
+                        "message": payload.get("message"),
+                    }
+                )
                 dispatcher.utter_message(
                     text=translate(
-                        "action.visualization.internal_error_guided",
+                        "action.common.error_with_context",
                         language=language,
-                        params={"error": str(e)},
+                        params={
+                            "message": payload.get("message") or "",
+                            "code": payload.get("code") or "-",
+                            "trace_id": payload.get("trace_id") or "-",
+                        },
                     )
                 )
-            return [SlotSet("awaiting_visualization_clarification", False)]
+                if _ECHO_INTERNAL_ERRORS:
+                    dispatcher.utter_message(
+                        text=translate(
+                            "action.visualization.internal_error_guided",
+                            language=language,
+                            params={"error": str(e)},
+                        )
+                    )
+                return [SlotSet("awaiting_visualization_clarification", False)]
 
 
 class ValidateGuidedVisualizationForm(FormValidationAction):  # pyright: ignore

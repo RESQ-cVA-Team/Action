@@ -4,7 +4,7 @@ Clean, type-safe alternative to the builder pattern approach.
 Uses SSOT-based enums for consistency across the system.
 """
 
-from typing import List, Literal, Optional, Union
+from typing import Any, List, Literal, Mapping, Optional, Union, cast
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -12,15 +12,26 @@ from src.domain.graphql.ssot_enums import BooleanPropertyType, GroupByType, Metr
 from src.shared.ssot_loader import get_metric_metadata
 
 
+def _mapping_to_dict(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+
+    mapping = cast(Mapping[object, object], value)
+    result: dict[str, Any] = {}
+    for raw_key, raw_value in mapping.items():
+        if isinstance(raw_key, str):
+            result[raw_key] = raw_value
+    return result
+
+
 def _numeric_filter_properties() -> set[str]:
     out: set[str] = set()
     metadata = get_metric_metadata()
     for meta in metadata.values():
-        if not isinstance(meta, dict):
-            continue
-        props = meta.get("properties")
+        meta_dict = _mapping_to_dict(meta)
+        props = meta_dict.get("properties")
         if isinstance(props, list):
-            for prop in props:
+            for prop in cast(List[object], props):
                 if isinstance(prop, str) and prop.strip():
                     out.add(prop.strip().upper())
     # Safe fallback for legacy environments with partial metadata.

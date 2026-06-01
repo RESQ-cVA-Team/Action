@@ -7,16 +7,20 @@
 !README.md
 !LICENSE
 
+# Include root files and directories
+!VERSION
+
 # Include entire src tree (recursively) so that nested YAML (shared/SSOT/*.yml) are not dropped
 !src/
 !src/**
+!rasa_sdk_plugins/
+!rasa_sdk_plugins/**
 
 # Still ignore Python cache and editor artifacts (must come AFTER the re-include so they win)
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-.mypy_cache/
 .pytest_cache/
 .DS_Store
 .venv/

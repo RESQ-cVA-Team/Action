@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import re
@@ -9,100 +10,45 @@ from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, Callable, Dict, List, Literal, Optional, Type, TypedDict, Union, cast, overload
 
-from langchain.prompts import ChatPromptTemplate
-from pydantic import ValidationError
+from langchain_core.prompts import ChatPromptTemplate
 
-from src.domain.graphql.ssot_enums import MetricType
-from src.domain.langchain.schema import AnalysisPlan, ChartSpec, ChartType, MetricSpec
+from src.domain.langchain.schema import AnalysisPlan
 from src.planners.langchain.examples import get_few_shot_examples
 from src.planners.langchain.llm_factory import create_chat_llm, get_llm_provider
 from src.util import env
+from src.util.logging_utils import bind_current_context, log_context
 
 logger = logging.getLogger(__name__)
-# Privacy/safety defaults:
-# - Do not log prompts or chain-of-thought by default.
-# - Allow opting in for debugging via env flags.
-_LOG_PROMPTS = env.env_flag("PLANNER_LOG_PROMPTS", default=False)
-_LOG_REASONING = env.env_flag("PLANNER_LOG_REASONING", default=False)
-_ENABLE_COT = env.env_flag("PLANNER_ENABLE_COT", default=True)
-_ENABLE_DYNAMIC_FEW_SHOTS = env.env_flag("PLANNER_DYNAMIC_FEW_SHOTS", default=True)
-_ENABLE_PLAN_CACHE = env.env_flag("PLANNER_ENABLE_PLAN_CACHE", default=True)
-_ENABLE_TIMEOUT_FALLBACK = env.env_flag("PLANNER_ENABLE_TIMEOUT_FALLBACK", default=True)
-_ENABLE_WEIGHTED_FEW_SHOT_RANKING = env.env_flag("PLANNER_ENABLE_WEIGHTED_FEW_SHOT_RANKING", default=True)
-_STRICT_MODE = env.env_flag("ANALYTICS_STRICT_MODE", default=False) or env.env_flag("PLANNER_STRICT_MODE", default=False)
+_ENABLE_DYNAMIC_FEW_SHOTS = True
+_ENABLE_PLAN_CACHE = True
 
-
-def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
-    raw = env.get_env(name, default=str(default)) or str(default)
-    try:
-        return max(minimum, float(raw))
-    except Exception:
-        return default
-
-
-def _env_csv_tokens(name: str, default: str) -> List[str]:
-    raw = env.get_env(name, default=default) or default
-    parts = [part.strip().lower() for part in raw.split(",")]
-    return [part for part in parts if part]
-
-
-_FEWSHOT_TOKEN_WEIGHT = _env_float("PLANNER_FEWSHOT_TOKEN_WEIGHT", default=1.0)
-_FEWSHOT_ENTITY_KEY_WEIGHT = _env_float("PLANNER_FEWSHOT_ENTITY_KEY_WEIGHT", default=6.0)
-_FEWSHOT_ENTITY_VALUE_WEIGHT = _env_float("PLANNER_FEWSHOT_ENTITY_VALUE_WEIGHT", default=10.0)
-_FEWSHOT_INTENT_WEIGHT = _env_float("PLANNER_FEWSHOT_INTENT_WEIGHT", default=8.0)
+_FEWSHOT_TOKEN_WEIGHT = 1.0
+_FEWSHOT_ENTITY_KEY_WEIGHT = 6.0
+_FEWSHOT_ENTITY_VALUE_WEIGHT = 10.0
+_FEWSHOT_INTENT_WEIGHT = 8.0
 
 _INTENT_KEYWORDS: Dict[str, List[str]] = {
-    "chart_line": _env_csv_tokens("PLANNER_INTENT_LINE_KEYWORDS", "line,trend"),
-    "chart_bar": _env_csv_tokens("PLANNER_INTENT_BAR_KEYWORDS", "bar,column"),
-    "chart_area": _env_csv_tokens("PLANNER_INTENT_AREA_KEYWORDS", "area"),
-    "distribution": _env_csv_tokens("PLANNER_INTENT_DISTRIBUTION_KEYWORDS", "distribution,histogram,violin,box"),
-    "time": _env_csv_tokens("PLANNER_INTENT_TIME_KEYWORDS", "over time,last ,monthly,weekly,yearly,time series"),
-    "group_by": _env_csv_tokens("PLANNER_INTENT_GROUPBY_KEYWORDS", " by ,grouped by,split by"),
-    "stat_test": _env_csv_tokens("PLANNER_INTENT_TEST_KEYWORDS", "test,anova,t-test,chi,wilcoxon,mann-whitney"),
+    "chart_line": ["line", "trend"],
+    "chart_bar": ["bar", "column"],
+    "chart_area": ["area"],
+    "distribution": ["distribution", "histogram", "violin", "box"],
+    "time": ["over time", "last ", "monthly", "weekly", "yearly", "time series"],
+    "group_by": [" by ", "grouped by", "split by"],
+    "stat_test": ["compare", "mann-whitney", "statistical test", "significant", "difference between"],
 }
 
-_SUPPORTED_STAT_TESTS_RAW = env.get_env("EXECUTOR_SUPPORTED_STAT_TESTS", default="MANN_WHITNEY_U_TEST") or "MANN_WHITNEY_U_TEST"
-_SUPPORTED_STAT_TESTS = [token.strip().upper() for token in _SUPPORTED_STAT_TESTS_RAW.split(",") if token.strip()]
+_SUPPORTED_STAT_TESTS = ["MANN_WHITNEY_U_TEST"]
 
-_planner_timeout_raw = env.get_env("PLANNER_REQUEST_TIMEOUT_SECONDS", default="30") or "30"
-_planner_timeout_seconds = 30.0
-try:
-    _planner_timeout_seconds = max(1.0, float(_planner_timeout_raw))
-except Exception:
-    _planner_timeout_seconds = 30.0
-_PLANNER_REQUEST_TIMEOUT_SECONDS = _planner_timeout_seconds
-
-_few_shot_limit_raw = env.get_env("PLANNER_MAX_FEW_SHOTS", default="2") or "2"
-_max_few_shots_value = 2
-try:
-    _max_few_shots_value = max(1, int(_few_shot_limit_raw))
-except Exception:
-    _max_few_shots_value = 2
-_MAX_FEW_SHOTS = _max_few_shots_value
-
-_plan_cache_size_raw = env.get_env("PLANNER_CACHE_SIZE", default="256") or "256"
-_plan_cache_size_value = 256
-try:
-    _plan_cache_size_value = max(1, int(_plan_cache_size_raw))
-except Exception:
-    _plan_cache_size_value = 256
-_PLAN_CACHE_SIZE = _plan_cache_size_value
-
-_plan_cache_ttl_raw = env.get_env("PLANNER_CACHE_TTL_SECONDS", default="900") or "900"
-_plan_cache_ttl_value = 900.0
-try:
-    _plan_cache_ttl_value = max(1.0, float(_plan_cache_ttl_raw))
-except Exception:
-    _plan_cache_ttl_value = 900.0
-_PLAN_CACHE_TTL_SECONDS = _plan_cache_ttl_value
-_PLAN_CACHE_KEY_VERSION = (env.get_env("PLANNER_CACHE_KEY_VERSION", default="v2") or "v2").strip()
-_TIMEOUT_FALLBACK_METRIC = (env.get_env("PLANNER_TIMEOUT_FALLBACK_METRIC", default="DTN") or "DTN").strip().upper()
-_TIMEOUT_FALLBACK_CHART_TYPE = (env.get_env("PLANNER_TIMEOUT_FALLBACK_CHART_TYPE", default="LINE") or "LINE").strip().upper()
+_PLANNER_REQUEST_TIMEOUT_SECONDS = 30.0
+_MAX_FEW_SHOTS = 2
+_PLAN_CACHE_SIZE = 256
+_PLAN_CACHE_TTL_SECONDS = 900.0
+_PLAN_CACHE_KEY_VERSION = "v2"
 
 LLM_PROVIDER = get_llm_provider()
-llm: Any = create_chat_llm(temperature=0)
-logger.info("[Planner] Initialized LLM provider=%s", LLM_PROVIDER)
 _LLM_MODEL = (env.get_env("LLM_MODEL", default="") or "").strip()
+llm: Any = create_chat_llm(temperature=0)
+logger.debug("[Planner] Initialized LLM provider=%s model=%s", LLM_PROVIDER, _LLM_MODEL or "-")
 
 
 class PlannerTimeoutError(TimeoutError):
@@ -150,6 +96,32 @@ def _extract_json_block(text: str) -> str:
     return candidate[start : end + 1]
 
 
+def _assert_no_empty_groupby_entries(payload: Dict[str, Any]) -> None:
+    """Reject ambiguous planner output instead of auto-correcting it.
+
+    Empty dict items in group_by (e.g., group_by=[{}]) can be coerced by the
+    schema Union into unintended groupings. We fail fast so retry feedback forces
+    the model to return an explicit valid group_by spec or null.
+    """
+    charts_any = payload.get("charts")
+    if not isinstance(charts_any, list):
+        return
+    chart_entries = cast(List[Any], charts_any)
+
+    for chart_idx, chart_any in enumerate(chart_entries):
+        if not isinstance(chart_any, dict):
+            continue
+        chart = cast(Dict[str, Any], chart_any)
+        group_by_any = chart.get("group_by")
+        if not isinstance(group_by_any, list):
+            continue
+        group_by_entries = cast(List[Any], group_by_any)
+
+        for gb_idx, item in enumerate(group_by_entries):
+            if isinstance(item, dict) and not item:
+                raise ValueError(f"Invalid AnalysisPlan: charts[{chart_idx}].group_by[{gb_idx}] is an empty object. Use an explicit GroupBy spec or set group_by to null.")
+
+
 def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
     import json
 
@@ -157,6 +129,7 @@ def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
         return response
 
     if isinstance(response, dict):
+        _assert_no_empty_groupby_entries(cast(Dict[str, Any], response))
         return AnalysisPlan.model_validate(response)
 
     text = _extract_text(response)
@@ -164,6 +137,7 @@ def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
     parsed = json.loads(json_block)
     if not isinstance(parsed, dict):
         raise ValueError("Model output JSON must be an object")
+    _assert_no_empty_groupby_entries(cast(Dict[str, Any], parsed))
     return AnalysisPlan.model_validate(parsed)
 
 
@@ -192,15 +166,6 @@ def get_schema_description(model: Type[Any]) -> str:
 
 
 SCHEMA_DESCRIPTION: str = get_schema_description(AnalysisPlan)
-cot_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ignore
-    [
-        (
-            "system",
-            "You are a clinical analytics planner. User interface language: {language}. Think step by step about how to answer the user's query, considering all entities. Explain your reasoning in detail in English (for internal clarity) even if the user language is different. Do not output the plan yet.",
-        ),
-        ("user", "USER_UTTERANCE:\n{question}\n\nENTITIES_DETECTED(JSON):\n{entities}"),
-    ]
-)
 
 few_shot_examples = get_few_shot_examples()
 _PLAN_CACHE: "OrderedDict[str, tuple[AnalysisPlan, float]]" = OrderedDict()
@@ -214,7 +179,7 @@ _LAST_CACHE_EVENT: ContextVar[Optional[bool]] = ContextVar("planner_last_cache_e
 
 def _invoke_with_timeout(chain: Any, inputs: Dict[str, Any], label: str) -> Any:
     with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(chain.invoke, inputs)
+        future = executor.submit(bind_current_context(chain.invoke), inputs)
         try:
             return future.result(timeout=_PLANNER_REQUEST_TIMEOUT_SECONDS)
         except FuturesTimeoutError as exc:
@@ -222,75 +187,8 @@ def _invoke_with_timeout(chain: Any, inputs: Dict[str, Any], label: str) -> Any:
             raise PlannerTimeoutError(f"{label} timed out after {_PLANNER_REQUEST_TIMEOUT_SECONDS:.1f}s") from exc
 
 
-def _enum_allowed_values(enum_cls: Any) -> set[str]:
-    try:
-        return {m.value for m in enum_cls}  # type: ignore[attr-defined]
-    except Exception:
-        try:
-            return {str(m.value) if hasattr(m, "value") else str(m) for m in list(enum_cls)}  # type: ignore[arg-type]
-        except Exception:
-            return set()
-
-
-def _iter_entity_values(value: Any) -> List[str]:
-    if isinstance(value, str) and value.strip():
-        return [value.strip()]
-    if isinstance(value, list):
-        out: List[str] = []
-        for item in cast(List[Any], value):
-            if isinstance(item, str) and item.strip():
-                out.append(item.strip())
-        return out
-    return []
-
-
 def _plan_for_cache(plan: AnalysisPlan) -> AnalysisPlan:
     return plan.model_copy(deep=True)
-
-
-def _build_timeout_fallback_plan(question: str, entities: Dict[str, Any], language: str) -> Optional[AnalysisPlan]:
-    metric_allowed = {v.upper() for v in _enum_allowed_values(MetricType)}
-    chart_allowed = {v.upper() for v in ChartType}
-
-    metric_candidates: List[str] = []
-    for key in ["metric", "metric_code", "metric_type", "kpi"]:
-        metric_candidates.extend(_iter_entity_values(entities.get(key)))
-
-    chosen_metric: Optional[str] = None
-    for candidate in metric_candidates:
-        up = candidate.upper()
-        if up in metric_allowed:
-            chosen_metric = up
-            break
-
-    if chosen_metric is None and _TIMEOUT_FALLBACK_METRIC in metric_allowed:
-        chosen_metric = _TIMEOUT_FALLBACK_METRIC
-    if chosen_metric is None and "DTN" in metric_allowed:
-        chosen_metric = "DTN"
-    if chosen_metric is None:
-        return None
-
-    chart_candidates: List[str] = []
-    for key in ["chart_type", "chart"]:
-        chart_candidates.extend(_iter_entity_values(entities.get(key)))
-
-    chosen_chart = _TIMEOUT_FALLBACK_CHART_TYPE if _TIMEOUT_FALLBACK_CHART_TYPE in chart_allowed else ("LINE" if "LINE" in chart_allowed else (sorted(chart_allowed)[0] if chart_allowed else "LINE"))
-    for candidate in chart_candidates:
-        up = candidate.upper()
-        if up in chart_allowed:
-            chosen_chart = up
-            break
-
-    plan = AnalysisPlan(
-        charts=[
-            ChartSpec(
-                chart_type=chosen_chart,
-                metrics=[MetricSpec(metric=chosen_metric)],
-            )
-        ],
-        statistical_tests=None,
-    )
-    return plan
 
 
 def _cache_key(question: str, entities: Dict[str, Any], language: str) -> str:
@@ -303,7 +201,6 @@ def _cache_key(question: str, entities: Dict[str, Any], language: str) -> str:
         "provider": LLM_PROVIDER,
         "model": _LLM_MODEL,
         "version": _PLAN_CACHE_KEY_VERSION,
-        "weighted_rank": _ENABLE_WEIGHTED_FEW_SHOT_RANKING,
         "token_w": _FEWSHOT_TOKEN_WEIGHT,
         "entity_key_w": _FEWSHOT_ENTITY_KEY_WEIGHT,
         "entity_value_w": _FEWSHOT_ENTITY_VALUE_WEIGHT,
@@ -311,12 +208,6 @@ def _cache_key(question: str, entities: Dict[str, Any], language: str) -> str:
         "intent_keywords": _INTENT_KEYWORDS,
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def _validation_error_text(exc: Exception) -> str:
-    if isinstance(exc, ValidationError):
-        return exc.json()
-    return str(exc)
 
 
 def _cache_get(key: str) -> Optional[AnalysisPlan]:
@@ -418,18 +309,45 @@ def _extract_example_entities(example: Dict[str, str]) -> Dict[str, Any]:
     if not payload:
         return {}
 
+    example_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
     try:
         parsed = json.loads(payload)
         if isinstance(parsed, dict):
             return cast(Dict[str, Any], parsed)
-    except Exception:
-        pass
+    except json.JSONDecodeError:
+        logger.debug(
+            "[Planner] Few-shot example entity JSON parse failed; trying fallback parser",
+            extra={
+                "log_context": {
+                    "event": "planner.example_entities.parse_fallback",
+                    "operation": "extract_example_entities",
+                    "outcome": "degraded",
+                    "error_kind": "json_decode_error",
+                    "example_hash": example_hash,
+                }
+            },
+            exc_info=True,
+        )
 
     try:
         parsed_fallback = json.loads(_extract_json_block(payload))
         if isinstance(parsed_fallback, dict):
             return cast(Dict[str, Any], parsed_fallback)
-    except Exception:
+    except (json.JSONDecodeError, ValueError):
+        logger.debug(
+            "[Planner] Few-shot example entity fallback parse failed; skipping entity extraction",
+            extra={
+                "log_context": {
+                    "event": "planner.example_entities.parse_skipped",
+                    "operation": "extract_example_entities",
+                    "outcome": "degraded",
+                    "error_kind": "fallback_parse_failed",
+                    "example_hash": example_hash,
+                }
+            },
+            exc_info=True,
+        )
         return {}
 
     return {}
@@ -451,9 +369,6 @@ def _match_score(question: str, entities: Dict[str, Any], example: Dict[str, str
     query_tokens = _tokenize(query_text)
     ex_text = example.get("user", "")
     ex_tokens = _tokenize(ex_text)
-
-    if not _ENABLE_WEIGHTED_FEW_SHOT_RANKING:
-        return float(len(query_tokens & ex_tokens))
 
     token_overlap_score = float(len(query_tokens & ex_tokens)) * _FEWSHOT_TOKEN_WEIGHT
 
@@ -508,7 +423,6 @@ def _build_few_shots_text(examples: List[Dict[str, str]]) -> str:
     return "\n".join(parts)
 
 
-FEW_SHOTS_TEXT = _build_few_shots_text(few_shot_examples)
 plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ignore
     [
         (
@@ -521,6 +435,8 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
             "Put human references in originScope.value and ISO country in originScope.countryCode when available. "
             "Only use dataOrigin when explicit numeric provider/group IDs are directly provided by the user. "
             "When comparing multiple scopes in one chart, use separate metric entries with metric-level originScope/dataOrigin. "
+            "Never emit empty objects in group_by. If no grouping is intended, set group_by to null or omit it. "
+            "Sex semantics guidance: phrases like 'males only' or 'females only' should usually be chart filters (SexFilter), while 'split/group by sex' should use GroupBySex. "
             "Prefer LINE/BAR for trends or comparisons; BOX/VIOLIN/HISTOGRAM for distributions. "
             "Chart intent guidance: If user asks for one graph/one chart/single visual with multiple splits, prefer one chart with multiple group_by dimensions. If user asks for separate charts/multiple visuals, produce multiple chart specs. "
             "Statistical test guidance: Only use test types listed in SUPPORTED_STAT_TESTS_JSON; otherwise omit statistical_tests and return charts.",
@@ -533,7 +449,6 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
     ]
 )
 
-cot_chain: Any = cot_prompt | llm
 plan_chain: Any = plan_prompt | llm
 
 
@@ -595,8 +510,7 @@ def generate_analysis_plan(
     progress_cb: Optional[ProgressCallback] = None,
 ) -> Union[AnalysisPlan, GeneratePlanDebug]:
     """
-    Generate a validated AnalysisPlan from user input, with chain-of-thought reasoning and automatic
-    correction/retry on validation failure.
+    Generate a validated AnalysisPlan from user input, retrying with validation feedback on failure.
 
     Returns:
     - AnalysisPlan when debug is False (default).
@@ -612,272 +526,101 @@ def generate_analysis_plan(
     if not language:
         language = "auto"
 
-    _record_cache_event(None)
+    with log_context(trace_id=trace_id or "", planner_language=language):
+        _record_cache_event(None)
 
-    cache_key: Optional[str] = None
-    if _ENABLE_PLAN_CACHE and not debug:
-        cache_key = _cache_key(question=question, entities=entities, language=language)
-        cached_plan = _cache_get(cache_key)
-        if cached_plan is not None:
-            _record_cache_event(True)
-            if progress_cb is not None:
-                progress_cb("Using cached plan.")
-            if _LOG_PROMPTS:
-                logger.debug("[Planner] plan cache hit")
-            return cached_plan
-        _record_cache_event(False)
+        cache_key: Optional[str] = None
+        if _ENABLE_PLAN_CACHE and not debug:
+            cache_key = _cache_key(question=question, entities=entities, language=language)
+            cached_plan = _cache_get(cache_key)
+            if cached_plan is not None:
+                _record_cache_event(True)
+                logger.debug("[Planner] Returning cached analysis plan")
+                if progress_cb is not None:
+                    progress_cb("Using cached plan.")
+                return cached_plan
+            _record_cache_event(False)
 
-    # High-level notification that planning has started.
-    if progress_cb is not None:
-        progress_cb("Thinking about a plan.")
-
-    selected_examples = few_shot_examples
-    if _ENABLE_DYNAMIC_FEW_SHOTS:
-        selected_examples = _select_few_shot_examples(
-            question=question,
-            entities=entities,
-            max_items=_MAX_FEW_SHOTS,
-        )
-    if _LOG_PROMPTS:
-        selected_examples_preview = [ex.get("user", "") for ex in selected_examples]
-        logger.debug(
-            "[Planner] Selected %s few-shot example(s): %s",
-            len(selected_examples),
-            selected_examples_preview,
-        )
-    few_shots_text = _build_few_shots_text(selected_examples)
-
-    input_dict: Dict[str, Any] = {
-        "question": question,
-        "entities": json.dumps(entities),
-        "few_shots": few_shots_text,
-        "language": language,
-        "supported_stat_tests": json.dumps(_SUPPORTED_STAT_TESTS),
-    }
-    if _LOG_PROMPTS:
-        logger.debug("[Planner] input_dict: %s", input_dict)
-    logger.info("[Planner] generate_analysis_plan invoked (language=%s)", language)
-
-    steps: List[Any] = []
-    attempts: List[Any] = []
-
-    # Optional chain-of-thought step (kept out of logs by default).
-    # Optimization: defer COT until needed (e.g. after a validation failure),
-    # instead of paying the extra LLM call on every successful first attempt.
-    reasoning: Any = ""
-    cot_inputs: Dict[str, Any] = {
-        "question": question,
-        "entities": json.dumps(entities),
-        "language": language,
-    }
-
-    def _maybe_generate_reasoning() -> bool:
-        nonlocal reasoning
-        if not _ENABLE_COT or reasoning:
-            return bool(reasoning)
-        try:
-            cot_prompt_rendered: str = cot_prompt.format_prompt(**cot_inputs).to_string()
-            if _LOG_PROMPTS:
-                logger.debug("[Planner] cot_prompt_rendered: %s", cot_prompt_rendered)
-            cot_response: Any = _invoke_with_timeout(cot_chain, cot_inputs, label="cot_chain")
-            reasoning_text: str = _extract_text(cot_response)
-            if _LOG_REASONING:
-                logger.debug("[Planner] cot_response(content): %s", reasoning_text)
-            steps.append(
-                {
-                    "step": "chain_of_thought",
-                    "prompt": cot_prompt_rendered if _LOG_PROMPTS else "(prompt logging disabled)",
-                    "response": reasoning_text if _LOG_REASONING else "(reasoning logging disabled)",
-                }
-            )
-            reasoning = reasoning_text
-            return True
-        except Exception as cot_exc:
-            logger.warning("[Planner] COT step failed; continuing without it: %s", cot_exc)
-            steps.append(
-                {
-                    "step": "chain_of_thought",
-                    "prompt": "(prompt logging disabled)",
-                    "response": f"ERROR: {cot_exc}",
-                }
-            )
-            reasoning = ""
-            return False
-
-    plan_inputs: Dict[str, Any] = {
-        "question": question,
-        "entities": json.dumps(entities),
-        "reasoning": reasoning,
-        "few_shots": few_shots_text,
-        "language": language,
-        "supported_stat_tests": json.dumps(_SUPPORTED_STAT_TESTS),
-    }
-
-    plan_prompt_rendered: str = ""
-    if _LOG_PROMPTS:
-        try:
-            plan_prompt_rendered = plan_prompt.format_prompt(**plan_inputs).to_string()
-            logger.debug("[Planner] plan_prompt_rendered: %s", plan_prompt_rendered)
-        except Exception:
-            plan_prompt_rendered = "(failed to render prompt for logging)"
-    for attempt in range(max_retries + 1):
+        # High-level notification that planning has started.
         if progress_cb is not None:
-            dots = "." * (attempt + 1)
-            progress_cb(f"Thinking about a plan.{dots}")
-        try:
-            # Invoke only the plan chain here. (We already ran the optional COT step above.)
-            if _LOG_PROMPTS:
-                logger.debug("[Planner] Attempt %s: invoking plan_chain", attempt + 1)
-            raw_result: Any = _invoke_with_timeout(plan_chain, plan_inputs, label="plan_chain")
-            if _LOG_PROMPTS:
-                logger.debug("[Planner] Attempt %s: result: %s", attempt + 1, raw_result)
+            progress_cb("Thinking about a plan.")
+
+        selected_examples = few_shot_examples
+        if _ENABLE_DYNAMIC_FEW_SHOTS:
+            selected_examples = _select_few_shot_examples(
+                question=question,
+                entities=entities,
+                max_items=_MAX_FEW_SHOTS,
+            )
+        few_shots_text = _build_few_shots_text(selected_examples)
+
+        logger.debug(
+            "[Planner] generate_analysis_plan invoked",
+            extra={"log_context": {"question_length": len(question or ""), "entity_count": len(entities or {})}},
+        )
+
+        steps: List[Any] = []
+        attempts: List[Any] = []
+
+        plan_inputs: Dict[str, Any] = {
+            "question": question,
+            "entities": json.dumps(entities),
+            "reasoning": "",
+            "few_shots": few_shots_text,
+            "language": language,
+            "supported_stat_tests": json.dumps(_SUPPORTED_STAT_TESTS),
+        }
+
+        retries = max(0, max_retries)
+        total_attempts = retries + 1
+        result: Optional[AnalysisPlan] = None
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, total_attempts + 1):
+            if progress_cb is not None:
+                progress_cb(f"Thinking about a plan (attempt {attempt}/{total_attempts}).")
+
+            raw_result: Any = _invoke_with_timeout(plan_chain, plan_inputs, label=f"plan_chain_attempt_{attempt}")
             steps.append(
                 {
-                    "step": f"plan_attempt_{attempt + 1}",
-                    "prompt": plan_prompt_rendered if _LOG_PROMPTS else "(prompt logging disabled)",
+                    "step": f"plan_attempt_{attempt}",
+                    "prompt": "(prompt logging disabled)",
                     "response": raw_result,
                 }
             )
-            result: AnalysisPlan = _coerce_analysis_plan(raw_result)
 
-            if debug:
-                debug_payload: GeneratePlanDebug = {
-                    "reasoning": reasoning,
-                    "steps": steps,
-                    "attempts": attempts,
-                    "final_output": result,
-                }
-                if progress_cb is not None:
-                    progress_cb("Finished thinking about a plan.")
-                return debug_payload
-            if cache_key is not None:
-                _cache_put(cache_key, result)
-            if progress_cb is not None:
-                progress_cb("Finished thinking about a plan.")
-            return result
-        except PlannerTimeoutError as te:
-            logger.warning("[Planner] Timeout on attempt %s: %s", attempt + 1, te)
-            attempts.append(
-                {
-                    "error": str(te),
-                    "input": input_dict if _LOG_PROMPTS else "(input logging disabled)",
-                    "output": "planner_timeout",
-                }
-            )
-
-            if not debug and _ENABLE_TIMEOUT_FALLBACK and not _STRICT_MODE:
-                fallback = _build_timeout_fallback_plan(
-                    question=question,
-                    entities=entities,
-                    language=language,
-                )
-                if fallback is not None:
-                    if progress_cb is not None:
-                        progress_cb("Planner timed out; using deterministic fallback plan.")
-                    return fallback
-
-            if attempt == max_retries:
-                if debug:
-                    return {
-                        "reasoning": reasoning,
-                        "steps": steps,
-                        "attempts": attempts,
-                        "final_output": None,
-                    }
-                raise
-
-            continue
-        except (ValidationError, ValueError, TypeError) as ve:
-            logger.warning("[Planner] Plan parsing/validation error on attempt %s: %s", attempt + 1, ve)
-            attempts.append(
-                {
-                    "error": str(ve),
-                    "input": input_dict if _LOG_PROMPTS else "(input logging disabled)",
-                    "output": _validation_error_text(ve),
-                }
-            )
-            if attempt == max_retries:
-                if debug:
-                    return {
-                        "reasoning": reasoning,
-                        "steps": steps,
-                        "attempts": attempts,
-                        "final_output": None,
-                    }
-                raise
-
-            if _ENABLE_COT and not reasoning:
-                generated = _maybe_generate_reasoning()
-                if generated:
-                    plan_inputs["reasoning"] = reasoning
-                    logger.info("[Planner] Retrying with deferred COT reasoning after initial validation failure")
-                    continue
-
-            invalid_output: str = _validation_error_text(ve)
-            # Avoid inlining raw JSON with `{}` into template text.
-            critique_prompt_obj: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ignore
-                [
-                    (
-                        "system",
-                        "The following output did not pass validation. Critique the output, explain what is wrong, and then return a corrected valid AnalysisPlan JSON. Only fix the error described.",
-                    ),
-                    (
-                        "user",
-                        "Original user input: {user_input}\n\nInvalid output: {invalid_output}\n\nValidation error: {validation_error}",
-                    ),
-                ]
-            )
-
-            critique_inputs: Dict[str, Any] = {
-                "user_input": json.dumps(input_dict, ensure_ascii=False),
-                "invalid_output": invalid_output,
-                "validation_error": str(ve),
-            }
-            critique_prompt_rendered: str = ""
-            if _LOG_PROMPTS:
-                try:
-                    critique_prompt_rendered = critique_prompt_obj.format_prompt(**critique_inputs).to_string()
-                    logger.debug("[Planner] critique_prompt_rendered: %s", critique_prompt_rendered)
-                except Exception:
-                    critique_prompt_rendered = "(failed to render critique prompt for logging)"
-
-            critique_chain: Any = critique_prompt_obj | llm
             try:
-                critique_raw_response: Any = _invoke_with_timeout(critique_chain, critique_inputs, label="critique_chain")
-                critique_response: AnalysisPlan = _coerce_analysis_plan(critique_raw_response)
-            except Exception as critique_exc:
-                logger.warning("[Planner] Correction step failed on attempt %s: %s", attempt + 1, critique_exc)
-                steps.append(
+                result = _coerce_analysis_plan(raw_result)
+                break
+            except Exception as exc:
+                last_error = exc
+                attempts.append(
                     {
-                        "step": f"correction_attempt_{attempt + 1}",
-                        "prompt": critique_prompt_rendered if _LOG_PROMPTS else "(prompt logging disabled)",
-                        "response": f"ERROR: {critique_exc}",
+                        "attempt": attempt,
+                        "ok": False,
+                        "error": str(exc),
                     }
                 )
-                continue
+                if attempt >= total_attempts:
+                    break
+                plan_inputs["reasoning"] = f"Previous output failed schema validation. Return ONLY a valid AnalysisPlan JSON object. Validation error: {exc}"
 
-            # Treat the critique response as the corrected result immediately.
-            steps.append(
-                {
-                    "step": f"correction_attempt_{attempt + 1}",
-                    "prompt": critique_prompt_rendered if _LOG_PROMPTS else "(prompt logging disabled)",
-                    "response": critique_raw_response,
-                }
-            )
-            if debug:
-                debug_payload: GeneratePlanDebug = {
-                    "reasoning": reasoning,
-                    "steps": steps,
-                    "attempts": attempts,
-                    "final_output": critique_response,
-                }
-                if progress_cb is not None:
-                    progress_cb("Finished thinking about a plan.")
-                return debug_payload
-            if cache_key is not None:
-                _cache_put(cache_key, critique_response)
+        if result is None:
+            raise ValueError(f"Planner failed to produce a valid AnalysisPlan after {total_attempts} attempts") from last_error
+
+        if debug:
+            debug_payload: GeneratePlanDebug = {
+                "reasoning": "",
+                "steps": steps,
+                "attempts": attempts,
+                "final_output": result,
+            }
             if progress_cb is not None:
                 progress_cb("Finished thinking about a plan.")
-            return critique_response
-    # Should never reach here; all paths either return or raise inside the loop
-    raise RuntimeError("generate_analysis_plan failed to produce a result")
+            return debug_payload
+
+        if cache_key is not None:
+            _cache_put(cache_key, result)
+        if progress_cb is not None:
+            progress_cb("Finished thinking about a plan.")
+        return result

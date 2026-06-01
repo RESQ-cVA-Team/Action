@@ -4,6 +4,18 @@ from typing import List, Optional
 from src.domain.langchain import schema as S
 
 
+def _metric_list() -> List["SemanticMetric"]:
+    return []
+
+
+def _group_by_list() -> List[S.GroupBySpec]:
+    return []
+
+
+def _chart_list() -> List["SemanticChart"]:
+    return []
+
+
 @dataclass
 class SemanticMetric:
     metric: str
@@ -15,12 +27,12 @@ class SemanticMetric:
 @dataclass
 class SemanticChart:
     chart_type: str
-    metrics: List[SemanticMetric] = field(default_factory=list)
+    metrics: List[SemanticMetric] = field(default_factory=_metric_list)
     filters: Optional[S.FilterNode] = None
-    group_by: List[S.GroupBySpec] = field(default_factory=list)
+    group_by: List[S.GroupBySpec] = field(default_factory=_group_by_list)
 
 
 @dataclass
 class SemanticPlan:
-    charts: List[SemanticChart] = field(default_factory=list)
+    charts: List[SemanticChart] = field(default_factory=_chart_list)
     statistical_tests: Optional[List[S.StatisticalTestSpec]] = None

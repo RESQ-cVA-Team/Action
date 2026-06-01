@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, cast
 
 from src.shared.ssot_loader import get_metric_text_lookup, get_ssot_items, normalize_metric_text_key
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_text(value: str) -> str:
@@ -14,6 +17,18 @@ def _load_ssot_items(filename: str) -> List[Dict[str, Any]]:
     try:
         raw = get_ssot_items(filename)
     except Exception:
+        logger.debug(
+            "Failed to load SSOT items; returning empty candidate set",
+            exc_info=True,
+            extra={
+                "log_context": {
+                    "event": "actions.ssot_lookup.items_load_failed",
+                    "operation": "_load_ssot_items",
+                    "outcome": "degraded",
+                    "filename": filename,
+                }
+            },
+        )
         return []
     return raw
 

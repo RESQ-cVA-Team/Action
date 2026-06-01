@@ -1,14 +1,31 @@
-FROM rasa/rasa-sdk:3.6.2
+FROM rasa/rasa-sdk:3.6.2@sha256:9ebc0abc5b36d9420343a197bdfd9c478155ca86871dc08f8e823c76f484c948
 
 USER root
 
-COPY requirements.txt .
+COPY requirements.txt VERSION .
 
 RUN pip install --no-cache-dir -r requirements.txt
 
 WORKDIR /app
 
+ARG ACTION_VERSION=""
+ARG ACTION_COMMIT_SHA=""
+ARG ACTION_IMAGE_TAG=""
+ARG ACTION_BUILD_DATE=""
+ARG ACTION_SSOT_VERSION=""
+
+ENV ACTION_VERSION=${ACTION_VERSION}
+ENV ACTION_COMMIT_SHA=${ACTION_COMMIT_SHA}
+ENV ACTION_IMAGE_TAG=${ACTION_IMAGE_TAG}
+ENV ACTION_BUILD_DATE=${ACTION_BUILD_DATE}
+ENV ACTION_SSOT_VERSION=${ACTION_SSOT_VERSION}
+
+LABEL org.opencontainers.image.version=${ACTION_VERSION}
+LABEL org.opencontainers.image.revision=${ACTION_COMMIT_SHA}
+LABEL org.opencontainers.image.created=${ACTION_BUILD_DATE}
+
 COPY src/ ./src
+COPY rasa_sdk_plugins/ ./rasa_sdk_plugins
 
 # --- Build-time assertion: ensure SSOT YAML files are present ---
 # If this fails, you likely forgot:

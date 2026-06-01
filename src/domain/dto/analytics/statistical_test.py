@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel
 
@@ -6,14 +6,14 @@ from pydantic import BaseModel
 class StatisticalTestResult(BaseModel):
     """Generic statistical test result.
 
-    This structure is intentionally generic so it can be used across multiple tests.
-    Specific executors can extend or add fields via the 'details' mapping.
+    Covers any statistical test executed by the analytics service.
+    MW-specific fields (cohort sizes, medians, u-statistic) live in 'details'.
     """
 
     test_type: str
+    status: Literal["success", "skipped", "error"] = "success"
+    reason: Optional[str] = None  # Human-readable explanation for skipped/error status
     p_value: Optional[float] = None
-    effect_size: Optional[float] = None
-    significance_level: Optional[float] = None
     passed: Optional[bool] = None
-    details: Optional[Dict[str, Any]] = None  # Arbitrary per-test payload (e.g., coefficients, tables)
     title: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None  # Per-test structured payload

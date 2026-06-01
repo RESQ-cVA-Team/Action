@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Sequence
 
 from src.domain.graphql.request import (
     DataOrigin,
@@ -70,6 +70,7 @@ class RequestSpec:
     include_metric_alias: bool
     group_by_field: Optional[str]
     add_time_period_labels: bool
+    scope_label: Optional[str] = None
 
 
 def _collect_date_bounds(filter_obj: Optional[Any]) -> tuple[Optional[str], Optional[str]]:
@@ -124,7 +125,7 @@ def _build_case_filter(chart_filter: Optional[Any], filter_dims: List[Dimension]
 
 def build_primary_request_specs(
     metric_requests: List[MetricRequest],
-    metric_data_origins: Optional[List[Optional[DataOrigin]]],
+    metric_data_origins: Optional[Sequence[Optional[DataOrigin]]],
     chart_filter: Optional[Any],
     filter_dims: List[Dimension],
     combos_list: List[tuple[Any, ...]],
@@ -132,6 +133,7 @@ def build_primary_request_specs(
     batched_time_periods: List[TimePeriod],
     include_metric_alias: bool,
     group_by_field: Optional[str],
+    metric_scope_labels: Optional[Sequence[Optional[str]]] = None,
     data_origin: Optional[DataOrigin] = None,
 ) -> tuple[List[RequestSpec], List[ComboContext]]:
     specs: List[RequestSpec] = []
@@ -151,6 +153,9 @@ def build_primary_request_specs(
         if per_metric_data_origin:
             for idx, metric_request in enumerate(metric_requests):
                 metric_origin = (metric_data_origins[idx] if metric_data_origins and idx < len(metric_data_origins) else None) or data_origin
+                scope_label = metric_scope_labels[idx] if metric_scope_labels and idx < len(metric_scope_labels) else None
+                effective_scope_label = scope_label.strip() if isinstance(scope_label, str) and scope_label.strip() else None
+
                 req = GraphQLQueryRequest(
                     metrics=[metric_request],
                     timePeriod=req_time_period,
@@ -167,6 +172,7 @@ def build_primary_request_specs(
                         include_metric_alias=include_metric_alias,
                         group_by_field=group_by_field,
                         add_time_period_labels=batched_time_enabled,
+                        scope_label=effective_scope_label,
                     )
                 )
                 combo_contexts.append(

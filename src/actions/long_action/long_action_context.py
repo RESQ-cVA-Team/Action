@@ -1,8 +1,20 @@
-from typing import Any, Callable, Dict, List, Optional, cast
+import logging
+from typing import Any, Callable, Dict, List, Optional, Protocol, cast
+
+logger = logging.getLogger(__name__)
+
+
+class DispatcherLike(Protocol):
+    def utter_message(self, text: Optional[str] = None, **kwargs: Any) -> None: ...
 
 
 class LongActionContext:
-    def __init__(self, sender_id: str, tracker_snapshot: Dict[str, Any], dispatcher: Optional[Any] = None):
+    def __init__(
+        self,
+        sender_id: str,
+        tracker_snapshot: Dict[str, Any],
+        dispatcher: Optional[DispatcherLike] = None,
+    ):
         self.sender_id = sender_id
         self.tracker_snapshot = tracker_snapshot
         self.dispatcher = dispatcher
@@ -71,7 +83,9 @@ class LongActionContext:
             return out
         return out[-limit:]
 
-    def user_messages_since_intent(self, intent_name: str, fallback_limit: int = 12) -> List[str]:
+    def user_messages_since_intent(
+        self, intent_name: str, fallback_limit: int = 12
+    ) -> List[str]:
         """Return user messages from the latest occurrence of an intent onward.
 
         This scans tracker events backwards to locate the most recent user event
@@ -93,15 +107,25 @@ class LongActionContext:
                 continue
 
             parse_data_any = ev.get("parse_data")
-            parse_data = cast(Dict[str, Any], parse_data_any) if isinstance(parse_data_any, dict) else {}
+            parse_data = (
+                cast(Dict[str, Any], parse_data_any)
+                if isinstance(parse_data_any, dict)
+                else {}
+            )
 
             intent_any = parse_data.get("intent")
-            intent = cast(Dict[str, Any], intent_any) if isinstance(intent_any, dict) else {}
+            intent = (
+                cast(Dict[str, Any], intent_any) if isinstance(intent_any, dict) else {}
+            )
             name_any = intent.get("name")
 
             if not isinstance(name_any, str) or not name_any.strip():
                 fallback_intent_any = ev.get("intent")
-                fallback_intent = cast(Dict[str, Any], fallback_intent_any) if isinstance(fallback_intent_any, dict) else {}
+                fallback_intent = (
+                    cast(Dict[str, Any], fallback_intent_any)
+                    if isinstance(fallback_intent_any, dict)
+                    else {}
+                )
                 fallback_name_any = fallback_intent.get("name")
                 if isinstance(fallback_name_any, str) and fallback_name_any.strip():
                     name_any = fallback_name_any
@@ -142,7 +166,11 @@ class LongActionContext:
         # Progress helper: ctx.say(progress="...") becomes
         # {"custom": {"progress": "..."}} when there is no explicit
         # custom/json_message override.
-        if "progress" in message and "custom" not in message and "json_message" not in message:
+        if (
+            "progress" in message
+            and "custom" not in message
+            and "json_message" not in message
+        ):
             progress_val = message.pop("progress")
             message = {"custom": {"progress": progress_val}}
 
@@ -161,7 +189,22 @@ class LongActionContext:
             except Exception:
                 # Swallow exceptions here so a failing callback endpoint
                 # doesn't break the long-running job logic.
-                pass
+                logger.debug(
+                    "LongAction progress callback failed; continuing without interrupting work",
+                    exc_info=True,
+                    extra={
+                        "log_context": {
+                            "trace_id": self._trace_id() or "-",
+                            "event": "actions.long_action.progress_callback.failed",
+                            "operation": "LongActionContext.say",
+                            "outcome": "degraded",
+                            "sender_id": self.sender_id,
+                            "callback_mode": self._callback_mode_enabled,
+                            "has_dispatcher": self.dispatcher is not None,
+                        }
+                    },
+                )
+
             return
 
         # Fallback path: if callback mode is enabled but no callback hook is
@@ -213,3 +256,40 @@ class LongActionContext:
     def add_events(self, events: List[Dict[str, Any]]) -> None:
         for event in events:
             self.add_event(event)
+
+    def _trace_id(self) -> Optional[str]:
+        latest_any = self.tracker_snapshot.get("latest_message")
+        latest = (
+            cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
+        )
+        metadata_any = latest.get("metadata")
+        metadata = (
+            cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
+        )
+
+        for key in ("trace_id", "traceId", "x-trace-id", "x_trace_id"):
+            value = metadata.get(key)
+            if value is not None:
+                token = str(value).strip()
+                if token:
+                    return token
+
+        headers_any = metadata.get("headers")
+        headers = (
+            cast(Dict[str, Any], headers_any) if isinstance(headers_any, dict) else {}
+        )
+        for key in ("x-trace-id", "x_trace_id", "trace_id", "traceId"):
+            value = headers.get(key)
+            if value is not None:
+                token = str(value).strip()
+                if token:
+                    return token
+
+        for key in ("_visualization_trace_id", "_trace_id", "trace_id"):
+            value = self.tracker_snapshot.get(key)
+            if value is not None:
+                token = str(value).strip()
+                if token:
+                    return token
+
+        return None
