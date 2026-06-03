@@ -359,7 +359,7 @@ class LongAction(Action, ABC):
         }
         events_any = getattr(tracker, "events", None)
         if isinstance(events_any, list):
-            tracker_snapshot["events"] = list(cast(List[Any], events_any))
+            tracker_snapshot["events"] = [cast(Dict[str, Any], item) for item in cast(List[Any], events_any) if isinstance(item, dict)]
 
         callback_cfg = _get_callback_config(tracker)
 

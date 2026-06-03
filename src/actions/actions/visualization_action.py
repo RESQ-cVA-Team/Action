@@ -31,7 +31,6 @@ _ECHO_INTERNAL_ERRORS = env_util.env_flag("ACTIONS_ECHO_INTERNAL_ERRORS", defaul
 _SHOW_EXECUTION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_EXECUTION_SUMMARY", default=True)
 _DEFER_CALLBACK_HANDOFF = env_util.env_flag("LONG_ACTION_DEFER_CALLBACK_HANDOFF", default=False)
 _SHOW_NORMALIZATION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_NORMALIZATION_SUMMARY", default=True)
-_VISUALIZATION_REQUEST_INTENTS = {"generate_visualization", "update_visualization"}
 _VISUALIZATION_CONTINUATION_INTENTS = {"generate_visualization", "update_visualization", "clarify_visualization"}
 _VISUALIZATION_THREAD_INTENTS = {
     "generate_visualization",
@@ -401,9 +400,6 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
     if latest_plan_summary:
         planner_question = (f"{latest_plan_summary}\n\nConversation context (oldest to newest user turns):\n{planner_question}").strip()
 
-    update_target_trace_id_any = latest_meta.get("update_target_trace_id")
-    update_target_trace_id = update_target_trace_id_any.strip() if isinstance(update_target_trace_id_any, str) and update_target_trace_id_any.strip() else None
-
     return {
         "user_message": ctx.text,
         "planner_question": planner_question,
@@ -415,7 +411,6 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
         "language": language,
         "conversation_history": conversation_history,
         "latest_plan_summary": latest_plan_summary,
-        "update_target_trace_id": update_target_trace_id,
     }
 
 
