@@ -1,7 +1,7 @@
 {
   "action": {
     "common": {
-      "error_with_context": "❌ {message} (Error code: {code}, Trace ID: {trace_id})"
+      "error_with_context": "❌ {message}"
     },
     "visualization": {
       "clarify_default": "I need a bit more detail before I can generate a visualization.",
@@ -13,7 +13,7 @@
       "internal_error_guided": "Error generating guided visualization: {error}"
     },
     "errors": {
-      "visualization_timeout": "Visualization generation timed out. Please try again.",
+      "visualization_timeout": "Visualization generation timed out. Please try again after a few minutes.",
       "visualization_generic": "Error generating visualization.",
       "hospital_auth_unavailable": "Your analytics session is not available to the action server right now. Please try again after signing in again, or provide a hospital manually.",
       "hospital_timeout": "The provider directory request timed out. Please try again.",
