@@ -51,7 +51,6 @@ regex==2024.11.6
 requests==2.33.0
 ruamel.yaml==0.17.21
 ruamel.yaml.clib==0.2.7
-ruff==0.11.2
 sanic==21.12.2
 Sanic-Cors==2.0.1
 sanic-routing==0.7.2
@@ -63,7 +62,6 @@ threadpoolctl==3.6.0
 tiktoken==0.9.0
 tomli==2.2.1
 tqdm==4.67.1
-types-pytz==2025.2.0.20250516
 typing-inspect==0.9.0
 typing-inspection==0.4.1
 typing_extensions==4.14.1
