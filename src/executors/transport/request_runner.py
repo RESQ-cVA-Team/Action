@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Callable, Dict, List, Optional, cast
 
 from src.domain.dto.charts.types import ChartSeries
 from src.domain.graphql.request import GraphQLQueryRequest
@@ -12,6 +12,95 @@ from src.executors.mapping.series_mapper import map_metrics_payload_to_series
 from src.util.logging_utils import log_context
 
 logger = logging.getLogger(__name__)
+
+GraphQLQueryCallback = Callable[[Dict[str, Any]], None]
+
+
+def _format_graphql_document(query: str) -> str:
+    text = query.strip()
+    if not text:
+        return query
+
+    indent = 0
+    in_string = False
+    escaping = False
+    result = ""
+
+    def append_indent() -> None:
+        nonlocal result
+        result += "  " * max(indent, 0)
+
+    for index, char in enumerate(text):
+        if in_string:
+            result += char
+            if escaping:
+                escaping = False
+            elif char == "\\":
+                escaping = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+            result += char
+            continue
+
+        if char == "{":
+            if result and not result.endswith("\n") and not result.endswith(" "):
+                result += " "
+            result += "{\n"
+            indent += 1
+            append_indent()
+            continue
+
+        if char == "}":
+            result = result.rstrip(" \t")
+            if not result.endswith("\n"):
+                result += "\n"
+            indent -= 1
+            append_indent()
+            result += "}"
+
+            next_char = text[index + 1] if index + 1 < len(text) else ""
+            if next_char and next_char not in {")", "}", ","}:
+                result += "\n"
+                append_indent()
+            continue
+
+        if char == ",":
+            result += ",\n"
+            append_indent()
+            continue
+
+        if char == " ":
+            if not result.endswith(" ") and not result.endswith("\n"):
+                result += char
+            continue
+
+        result += char
+
+    return "\n".join(line.rstrip(" \t") for line in result.split("\n")).strip()
+
+
+def _format_graphql_query_message(
+    *,
+    trace_id: str,
+    request_label: str,
+    query_hash: str,
+    group_by_field: Optional[str],
+    query: str,
+) -> str:
+    lines = [
+        "[dev] Visualization GraphQL query",
+        f"trace_id: {trace_id}",
+        f"request_label: {request_label}",
+        f"query_hash: {query_hash}",
+        f"group_by_field: {group_by_field or '-'}",
+        "query:",
+        _format_graphql_document(query),
+    ]
+    return "\n".join(lines)
 
 
 def _runner_log_context(
@@ -52,6 +141,7 @@ async def run_graphql_request(
     scope_label: Optional[str] = None,
     request_warnings: Optional[List[str]] = None,
     log_graphql_query: bool = False,
+    query_cb: Optional[GraphQLQueryCallback] = None,
 ) -> List[ChartSeries]:
     trace_label = trace_id
     request_label = scope_label or " | ".join([part for part in label_parts if part]) or "(none)"
@@ -64,6 +154,37 @@ async def run_graphql_request(
             graphql_hash=q_hash,
             request_label=request_label,
         ):
+            if query_cb is not None:
+                try:
+                    query_cb(
+                        {
+                            "type": "visualization_graphql_query",
+                            "trace_id": trace_id,
+                            "request_label": request_label,
+                            "query_hash": q_hash,
+                            "group_by_field": group_by_field,
+                            "query": query_str,
+                            "display_text": _format_graphql_query_message(
+                                trace_id=trace_id,
+                                request_label=request_label,
+                                query_hash=q_hash,
+                                group_by_field=group_by_field,
+                                query=query_str,
+                            ),
+                        }
+                    )
+                except Exception:
+                    logger.warning(
+                        "[plan_executor] Failed to emit GraphQL query callback",
+                        exc_info=True,
+                        extra=_runner_log_context(
+                            event="request_runner.graphql_query_callback_failed",
+                            outcome="degraded",
+                            request_label=request_label,
+                            query_hash=q_hash,
+                            group_by_field=group_by_field,
+                        ),
+                    )
             if log_graphql_query:
                 logger.info("[plan_executor] GraphQL query for chart:\n%s", query_str)
             else:

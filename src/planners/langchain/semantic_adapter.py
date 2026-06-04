@@ -54,6 +54,94 @@ def _normalize_group_by(group_by: List[S.GroupBySpec]) -> tuple[List[S.GroupBySp
     return normalized, normalized_canonical_fields, dropped_invalid_fields
 
 
+def _normalize_analysis_mode(analysis_mode: str | None) -> str:
+    mode = (analysis_mode or "").strip().upper()
+    if mode in {"TIME_SERIES", "DISTRIBUTION", "SUMMARY", "COMPARISON"}:
+        return mode
+    return ""
+
+
+def _normalize_chart_type_for_semantics(chart_type: str, analysis_mode: str, group_by: List[S.GroupBySpec]) -> str:
+    if analysis_mode == "DISTRIBUTION" and group_by:
+        return "BAR"
+    return chart_type
+
+
+def _has_time_groupby(group_by: List[S.GroupBySpec]) -> bool:
+    return any(type(g).__name__ == "GroupByTime" for g in group_by)
+
+
+def _has_non_time_groupby(group_by: List[S.GroupBySpec]) -> bool:
+    return any(type(g).__name__ != "GroupByTime" for g in group_by)
+
+
+def _default_time_groupby() -> S.GroupByTime:
+    return S.GroupByTime(grain="MONTH", window=S.TimeWindow(last_n=24, unit="MONTH"))
+
+
+def validate_analysis_plan_semantics(plan: S.AnalysisPlan) -> S.AnalysisPlan:
+    """Resolve chart semantics from structure and fail when intent is still ambiguous.
+
+    This is the planner boundary: if a chart cannot be assigned a concrete analysis mode
+    after structural inference, the planner should retry or clarify before execution.
+    """
+
+    # DISTRIBUTION + GroupByTime is not supported by the executor: it fetches one flat
+    # distribution and silently drops the time grain.  Fail fast here so the planner retries
+    # with corrective feedback instead of producing a silently wrong query.
+    dist_time_indices: List[int] = []
+    for idx, chart in enumerate(plan.charts or []):
+        mode = _normalize_analysis_mode(getattr(chart, "analysis_mode", None))
+        if mode == "DISTRIBUTION" and _has_time_groupby(chart.group_by or []):
+            dist_time_indices.append(idx + 1)
+    if dist_time_indices:
+        joined = ", ".join(str(i) for i in dist_time_indices)
+        raise ValueError(
+            f"Chart(s) {joined}: DISTRIBUTION analysis mode cannot be combined with GroupByTime. "
+            "To show value spread use DISTRIBUTION with no time grouping. "
+            "To show a monthly/yearly trend use TIME_SERIES with GroupByTime."
+        )
+
+    # Single-metric comparison requests without a real comparison dimension are usually the
+    # planner drifting into a stats query that the analytics backend cannot satisfy.
+    comparison_only_time_indices: List[int] = []
+    for idx, chart in enumerate(plan.charts or []):
+        mode = _normalize_analysis_mode(getattr(chart, "analysis_mode", None))
+        if mode != "COMPARISON":
+            continue
+        if len(chart.metrics or []) != 1:
+            continue
+        group_by = chart.group_by or []
+        if not group_by or not _has_non_time_groupby(group_by):
+            comparison_only_time_indices.append(idx + 1)
+    if comparison_only_time_indices:
+        joined = ", ".join(str(i) for i in comparison_only_time_indices)
+        raise ValueError(
+            f"Chart(s) {joined}: COMPARISON analysis mode needs a real comparison dimension such as sex, provider, "
+            "or another categorical group. For a single metric over time, use TIME_SERIES with GroupByTime; "
+            "for a single metric distribution, use DISTRIBUTION."
+        )
+
+    semantic, _ = to_semantic_plan_with_diagnostics(plan)
+    for chart in semantic.charts:
+        mode = _normalize_analysis_mode(chart.analysis_mode)
+        if mode != "TIME_SERIES":
+            continue
+        group_by = list(chart.group_by or [])
+        if not _has_time_groupby(group_by):
+            group_by.append(_default_time_groupby())
+            chart.group_by = group_by
+    unresolved_indices = [idx + 1 for idx, chart in enumerate(semantic.charts) if not _normalize_analysis_mode(chart.analysis_mode)]
+    if unresolved_indices:
+        joined = ", ".join(str(idx) for idx in unresolved_indices)
+        raise ValueError(
+            "Unable to infer chart analysis intent for chart(s) "
+            f"{joined}. Specify whether the request is a time series, distribution, summary, or comparison."
+        )
+
+    return to_analysis_plan(semantic)
+
+
 def to_semantic_plan(plan: S.AnalysisPlan) -> SemanticPlan:
     semantic, _ = to_semantic_plan_with_diagnostics(plan)
     return semantic
@@ -102,6 +190,8 @@ def to_semantic_plan_with_diagnostics(plan: S.AnalysisPlan) -> tuple[SemanticPla
         diagnostics.deduped_groupby_entries += max(0, len(raw_group_by) - len(group_by))
 
         normalized_chart_type, chart_type_changed, chart_type_fallback = _normalize_chart_type(chart.chart_type)
+        normalized_analysis_mode = _normalize_analysis_mode(getattr(chart, "analysis_mode", None))
+        normalized_chart_type = _normalize_chart_type_for_semantics(normalized_chart_type, normalized_analysis_mode, group_by)
         if chart_type_changed:
             diagnostics.normalized_chart_types += 1
         if chart_type_fallback:
@@ -110,6 +200,7 @@ def to_semantic_plan_with_diagnostics(plan: S.AnalysisPlan) -> tuple[SemanticPla
         charts.append(
             SemanticChart(
                 chart_type=normalized_chart_type,
+                analysis_mode=normalized_analysis_mode,
                 metrics=normalized_metrics,
                 filters=chart.filters,
                 group_by=group_by,
@@ -139,11 +230,14 @@ def to_analysis_plan(plan: SemanticPlan) -> S.AnalysisPlan:
         if not metrics:
             continue
 
+        group_by = [g.model_dump(by_alias=True, exclude_none=True) if hasattr(g, "model_dump") else g for g in (chart.group_by or [])]
+
         charts.append(
             S.ChartSpec(
                 chart_type=_normalize_chart_type(chart.chart_type)[0],
+                analysisMode=_normalize_analysis_mode(chart.analysis_mode),
                 filters=chart.filters,
-                group_by=chart.group_by or None,
+                group_by=group_by or None,
                 metrics=metrics,
             )
         )

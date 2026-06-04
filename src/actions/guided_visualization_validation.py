@@ -572,6 +572,14 @@ def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[s
     if isinstance(group_by, str) and group_by.strip():
         group_specs.append(S.GroupByCanonicalField(field=group_by.strip().upper()))
 
+    chart_type_norm = chart_type.strip().upper()
+    if chart_type_norm in {"HISTOGRAM", "VIOLIN"}:
+        analysis_mode = "DISTRIBUTION"
+    elif chart_type_norm == "BOX":
+        analysis_mode = "SUMMARY"
+    else:
+        analysis_mode = "COMPARISON"
+
     metric_origin_scope: Optional[S.OriginScopeSpec] = None
     if isinstance(guided_scope, dict) and guided_scope:
         try:
@@ -595,6 +603,7 @@ def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[s
         charts=[
             S.ChartSpec(
                 chart_type=chart_type,
+                analysis_mode=analysis_mode,
                 filters=filter_node,
                 group_by=group_specs or None,
                 metrics=[S.MetricSpec(metric=metric, originScope=metric_origin_scope)],

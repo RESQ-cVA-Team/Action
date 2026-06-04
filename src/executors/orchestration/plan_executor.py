@@ -618,7 +618,11 @@ def _to_execution_error(
     service_unavailable_count = sum(1 for reason in failure_reasons if reason == "service_unavailable")
     if "no_data" in reason_set:
         return VisualizationExecutionError(
-            user_message="The analytics service returned no data for this visualization request. Try a wider date range or different filters.",
+            user_message=(
+                "The analytics service reached successfully, but this query returned no data. "
+                "That usually means the current date range, scope, or grouping does not match any rows. "
+                "Try a wider date range, a different scope, or a simpler chart shape."
+            ),
             reason="no_data",
             code="EXEC_NO_DATA",
             trace_id=trace_id,
@@ -876,6 +880,7 @@ def execute_plan(plan: AnalysisPlan, user_sub: str) -> VisualizationResponse:
 
 ProgressCallback = Callable[[str], None]
 SummaryCallback = Callable[[ExecutionSummary], None]
+GraphQLQueryCallback = Callable[[Dict[str, Any]], None]
 
 
 @dataclass(frozen=True)
@@ -884,6 +889,7 @@ class ExecutionContext:
     semaphore: asyncio.Semaphore
     progress_cb: Optional[ProgressCallback]
     log_graphql_query: bool
+    query_cb: Optional[GraphQLQueryCallback]
 
 
 @dataclass(frozen=True)
@@ -934,6 +940,7 @@ async def _execute_request_spec(
         semaphore=context.semaphore,
         log_graphql_query=context.log_graphql_query,
         request_warnings=request_warnings,
+        query_cb=context.query_cb,
     )
     return RequestExecutionResult(spec=spec, series=series)
 
@@ -1013,6 +1020,7 @@ async def execute_plan_async(
     max_concurrency: Optional[int] = None,
     progress_cb: Optional[ProgressCallback] = None,
     summary_cb: Optional[SummaryCallback] = None,
+    query_cb: Optional[GraphQLQueryCallback] = None,
     trace_id: Optional[str] = None,
 ) -> VisualizationResponse:
     """Async version that runs GraphQL requests concurrently.
@@ -1063,6 +1071,7 @@ async def execute_plan_async(
         semaphore=sem,
         progress_cb=progress_cb,
         log_graphql_query=_LOG_GRAPHQL_QUERY,
+        query_cb=query_cb,
     )
 
     for planChart in plan_charts:

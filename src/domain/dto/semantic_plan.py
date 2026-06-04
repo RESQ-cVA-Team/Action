@@ -27,6 +27,7 @@ class SemanticMetric:
 @dataclass
 class SemanticChart:
     chart_type: str
+    analysis_mode: str = ""
     metrics: List[SemanticMetric] = field(default_factory=_metric_list)
     filters: Optional[S.FilterNode] = None
     group_by: List[S.GroupBySpec] = field(default_factory=_group_by_list)

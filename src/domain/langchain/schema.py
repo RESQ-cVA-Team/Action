@@ -578,6 +578,9 @@ class DistributionSpec(BaseModel):
     max_value: int = Field(description="Maximum value of the distribution range.")
 
 
+_CHART_ANALYSIS_MODES = {"TIME_SERIES", "DISTRIBUTION", "SUMMARY", "COMPARISON"}
+
+
 class MetricSpec(BaseModel):
     """
     Specification for a metric to be analyzed or visualized.
@@ -609,15 +612,19 @@ class ChartSpec(BaseModel):
 
     Attributes:
         chart_type: The chart type (must be in ChartType).
+        analysis_mode: Semantic intent for the chart.
         filters: Optional chart-level filters applied to all metrics/series.
         group_by: Optional chart-level groupings applied to all metrics/series.
         metrics: List of metrics to include in the chart.
     """
 
     chart_type: str  # Should be a value from ChartType
+    analysis_mode: str = Field(alias="analysisMode")
     filters: Optional[FilterNode] = None
     group_by: Optional[List[GroupBySpec]] = None
     metrics: List[MetricSpec]
+
+    model_config = ConfigDict(populate_by_name=True)
 
     @field_validator("chart_type")
     def validate_chart_type(cls, v: str) -> str:
@@ -625,6 +632,13 @@ class ChartSpec(BaseModel):
         if v_norm not in ChartType:
             raise ValueError(f"{v} is not a valid ChartType. Allowed: {ChartType}")
         return v_norm
+
+    @field_validator("analysis_mode")
+    def validate_analysis_mode(cls, v: str) -> str:
+        mode = (v or "").strip().upper()
+        if mode not in _CHART_ANALYSIS_MODES:
+            raise ValueError(f"{v} is not a valid chart analysis mode. Allowed: {sorted(_CHART_ANALYSIS_MODES)}")
+        return mode
 
     @model_validator(mode="after")
     def validate_chart_level_groupby(self) -> "ChartSpec":
@@ -773,3 +787,9 @@ class AnalysisPlan(BaseModel):
 
     charts: Optional[List[ChartSpec]] = None
     statistical_tests: Optional[List[StatisticalTestSpec]] = None
+
+
+MetricSpec.model_rebuild()
+ChartSpec.model_rebuild()
+StatisticalTestSpec.model_rebuild()
+AnalysisPlan.model_rebuild()

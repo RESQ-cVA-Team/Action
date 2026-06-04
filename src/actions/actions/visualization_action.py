@@ -897,6 +897,23 @@ class ActionOneShotGenerateVisualization(LongAction):
                     proceed=True,
                 )
             except Exception as e:
+                if isinstance(e, lang_pipeline.PlannerIntentAmbiguityError):
+                    clarification_options = cast(List[str], getattr(e, "clarification_options", None) or ["TIME_SERIES", "DISTRIBUTION", "SUMMARY", "COMPARISON"])
+                    message = str(e).strip() or translate("action.visualization.clarify_default", language=language)
+                    ctx.say(
+                        json_message={
+                            "type": "visualization_query_decision",
+                            "trace_id": trace_id,
+                            "decision": "clarify",
+                            "reason": "semantic_intent_ambiguity",
+                            "clarification_type": "analysis_mode",
+                            "clarification_options": clarification_options,
+                            "message": message,
+                        }
+                    )
+                    ctx.say(text=message)
+                    return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", True)], proceed=False)
+
                 logger.exception(
                     "Error generating visualization during prework",
                     extra=_action_log_context(
@@ -969,6 +986,11 @@ class ActionOneShotGenerateVisualization(LongAction):
                     nonlocal execution_summary
                     execution_summary = summary
 
+                def emit_graphql_query(payload: Dict[str, Any]) -> None:
+                    message = payload.get("display_text")
+                    if isinstance(message, str) and message.strip():
+                        ctx.say(text=message)
+
                 # In deferred-handoff mode, initial routing/clarification can use
                 # normal dispatcher delivery and heavy generation streams via
                 # callback after this explicit handoff.
@@ -1037,6 +1059,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                     max_concurrency=_EXECUTOR_MAX_CONCURRENCY,
                     progress_cb=progress,
                     summary_cb=on_summary,
+                    query_cb=emit_graphql_query,
                     trace_id=trace_id,
                 )
                 visualization_payload = visualization.model_dump(mode="json")
@@ -1050,10 +1073,24 @@ class ActionOneShotGenerateVisualization(LongAction):
 
                 completed_successfully = True
             except Exception as e:
-                if (
-                    isinstance(e, VisualizationExecutionError)
-                    and e.reason == "origin_scope_resolution"
-                ):
+                if isinstance(e, lang_pipeline.PlannerIntentAmbiguityError):
+                    clarification_options = cast(List[str], getattr(e, "clarification_options", None) or ["TIME_SERIES", "DISTRIBUTION", "SUMMARY", "COMPARISON"])
+                    message = str(e).strip() or translate("action.visualization.clarify_default", language=language)
+                    ctx.say(
+                        json_message={
+                            "type": "visualization_query_decision",
+                            "trace_id": trace_id,
+                            "decision": "clarify",
+                            "reason": "semantic_intent_ambiguity",
+                            "clarification_type": "analysis_mode",
+                            "clarification_options": clarification_options,
+                            "message": message,
+                        }
+                    )
+                    ctx.say(text=message)
+                    return None
+
+                if isinstance(e, VisualizationExecutionError) and e.reason == "origin_scope_resolution":
                     ctx.say(
                         json_message={
                             "type": "visualization_query_decision",

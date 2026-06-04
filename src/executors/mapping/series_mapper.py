@@ -86,6 +86,38 @@ def map_metrics_payload_to_series(
             server_label = kpi.grouped_by.group_item_name if kpi.grouped_by else None
             origin_label = _origin_label_from_kpi_group(kpi)
 
+            if kpi.kpi1.d1:
+                parts: List[str] = []
+                if include_metric_alias:
+                    parts.append(metric_label_from_alias(metric_name))
+                parts.extend([part for part in label_parts if part])
+                if origin_label:
+                    parts.append(origin_label)
+                if server_label:
+                    mapped = get_enum_option_label(group_by_field, server_label) if group_by_field else None
+                    parts.append(mapped or server_label)
+                if scope_label and scope_label not in parts:
+                    parts.append(scope_label)
+
+                if add_time_period_labels and kpi.time_period is not None:
+                    start = kpi.time_period.start_date
+                    end = kpi.time_period.end_date
+                    if isinstance(start, str) and isinstance(end, str):
+                        parts.append(f"{start} to {end}")
+                    elif isinstance(start, str):
+                        parts.append(start)
+                    elif isinstance(end, str):
+                        parts.append(end)
+
+                series_name = " — ".join(parts) if parts else metric_label_from_alias(metric_name)
+                series.append(
+                    ChartSeries(
+                        name=series_name,
+                        data=[ChartPoint(x=x, y=y) for x, y in zip(kpi.kpi1.d1.edges, kpi.kpi1.d1.case_count)],
+                    )
+                )
+                continue
+
             # Some plans (e.g., GroupBySex when backend groupBy enum is unavailable)
             # are compiled into multiple filtered requests, one per category.
             # In that case `group_by_field` is None, but non-empty label_parts
@@ -144,38 +176,5 @@ def map_metrics_payload_to_series(
                     )
                 )
                 continue
-
-            if not kpi.kpi1.d1:
-                continue
-
-            parts: List[str] = []
-            if include_metric_alias:
-                parts.append(metric_label_from_alias(metric_name))
-            parts.extend([part for part in label_parts if part])
-            if origin_label:
-                parts.append(origin_label)
-            if server_label:
-                mapped = get_enum_option_label(group_by_field, server_label) if group_by_field else None
-                parts.append(mapped or server_label)
-            if scope_label and scope_label not in parts:
-                parts.append(scope_label)
-
-            if add_time_period_labels and kpi.time_period is not None:
-                start = kpi.time_period.start_date
-                end = kpi.time_period.end_date
-                if isinstance(start, str) and isinstance(end, str):
-                    parts.append(f"{start} to {end}")
-                elif isinstance(start, str):
-                    parts.append(start)
-                elif isinstance(end, str):
-                    parts.append(end)
-
-            series_name = " — ".join(parts) if parts else metric_label_from_alias(metric_name)
-            series.append(
-                ChartSeries(
-                    name=series_name,
-                    data=[ChartPoint(x=x, y=y) for x, y in zip(kpi.kpi1.d1.edges, kpi.kpi1.d1.case_count)],
-                )
-            )
 
     return series

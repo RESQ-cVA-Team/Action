@@ -673,6 +673,7 @@ def resolve_plan_metric_origins(plan: S.AnalysisPlan, user_sub: str, trace_id: s
         chart_group_by = cast(Optional[List[S.GroupBySpec]], getattr(chart, "group_by", None))
         resolved_chart = S.ChartSpec(
             chart_type=chart.chart_type,
+            analysis_mode=chart.analysis_mode,
             filters=chart_filters,
             group_by=chart_group_by,
             metrics=resolved_metrics,

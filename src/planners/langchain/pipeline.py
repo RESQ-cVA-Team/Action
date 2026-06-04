@@ -15,7 +15,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from src.domain.langchain.schema import AnalysisPlan
 from src.planners.langchain.examples import get_few_shot_examples
 from src.planners.langchain.llm_factory import create_chat_llm, get_llm_provider
-from src.util import env
+from src.planners.langchain.semantic_adapter import validate_analysis_plan_semantics
+from src.util import env as env_util
 from src.util.logging_utils import bind_current_context, log_context
 
 logger = logging.getLogger(__name__)
@@ -46,13 +47,32 @@ _PLAN_CACHE_TTL_SECONDS = 900.0
 _PLAN_CACHE_KEY_VERSION = "v2"
 
 LLM_PROVIDER = get_llm_provider()
-_LLM_MODEL = (env.get_env("LLM_MODEL", default="") or "").strip()
+_LLM_MODEL = (env_util.get_env("LLM_MODEL", default="") or "").strip()
 llm: Any = create_chat_llm(temperature=0)
 logger.debug("[Planner] Initialized LLM provider=%s model=%s", LLM_PROVIDER, _LLM_MODEL or "-")
 
 
 class PlannerTimeoutError(TimeoutError):
     pass
+
+
+class PlannerIntentAmbiguityError(ValueError):
+    """Raised when planner output remains semantically ambiguous after retries."""
+
+    def __init__(self, message: str, clarification_options: Optional[List[str]] = None):
+        super().__init__(message)
+        self.clarification_options = clarification_options or ["TIME_SERIES", "DISTRIBUTION", "SUMMARY", "COMPARISON"]
+
+
+def _is_semantic_ambiguity_error(exc: Exception) -> bool:
+    text = str(exc or "").strip().lower()
+    if not text:
+        return False
+    return (
+        "unable to infer chart analysis intent" in text
+        or "analysis_mode" in text
+        or "analysis mode" in text
+    )
 
 
 def _extract_text(response: Any) -> str:
@@ -438,6 +458,10 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
             "Never emit empty objects in group_by. If no grouping is intended, set group_by to null or omit it. "
             "Sex semantics guidance: phrases like 'males only' or 'females only' should usually be chart filters (SexFilter), while 'split/group by sex' should use GroupBySex. "
             "Prefer LINE/BAR for trends or comparisons; BOX/VIOLIN/HISTOGRAM for distributions. "
+            "Monthly trend language means time_series with a monthly GroupByTime. Monthly distribution language means DISTRIBUTION mode with no GroupByTime (shows the overall value spread). "
+            "DISTRIBUTION and GroupByTime cannot be combined; use TIME_SERIES+GroupByTime for monthly trends or DISTRIBUTION (no grouping) for value spread. "
+            "Use COMPARISON only when the user is comparing categories or multiple metrics; do not use COMPARISON for a single metric line chart or over-time request. "
+            "Set chart analysis_mode explicitly for every chart; valid values are TIME_SERIES, DISTRIBUTION, SUMMARY, COMPARISON. Do not emit AUTO. "
             "Chart intent guidance: If user asks for one graph/one chart/single visual with multiple splits, prefer one chart with multiple group_by dimensions. If user asks for separate charts/multiple visuals, produce multiple chart specs. "
             "Statistical test guidance: Only use test types listed in SUPPORTED_STAT_TESTS_JSON; otherwise omit statistical_tests and return charts.",
         ),
@@ -591,6 +615,7 @@ def generate_analysis_plan(
 
             try:
                 result = _coerce_analysis_plan(raw_result)
+                result = validate_analysis_plan_semantics(result)
                 break
             except Exception as exc:
                 last_error = exc
@@ -606,6 +631,12 @@ def generate_analysis_plan(
                 plan_inputs["reasoning"] = f"Previous output failed schema validation. Return ONLY a valid AnalysisPlan JSON object. Validation error: {exc}"
 
         if result is None:
+            if last_error is not None and _is_semantic_ambiguity_error(last_error):
+                detail = str(last_error).strip()
+                message = detail or "I need one clarification: should this be a time series, distribution, summary, or comparison view?"
+                raise PlannerIntentAmbiguityError(
+                    message
+                ) from last_error
             raise ValueError(f"Planner failed to produce a valid AnalysisPlan after {total_attempts} attempts") from last_error
 
         if debug:

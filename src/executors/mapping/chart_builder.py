@@ -483,21 +483,29 @@ def build_chart_dto(
                 bins.append(HistogramBin(range_start=start, range_end=end, frequency=freq))
         return Histogram(metadata=metadata, data=bins, bin_count=max(1, len(bins)))
     if chart_type_upper == ChartType.BOX.value:
-        values = sorted(_flatten_y_values(series))
-        if not values:
+        box_entries: List[BoxEntry] = []
+        for item in series:
+            values = sorted(_coerce_float(point.y) for point in item.data if _coerce_float(point.y) is not None)
+            if not values:
+                continue
+            typed_values = cast(List[float], values)
+            q1 = _quantile(typed_values, 0.25)
+            median = _quantile(typed_values, 0.5)
+            q3 = _quantile(typed_values, 0.75)
+            box_entries.append(
+                BoxEntry(
+                    name=item.name,
+                    q1=q1,
+                    median=median,
+                    q3=q3,
+                    min=typed_values[0],
+                    max=typed_values[-1],
+                )
+            )
+
+        if not box_entries:
             return BoxPlot(metadata=metadata, data=[])
-        q1 = _quantile(values, 0.25)
-        median = _quantile(values, 0.5)
-        q3 = _quantile(values, 0.75)
-        box = BoxEntry(
-            name=title_text,
-            q1=q1,
-            median=median,
-            q3=q3,
-            min=values[0],
-            max=values[-1],
-        )
-        return BoxPlot(metadata=metadata, data=[box])
+        return BoxPlot(metadata=metadata, data=box_entries)
 
     logger.warning("Chart type %s not yet implemented; defaulting to LINE rendering", plan_chart.chart_type)
     return LineChart(metadata=metadata, series=series)

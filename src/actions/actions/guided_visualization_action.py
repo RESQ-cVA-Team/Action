@@ -118,6 +118,11 @@ class ActionGuidedGenerateVisualization(Action):  # pyright: ignore
                     nonlocal execution_summary
                     execution_summary = summary
 
+                def emit_graphql_query(payload: Dict[str, Any]) -> None:
+                    message = payload.get("display_text")
+                    if isinstance(message, str) and message.strip():
+                        dispatcher.utter_message(text=message)
+
                 plan_obj = build_guided_plan(slots=slots, user_sub=user_sub, trace_id=trace_id)
                 dispatcher.utter_message(
                     json_message={
@@ -133,6 +138,7 @@ class ActionGuidedGenerateVisualization(Action):  # pyright: ignore
                     max_concurrency=_EXECUTOR_MAX_CONCURRENCY,
                     progress_cb=None,
                     summary_cb=on_summary,
+                    query_cb=emit_graphql_query,
                     trace_id=trace_id,
                 )
                 visualization_payload = visualization.model_dump(mode="json")
