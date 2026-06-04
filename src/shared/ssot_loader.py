@@ -31,7 +31,9 @@ class SSOTLoadError(FileNotFoundError):
 def _load_yaml(filename: str) -> List[Dict[str, Any]]:
     path = BASE_SSOT / filename
     if not path.exists():
-        raise SSOTLoadError(f"Missing SSOT file: {path}. Base directory contents: {[p.name for p in BASE_SSOT.glob('*.yml')] if BASE_SSOT.exists() else 'N/A'}")
+        raise SSOTLoadError(
+            f"Missing SSOT file: {path}. Base directory contents: {[p.name for p in BASE_SSOT.glob('*.yml')] if BASE_SSOT.exists() else 'N/A'}"
+        )
     with path.open("r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
     if not isinstance(raw, list):
@@ -199,7 +201,9 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
                         label = f.get("label")
                         if isinstance(key, str) and key:
                             flag_keys.append(key)
-                            flag_labels.append(label if isinstance(label, str) and label else key)
+                            flag_labels.append(
+                                label if isinstance(label, str) and label else key
+                            )
                     elif isinstance(f, str):
                         flag_keys.append(f)
                         flag_labels.append(f)
@@ -226,12 +230,16 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
                     syns = opt.get("synonyms")
                     if not (isinstance(key, str) and key):
                         continue
-                    if not (isinstance(syns, list) and syns and isinstance(syns[0], str)):
+                    if not (
+                        isinstance(syns, list) and syns and isinstance(syns[0], str)
+                    ):
                         # Fallback: fabricate a human label from key
                         human_label = key.replace("_", " ").title()
                         syns = [human_label]
                         opt["synonyms"] = syns
-                    option_map[key] = {k: v for k, v in opt.items() if k in ("synonyms", "value")}
+                    option_map[key] = {
+                        k: v for k, v in opt.items() if k in ("synonyms", "value")
+                    }
                     option_keys.append(key)
                     derived_labels.append(cast(str, syns[0]))
                 # Attach raw options map for downstream richer usage
@@ -268,7 +276,9 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
                     fabricated = key.replace("_", " ").title()
                     syns = [fabricated]
                     entry["synonyms"] = syns
-                option_map[key] = {k: v for k, v in entry.items() if k in ("synonyms", "value")}
+                option_map[key] = {
+                    k: v for k, v in entry.items() if k in ("synonyms", "value")
+                }
                 option_keys.append(key)
                 labels.append(cast(str, syns[0]))
             if option_keys:
@@ -455,7 +465,11 @@ def validate_metric_metadata_complete(logger: Optional[Any] = None) -> List[str]
             continue
         code = canonical.strip()
         data_type = _ci_get(item, "data_type")
-        data_type_str = str(data_type).strip().lower() if isinstance(data_type, (str, bytes)) else ""
+        data_type_str = (
+            str(data_type).strip().lower()
+            if isinstance(data_type, (str, bytes))
+            else ""
+        )
 
         if data_type_str == "numeric":
             numeric_any = _ci_get(item, "numeric")
@@ -549,7 +563,9 @@ def validate_metric_metadata_complete(logger: Optional[Any] = None) -> List[str]
                 key = _ci_get(opt, "key")
                 syns = _ci_get(opt, "synonyms")
                 if not isinstance(key, str) or not key.strip():
-                    msg = f"SSOT incomplete [ENUM]: {code} option #{idx + 1} missing key"
+                    msg = (
+                        f"SSOT incomplete [ENUM]: {code} option #{idx + 1} missing key"
+                    )
                     warnings.append(msg)
                     active_logger.warning(msg)
                 else:
@@ -559,8 +575,13 @@ def validate_metric_metadata_complete(logger: Optional[Any] = None) -> List[str]
                         warnings.append(msg)
                         active_logger.warning(msg)
                     seen_keys.add(k)
-                syns_list: List[Any] = cast(List[Any], syns) if isinstance(syns, list) else []
-                if not (syns_list and all(isinstance(s, str) and s.strip() for s in syns_list)):
+                syns_list: List[Any] = (
+                    cast(List[Any], syns) if isinstance(syns, list) else []
+                )
+                if not (
+                    syns_list
+                    and all(isinstance(s, str) and s.strip() for s in syns_list)
+                ):
                     msg = f"SSOT incomplete [ENUM]: {code} option '{key}' missing synonyms"
                     warnings.append(msg)
                     active_logger.warning(msg)
@@ -698,6 +719,16 @@ def get_sex_label(value: str) -> str:
 
 def get_stroke_label(value: str) -> str:
     return _label_from_simple_type_file("StrokeType.yml", value) or value
+
+
+def resolve_sex(value: str) -> Optional[str]:
+    """Resolve a sex value (canonical or synonym) to SexType canonical value."""
+    return _resolve_canonical_value("SexType.yml", value)
+
+
+def resolve_stroke_type(value: str) -> Optional[str]:
+    """Resolve a stroke type (canonical or synonym) to StrokeType canonical value."""
+    return _resolve_canonical_value("StrokeType.yml", value)
 
 
 __all__ = [

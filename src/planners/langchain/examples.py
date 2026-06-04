@@ -4,6 +4,7 @@ from typing import Dict, List, Tuple
 from src.domain.langchain.schema import (
     AnalysisPlan,
     ChartSpec,
+    DateFilter,
     GroupByCanonicalField,
     GroupBySex,
     GroupByStrokeType,
@@ -17,7 +18,11 @@ from src.domain.langchain.schema import (
 
 
 def example_dtn_by_sex() -> Tuple[str, str]:
-    detected_entities = {"sex": ["MALE", "FEMALE"], "metric": ["DTN"], "chart_type": ["LINE"]}
+    detected_entities = {
+        "sex": ["MALE", "FEMALE"],
+        "metric": ["DTN"],
+        "chart_type": ["LINE"],
+    }
     plan = AnalysisPlan(
         charts=[
             ChartSpec(
@@ -38,7 +43,11 @@ def example_dtn_by_sex() -> Tuple[str, str]:
 
 
 def example_dtn_by_first_contact_place() -> Tuple[str, str]:
-    detected_entities = {"metric": ["DTN"], "chart_type": ["LINE"], "group_by": ["FIRST_CONTACT_PLACE"]}
+    detected_entities = {
+        "metric": ["DTN"],
+        "chart_type": ["LINE"],
+        "group_by": ["FIRST_CONTACT_PLACE"],
+    }
     plan = AnalysisPlan(
         charts=[
             ChartSpec(
@@ -53,7 +62,10 @@ def example_dtn_by_first_contact_place() -> Tuple[str, str]:
         ],
         statistical_tests=None,
     )
-    user = "USER_UTTERANCE:\nShow me a line graph of DTN grouped by first contact place\n\nENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    user = (
+        "USER_UTTERANCE:\nShow me a line graph of DTN grouped by first contact place\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
     assistant = plan.model_dump_json(indent=2)
     return user, assistant
 
@@ -74,7 +86,10 @@ def example_dtn_distribution_line() -> Tuple[str, str]:
         ],
         statistical_tests=None,
     )
-    user = "USER_UTTERANCE:\nShow me a line graph of DTN\n\nENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    user = (
+        "USER_UTTERANCE:\nShow me a line graph of DTN\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
     assistant = plan.model_dump_json(indent=2)
     return user, assistant
 
@@ -92,7 +107,10 @@ def example_dtn_males_only_filter() -> Tuple[str, str]:
         ],
         statistical_tests=None,
     )
-    user = "USER_UTTERANCE:\nShow me a line graph of DTN for males only\n\nENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    user = (
+        "USER_UTTERANCE:\nShow me a line graph of DTN for males only\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
     assistant = plan.model_dump_json(indent=2)
     return user, assistant
 
@@ -110,18 +128,29 @@ def example_dtn_females_only_filter() -> Tuple[str, str]:
         ],
         statistical_tests=None,
     )
-    user = "USER_UTTERANCE:\nShow me a line graph of DTN for females only\n\nENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    user = (
+        "USER_UTTERANCE:\nShow me a line graph of DTN for females only\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
     assistant = plan.model_dump_json(indent=2)
     return user, assistant
 
 
 def example_dtn_by_sex_and_stroke() -> Tuple[str, str]:
-    detected_entities = {"sex": ["MALE", "FEMALE"], "metric": ["DTN"], "chart_type": ["BAR"], "stroke_type": ["ISCHEMIC", "INTRACEREBRAL_HEMORRHAGE"]}
+    detected_entities = {
+        "sex": ["MALE", "FEMALE"],
+        "metric": ["DTN"],
+        "chart_type": ["BAR"],
+        "stroke_type": ["ISCHEMIC", "INTRACEREBRAL_HEMORRHAGE"],
+    }
     plan = AnalysisPlan(
         charts=[
             ChartSpec(
                 chart_type="BAR",
-                group_by=[GroupBySex(categories=["MALE", "FEMALE"]), GroupByStrokeType()],
+                group_by=[
+                    GroupBySex(categories=["MALE", "FEMALE"]),
+                    GroupByStrokeType(),
+                ],
                 metrics=[MetricSpec(metric="DTN")],
             )
         ],
@@ -145,14 +174,19 @@ def example_one_graph_cross_split() -> Tuple[str, str]:
                 chart_type="LINE",
                 group_by=[
                     GroupBySex(categories=["MALE", "FEMALE"]),
-                    GroupByStrokeType(categories=["ISCHEMIC", "INTRACEREBRAL_HEMORRHAGE"]),
+                    GroupByStrokeType(
+                        categories=["ISCHEMIC", "INTRACEREBRAL_HEMORRHAGE"]
+                    ),
                 ],
                 metrics=[MetricSpec(metric="DTN")],
             )
         ],
         statistical_tests=None,
     )
-    user = "USER_UTTERANCE:\nShow DTN in one graph split by sex and stroke type\n\nENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    user = (
+        "USER_UTTERANCE:\nShow DTN in one graph split by sex and stroke type\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
     assistant = plan.model_dump_json(indent=2)
     return user, assistant
 
@@ -173,13 +207,20 @@ def example_two_separate_charts() -> Tuple[str, str]:
             ),
             ChartSpec(
                 chart_type="BAR",
-                group_by=[GroupByStrokeType(categories=["ISCHEMIC", "INTRACEREBRAL_HEMORRHAGE"])],
+                group_by=[
+                    GroupByStrokeType(
+                        categories=["ISCHEMIC", "INTRACEREBRAL_HEMORRHAGE"]
+                    )
+                ],
                 metrics=[MetricSpec(metric="DTN")],
             ),
         ],
         statistical_tests=None,
     )
-    user = "USER_UTTERANCE:\nCreate two charts: DTN by sex and DTN by stroke type\n\nENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    user = (
+        "USER_UTTERANCE:\nCreate two charts: DTN by sex and DTN by stroke type\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
     assistant = plan.model_dump_json(indent=2)
     return user, assistant
 
@@ -196,7 +237,9 @@ def example_dtn_last_6_months_by_sex() -> Tuple[str, str]:
             ChartSpec(
                 chart_type="LINE",
                 group_by=[
-                    GroupByTime(grain="MONTH", window=TimeWindow(last_n=6, unit="MONTH")),
+                    GroupByTime(
+                        grain="MONTH", window=TimeWindow(last_n=6, unit="MONTH")
+                    ),
                     GroupBySex(categories=["MALE", "FEMALE"]),
                 ],
                 metrics=[MetricSpec(metric="DTN")],
@@ -204,13 +247,20 @@ def example_dtn_last_6_months_by_sex() -> Tuple[str, str]:
         ],
         statistical_tests=None,
     )
-    user = "USER_UTTERANCE:\nShow me DTN by sex over the last 6 months, monthly\n\nENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    user = (
+        "USER_UTTERANCE:\nShow me DTN by sex over the last 6 months, monthly\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
     assistant = plan.model_dump_json(indent=2)
     return user, assistant
 
 
 def example_statistical_test_dtn_by_sex() -> Tuple[str, str]:
-    detected_entities = {"sex": ["MALE", "FEMALE"], "metric": ["DTN"], "statistical_test_type": ["MANN_WHITNEY_U_TEST"]}
+    detected_entities = {
+        "sex": ["MALE", "FEMALE"],
+        "metric": ["DTN"],
+        "statistical_test_type": ["MANN_WHITNEY_U_TEST"],
+    }
     plan = AnalysisPlan(
         charts=None,
         statistical_tests=[
@@ -248,7 +298,9 @@ def example_dtn_my_hospital_vs_country_average() -> Tuple[str, str]:
                 metrics=[
                     MetricSpec(
                         metric="DTN",
-                        originScope=OriginScopeSpec(scopeType="mine", label="My hospital"),
+                        originScope=OriginScopeSpec(
+                            scopeType="mine", label="My hospital"
+                        ),
                     ),
                     MetricSpec(
                         metric="DTN",
@@ -263,7 +315,10 @@ def example_dtn_my_hospital_vs_country_average() -> Tuple[str, str]:
         ],
         statistical_tests=None,
     )
-    user = "USER_UTTERANCE:\nCompare DTN for my hospital against the Italy national average\n\nENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    user = (
+        "USER_UTTERANCE:\nCompare DTN for my hospital against the Italy national average\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
     assistant = plan.model_dump_json(indent=2)
     return user, assistant
 
@@ -283,7 +338,9 @@ def example_dtn_my_hospital_vs_provider_group_name() -> Tuple[str, str]:
                 metrics=[
                     MetricSpec(
                         metric="DTN",
-                        originScope=OriginScopeSpec(scopeType="mine", label="My hospital"),
+                        originScope=OriginScopeSpec(
+                            scopeType="mine", label="My hospital"
+                        ),
                     ),
                     MetricSpec(
                         metric="DTN",
@@ -298,7 +355,10 @@ def example_dtn_my_hospital_vs_provider_group_name() -> Tuple[str, str]:
         ],
         statistical_tests=None,
     )
-    user = "USER_UTTERANCE:\nShow DTN for my hospital versus provider group Nordic Stroke Network\n\nENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    user = (
+        "USER_UTTERANCE:\nShow DTN for my hospital versus provider group Nordic Stroke Network\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
     assistant = plan.model_dump_json(indent=2)
     return user, assistant
 
@@ -318,17 +378,45 @@ def example_mw_my_hospital_vs_national() -> Tuple[str, str]:
                 metrics=[
                     MetricSpec(
                         metric="DTN",
-                        originScope=OriginScopeSpec(scopeType="mine", label="My hospital"),
+                        originScope=OriginScopeSpec(
+                            scopeType="mine", label="My hospital"
+                        ),
                     ),
                     MetricSpec(
                         metric="DTN",
-                        originScope=OriginScopeSpec(scopeType="country_average", label="National mean"),
+                        originScope=OriginScopeSpec(
+                            scopeType="country_average", label="National mean"
+                        ),
                     ),
                 ],
             )
         ],
     )
-    user = "USER_UTTERANCE:\nCompare DTN between my hospital and the national mean\n\nENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    user = (
+        "USER_UTTERANCE:\nCompare DTN between my hospital and the national mean\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
+def example_dtn_year_filter() -> Tuple[str, str]:
+    detected_entities = {"metric": ["DTN"], "chart_type": ["BAR"], "date": ["2026"]}
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="BAR",
+                filters=DateFilter(operator="GE", value="2026-01-01"),
+                group_by=None,
+                metrics=[MetricSpec(metric="DTN")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nShow me a bar chart of DTN for patients in 2026\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
     assistant = plan.model_dump_json(indent=2)
     return user, assistant
 
@@ -367,7 +455,10 @@ def example_mw_hospital_vs_hospital() -> Tuple[str, str]:
             )
         ],
     )
-    user = "USER_UTTERANCE:\nIs there a significant difference in DTN between City Stroke Center and University Hospital?\n\nENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    user = (
+        "USER_UTTERANCE:\nIs there a significant difference in DTN between City Stroke Center and University Hospital?\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
     assistant = plan.model_dump_json(indent=2)
     return user, assistant
 
@@ -389,6 +480,7 @@ def get_few_shot_examples() -> List[Dict[str, str]]:
         example_dtn_by_sex(),
         example_dtn_by_sex_and_stroke(),
         example_statistical_test_dtn_by_sex(),
+        example_dtn_year_filter(),
     ]:
         examples.append(
             {
