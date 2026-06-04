@@ -118,6 +118,13 @@ callback mode is disabled and long actions fall back to synchronous execution.
 `.env` loading fills in missing values only; set `ACTION_DOTENV_OVERRIDE=1` only
 when you explicitly need `.env` to override the existing process environment.
 
+Callback-delivered `text` and `custom` messages are expected to be persisted by
+the Webapp `/api/rasa/long-task-callback` route back into Rasa tracker history
+before they are published to the UI. Visualization follow-up flows rely on
+those tracker bot events when reconstructing context for `update_visualization`.
+Action does not maintain a separate in-memory replay buffer for callback
+messages.
+
 If using OpenAI:
 
 ```env
