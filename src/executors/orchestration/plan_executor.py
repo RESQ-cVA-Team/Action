@@ -114,11 +114,12 @@ graphql_target = env_util.require_any_env("RASA_PROXY_GRAPHQL_TARGET")
 client = GraphQLProxyClient(
     proxy_url=proxy_url,
     action_server_token=action_server_token,
-    target=graphql_target
-    if isinstance(graphql_target, str) and graphql_target.strip()
-    else "graphql",
-    timeout_seconds=8,
-    max_total_timeout_seconds=25,
+    target=graphql_target if isinstance(graphql_target, str) and graphql_target.strip() else "graphql",
+    timeout_seconds=90,
+    connect_timeout_seconds=5,
+    max_total_timeout_seconds=95,
+    retry_attempts=1,
+    retry_backoff_seconds=0.2,
 )
 
 
@@ -614,6 +615,7 @@ def _to_execution_error(
     failure_reasons: List[str], trace_id: Optional[str] = None
 ) -> VisualizationExecutionError:
     reason_set = set(failure_reasons)
+    service_unavailable_count = sum(1 for reason in failure_reasons if reason == "service_unavailable")
     if "no_data" in reason_set:
         return VisualizationExecutionError(
             user_message="The analytics service returned no data for this visualization request. Try a wider date range or different filters.",
@@ -629,6 +631,16 @@ def _to_execution_error(
             trace_id=trace_id,
         )
     if "service_unavailable" in reason_set:
+        if service_unavailable_count >= 2:
+            return VisualizationExecutionError(
+                user_message=(
+                    "The analytics platform appears to be experiencing an outage right now "
+                    "(upstream service unavailable). Please try again in a moment."
+                ),
+                reason="service_unavailable",
+                code="EXEC_SERVICE_UNAVAILABLE",
+                trace_id=trace_id,
+            )
         return VisualizationExecutionError(
             user_message="The analytics service is temporarily unavailable. Please try again in a moment.",
             reason="service_unavailable",

@@ -30,21 +30,10 @@ logger = logging.getLogger(__name__)
 
 _LOG_USER_TEXT = env_util.env_flag("ACTIONS_LOG_USER_TEXT", default=False)
 _ECHO_INTERNAL_ERRORS = env_util.env_flag("ACTIONS_ECHO_INTERNAL_ERRORS", default=False)
-_SHOW_EXECUTION_SUMMARY = env_util.env_flag(
-    "ACTIONS_SHOW_EXECUTION_SUMMARY", default=True
-)
-_DEFER_CALLBACK_HANDOFF = env_util.env_flag(
-    "LONG_ACTION_DEFER_CALLBACK_HANDOFF", default=False
-)
-_SHOW_NORMALIZATION_SUMMARY = env_util.env_flag(
-    "ACTIONS_SHOW_NORMALIZATION_SUMMARY", default=True
-)
-_VISUALIZATION_REQUEST_INTENTS = {"generate_visualization", "update_visualization"}
-_VISUALIZATION_CONTINUATION_INTENTS = {
-    "generate_visualization",
-    "update_visualization",
-    "clarify_visualization",
-}
+_SHOW_EXECUTION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_EXECUTION_SUMMARY", default=True)
+_DEFER_CALLBACK_HANDOFF = env_util.env_flag("LONG_ACTION_DEFER_CALLBACK_HANDOFF", default=False)
+_SHOW_NORMALIZATION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_NORMALIZATION_SUMMARY", default=True)
+_VISUALIZATION_CONTINUATION_INTENTS = {"generate_visualization", "update_visualization", "clarify_visualization"}
 _VISUALIZATION_THREAD_INTENTS = {
     "generate_visualization",
     "update_visualization",
@@ -171,6 +160,90 @@ def _collect_visualization_thread_messages(
     return user_messages[thread_start:][-fallback_limit:]
 
 
+def _merge_entities(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    merged: Dict[str, Any] = dict(base)
+    for key, value in incoming.items():
+        if key not in merged:
+            merged[key] = value
+            continue
+
+        existing = merged[key]
+        if isinstance(existing, list):
+            existing_list = cast(List[Any], existing)
+            if isinstance(value, list):
+                existing_list.extend(value)
+            else:
+                existing_list.append(value)
+            continue
+
+        if isinstance(value, list):
+            merged[key] = [existing, *value]
+        else:
+            merged[key] = value
+    return merged
+
+
+def _extract_entities_from_user_event(event: Dict[str, Any]) -> Dict[str, Any]:
+    parse_data_any = event.get("parse_data")
+    parse_data = cast(Dict[str, Any], parse_data_any) if isinstance(parse_data_any, dict) else {}
+
+    parse_entities_any = parse_data.get("entities")
+    event_entities_any = event.get("entities")
+
+    entities_any = parse_entities_any if isinstance(parse_entities_any, list) else event_entities_any
+    if not isinstance(entities_any, list):
+        return {}
+
+    extracted: Dict[str, Any] = {}
+    for ent_any in cast(List[Any], entities_any):
+        if not isinstance(ent_any, dict):
+            continue
+        ent = cast(Dict[str, Any], ent_any)
+        key_any = ent.get("entity")
+        if not isinstance(key_any, str) or "value" not in ent:
+            continue
+
+        value = ent["value"]
+        if key_any not in extracted:
+            extracted[key_any] = value
+            continue
+
+        existing = extracted[key_any]
+        if isinstance(existing, list):
+            cast(List[Any], existing).append(value)
+        else:
+            extracted[key_any] = [existing, value]
+
+    return extracted
+
+
+def _collect_visualization_thread_entities(events: List[Dict[str, Any]], fallback_limit: int = 12) -> Dict[str, Any]:
+    user_events: List[Dict[str, Any]] = []
+    for ev in events:
+        if ev.get("event") != "user":
+            continue
+        text_any = ev.get("text")
+        if isinstance(text_any, str) and text_any.strip():
+            user_events.append(ev)
+
+    if not user_events:
+        return {}
+
+    anchor_user_idx = _find_latest_visualization_anchor_user_ordinal(events)
+    if anchor_user_idx < 0:
+        anchor_user_idx = max(0, len(user_events) - fallback_limit)
+
+    thread_slice = user_events[anchor_user_idx:]
+    if len(thread_slice) > fallback_limit:
+        thread_slice = thread_slice[-fallback_limit:]
+
+    merged: Dict[str, Any] = {}
+    for user_event in thread_slice:
+        merged = _merge_entities(merged, _extract_entities_from_user_event(user_event))
+
+    return merged
+
+
 def _extract_bot_custom_payload(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     custom_any = event.get("custom")
     if isinstance(custom_any, dict):
@@ -240,11 +313,15 @@ def _find_latest_visualization_anchor_user_ordinal(events: List[Dict[str, Any]])
 
         text_any = ev.get("text")
         if isinstance(text_any, str) and text_any.strip():
-            return user_ordinal
+            intent_name = _extract_intent_name_from_user_event(ev)
+            if intent_name not in _VISUALIZATION_THREAD_INTENTS:
+                return user_ordinal + 1
 
         user_ordinal -= 1
 
-    return -1
+    # If every user turn up to the latest signal is visualization-related,
+    # keep the full thread starting from the first user turn.
+    return 0
 
 
 def _collect_latest_visualization_plan_summary(
@@ -517,7 +594,6 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
         "language": language,
         "conversation_history": conversation_history,
         "latest_plan_summary": latest_plan_summary,
-        "update_target_trace_id": update_target_trace_id,
     }
 
 

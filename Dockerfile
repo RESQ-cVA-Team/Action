@@ -1,12 +1,27 @@
+FROM rasa/rasa-sdk:3.6.2@sha256:9ebc0abc5b36d9420343a197bdfd9c478155ca86871dc08f8e823c76f484c948 AS deps
+
+USER root
+
+WORKDIR /build
+
+COPY requirements.txt .
+
+RUN pip wheel --no-cache-dir --wheel-dir /tmp/wheels -r requirements.txt
+
+
 FROM rasa/rasa-sdk:3.6.2@sha256:9ebc0abc5b36d9420343a197bdfd9c478155ca86871dc08f8e823c76f484c948
 
 USER root
 
 COPY requirements.txt VERSION .
+COPY --from=deps /tmp/wheels /tmp/wheels
 
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --no-index --find-links=/tmp/wheels -r requirements.txt \
+	&& rm -rf /tmp/wheels
 
 WORKDIR /app
+
+RUN mkdir -p /app && chown -R 1001:1001 /app
 
 ARG ACTION_VERSION=""
 ARG ACTION_COMMIT_SHA=""
@@ -24,8 +39,8 @@ LABEL org.opencontainers.image.version=${ACTION_VERSION}
 LABEL org.opencontainers.image.revision=${ACTION_COMMIT_SHA}
 LABEL org.opencontainers.image.created=${ACTION_BUILD_DATE}
 
-COPY src/ ./src
-COPY rasa_sdk_plugins/ ./rasa_sdk_plugins
+COPY --chown=1001:1001 src/ ./src
+COPY --chown=1001:1001 rasa_sdk_plugins/ ./rasa_sdk_plugins
 
 # --- Build-time assertion: ensure SSOT YAML files are present ---
 # If this fails, you likely forgot:

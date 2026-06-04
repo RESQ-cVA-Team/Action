@@ -78,13 +78,10 @@ def build_metric_requests(
             if len(plan_chart.metrics) == 1:
                 derived_axes = axis_from_meta_fn(metric.metric, rmin, rmax)
 
-        metric_requests.append(
-            MetricRequest(metricType=MetricType(metric.metric)).with_distribution(
-                distribution.num_buckets,
-                distribution.min_value,
-                distribution.max_value,
-            )
-        )
+        # For non-grouped charts, summary stats are usually enough for series mapping.
+        # Avoid requesting full distributions by default since they are significantly
+        # heavier on upstream analytics and can trigger timeouts.
+        metric_requests.append(MetricRequest(metricType=MetricType(metric.metric)).with_stats())
         metric_data_origins.append(metric_data_origin)
         metric_scope_labels.append(metric_scope_label)
 
