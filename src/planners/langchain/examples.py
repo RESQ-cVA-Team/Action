@@ -464,6 +464,7 @@ def example_dtn_year_filter() -> Tuple[str, str]:
         charts=[
             ChartSpec(
                 chart_type="BAR",
+                analysis_mode="SUMMARY",
                 filters=DateFilter(operator="GE", value="2026-01-01"),
                 group_by=None,
                 metrics=[MetricSpec(metric="DTN")],
