@@ -23,5 +23,5 @@
 			}
 		}
 	},
-	"postCreateCommand": "/opt/venv/bin/pip install -e . && pyright && /opt/venv/bin/python -m ruff check ."
+	"postCreateCommand": "/opt/venv/bin/pip install -e . ruff==0.11.2 types-pytz==2025.2.0.20250516 && pyright && /opt/venv/bin/python -m ruff check ."
 }

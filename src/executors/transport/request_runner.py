@@ -65,7 +65,7 @@ async def run_graphql_request(
             request_label=request_label,
         ):
             if log_graphql_query:
-                logger.debug("[plan_executor] GraphQL query for chart:\n%s", query_str)
+                logger.info("[plan_executor] GraphQL query for chart:\n%s", query_str)
             else:
                 logger.debug(
                     "[plan_executor] GraphQL query prepared",
