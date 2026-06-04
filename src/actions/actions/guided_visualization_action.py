@@ -196,7 +196,7 @@ class ActionGuidedGenerateVisualization(Action):  # pyright: ignore
                             params={"error": str(e)},
                         )
                     )
-                return [SlotSet("awaiting_visualization_clarification", False)]
+                return [SlotSet("awaiting_visualization_clarification", False), *guided_slots_clear_events()]
 
 
 class ValidateGuidedVisualizationForm(FormValidationAction):  # pyright: ignore
