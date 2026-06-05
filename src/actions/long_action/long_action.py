@@ -318,6 +318,89 @@ def _long_action_worker_log_context(
     return {"log_context": context}
 
 
+def _normalize_callback_buttons(value: Any) -> Optional[List[Dict[str, str]]]:
+    if not isinstance(value, list):
+        return None
+
+    buttons: List[Dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        title_any = item.get("title")
+        payload_any = item.get("payload")
+        if not isinstance(title_any, str) or not isinstance(payload_any, str):
+            continue
+        buttons.append({"title": title_any, "payload": payload_any})
+
+    return buttons or None
+
+
+def _message_to_callback_event(
+    message: Dict[str, Any],
+    trace_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    # Transport-only control messages are not tracker events.
+    msg_type_any = message.get("type")
+    if isinstance(msg_type_any, str) and msg_type_any in {"lock", "release", "connected"}:
+        return None
+
+    text_any = message.get("text")
+    text = text_any if isinstance(text_any, str) and text_any else None
+
+    custom_any = message.get("custom")
+    custom = cast(Dict[str, Any], custom_any) if isinstance(custom_any, dict) else None
+
+    buttons = _normalize_callback_buttons(message.get("buttons"))
+
+    # Keep parity with BotUttered semantics: allow text/custom/buttons payloads.
+    if text is None and custom is None and buttons is None:
+        return None
+
+    event: Dict[str, Any] = {
+        "event": "bot",
+        "metadata": {
+            "source": "long-task-callback",
+            **({"trace_id": trace_id} if trace_id else {}),
+        },
+    }
+
+    if text is not None:
+        event["text"] = text
+
+    data: Dict[str, Any] = {}
+    if custom is not None:
+        data["custom"] = custom
+    if buttons is not None:
+        data["buttons"] = buttons
+    if data:
+        event["data"] = data
+
+    return event
+
+
+def _message_to_callback_control(
+    message: Dict[str, Any],
+    *,
+    job_id: str,
+    trace_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    msg_type_any = message.get("type")
+    msg_type = msg_type_any.strip() if isinstance(msg_type_any, str) else ""
+    if msg_type not in {"lock", "release"}:
+        return None
+
+    control: Dict[str, Any] = {
+        "type": msg_type,
+        "jobId": job_id,
+        "scope": "long_action",
+        "source": "long-task-callback",
+    }
+    if trace_id:
+        control["traceId"] = trace_id
+
+    return control
+
+
 class LongAction(Action, ABC):
     def __init__(self):
         registry.register(self)
@@ -454,22 +537,18 @@ class LongAction(Action, ABC):
         callback_token: str,
         message: Dict[str, Any],
     ) -> None:
-        """Send a callback for a single ctx.say() message.
-
-        The payload shape is kept intentionally simple and dispatcher-like so
-        the frontend can treat it similarly to Rasa messages:
-
-        {
-            "senderId": "...",
-            "messages": [ { ...ctx.say kwargs... } ]
-        }
-        """
-
-        payload: Dict[str, Any] = {
-            "senderId": ctx.sender_id,
-            "messages": [message],
-        }
         trace_id = _resolve_progress_trace_id(ctx, message)
+        event = _message_to_callback_event(message, trace_id)
+        control = _message_to_callback_control(message, job_id=job_id, trace_id=trace_id)
+
+        if event is None and control is None:
+            return
+
+        payload: Dict[str, Any] = {"senderId": ctx.sender_id}
+        if event is not None:
+            payload["events"] = [event]
+        if control is not None:
+            payload["controls"] = [control]
         headers: Dict[str, str] = {
             "Content-Type": "application/json",
             "x-long-task-callback-token": callback_token,
@@ -598,7 +677,11 @@ class LongAction(Action, ABC):
         callback mode, each ``ctx.say`` results in a callback JSON of the
         form::
 
-            {"senderId": "...", "messages": [{...}]}
+            {
+                "senderId": "...",
+                "events": [{"event": "bot", ...}],
+                "controls": [{"type": "lock|release", "jobId": "..."}]
+            }
 
         The return value is not sent to the frontend and is only for
         internal use by subclasses if needed.
