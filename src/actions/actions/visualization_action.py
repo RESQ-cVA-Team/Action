@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Any, Dict, List, Optional, Protocol, cast
 from uuid import uuid4
@@ -150,16 +151,29 @@ def _collect_recent_user_messages(
 def _collect_visualization_thread_messages(
     events: List[Dict[str, Any]], fallback_limit: int = 12
 ) -> List[str]:
-    user_messages = []
+    user_messages: List[str] = []
+    rejected_indices: set = set()
     thread_start = 0
     user_count = 0
+    last_user_index: Optional[int] = None
 
     for ev in events:
         if ev.get("event") == "user":
             text_any = ev.get("text")
             if isinstance(text_any, str) and text_any.strip():
                 user_messages.append(text_any.strip())
+                last_user_index = user_count
                 user_count += 1
+
+        elif ev.get("event") == "bot":
+            payload = _extract_bot_custom_payload(ev)
+            if (
+                payload
+                and payload.get("type") == "visualization_query_decision"
+                and payload.get("decision") == "reject"
+                and last_user_index is not None
+            ):
+                rejected_indices.add(last_user_index)
 
         elif ev.get("event") == "action":
             if ev.get("name") == "action_oneshot_generate_visualization":
@@ -168,7 +182,13 @@ def _collect_visualization_thread_messages(
     if not user_messages:
         return []
 
-    return user_messages[thread_start:][-fallback_limit:]
+    sliced = user_messages[thread_start:][-fallback_limit:]
+    sliced_global_start = max(thread_start, user_count - fallback_limit)
+    return [
+        msg
+        for i, msg in enumerate(sliced)
+        if (sliced_global_start + i) not in rejected_indices
+    ]
 
 
 def _extract_bot_custom_payload(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -298,9 +318,8 @@ def _collect_latest_visualization_plan_summary(
                     metric_names.append(name)
         chart_types = [c.get("chart_type") for c in charts_list if c.get("chart_type")]
 
-        summary = (
-            f"Previous chart: {', '.join(chart_types)} of {', '.join(metric_names)}"
-        )
+        plan_json = json.dumps(plan, indent=2)
+        summary = f"Previous chart plan (carry over everything except what the user explicitly changes):\n{plan_json}"
         return summary
 
     return None
@@ -569,6 +588,34 @@ def _ensure_context_trace_id(ctx: LongActionContext) -> str:
 
 def _is_guided_visualization_request(slots: Dict[str, Any]) -> bool:
     return slots.get("guided_hospital_scope") is not None
+
+
+def _build_confirmation_message(
+    plan_obj: lang_schema.AnalysisPlan, is_update: bool
+) -> str:
+    """Build a short confirmation message describing what was just visualized."""
+    if not plan_obj.charts:
+        return "Done."
+
+    chart = plan_obj.charts[0]
+    metrics = [m.metric for m in (chart.metrics or [])]
+    metric_str = " & ".join(metrics) if metrics else "the metric"
+    chart_type = (chart.chart_type or "chart").lower()
+
+    # Time grouping
+    group_by = chart.group_by or []
+    grains = [g.grain for g in group_by if hasattr(g, "grain") and g.grain]
+    grain_str = f" per {grains[0].lower()}" if grains else ""
+
+    # Filters
+    filters = chart.filters
+    if filters is None:
+        filter_str = " with no filters" if is_update else ""
+    else:
+        filter_str = " with filters applied"
+
+    verb = "Updated —" if is_update else "Here's your"
+    return f"{verb} {chart_type} chart of {metric_str}{grain_str}{filter_str}."
 
 
 class ActionOneShotGenerateVisualization(LongAction):
@@ -973,6 +1020,18 @@ class ActionOneShotGenerateVisualization(LongAction):
                             ctx.say(text=f"Note: {warning.strip()}")
 
                 completed_successfully = True
+                planner_question_str = str(
+                    request_ctx.get("planner_question")
+                    or request_ctx.get("user_message")
+                    or ""
+                )
+                is_update_flow: bool = planner_question_str.startswith(
+                    "Previous chart plan"
+                )
+                confirmation = _build_confirmation_message(
+                    plan_obj, is_update=is_update_flow
+                )
+                ctx.say(text=confirmation)
             except Exception as e:
                 if (
                     isinstance(e, VisualizationExecutionError)

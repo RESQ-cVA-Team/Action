@@ -8,7 +8,19 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from threading import Lock
-from typing import Any, Callable, Dict, List, Literal, Optional, Type, TypedDict, Union, cast, overload
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Type,
+    TypedDict,
+    Union,
+    cast,
+    overload,
+)
 
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -34,21 +46,29 @@ _INTENT_KEYWORDS: Dict[str, List[str]] = {
     "distribution": ["distribution", "histogram", "violin", "box"],
     "time": ["over time", "last ", "monthly", "weekly", "yearly", "time series"],
     "group_by": [" by ", "grouped by", "split by"],
-    "stat_test": ["compare", "mann-whitney", "statistical test", "significant", "difference between"],
+    "stat_test": [
+        "compare",
+        "mann-whitney",
+        "statistical test",
+        "significant",
+        "difference between",
+    ],
 }
 
 _SUPPORTED_STAT_TESTS = ["MANN_WHITNEY_U_TEST"]
 
 _PLANNER_REQUEST_TIMEOUT_SECONDS = 30.0
-_MAX_FEW_SHOTS = 2
+_MAX_FEW_SHOTS = 3
 _PLAN_CACHE_SIZE = 256
 _PLAN_CACHE_TTL_SECONDS = 900.0
-_PLAN_CACHE_KEY_VERSION = "v2"
+_PLAN_CACHE_KEY_VERSION = "v3"
 
 LLM_PROVIDER = get_llm_provider()
 _LLM_MODEL = (env.get_env("LLM_MODEL", default="") or "").strip()
 llm: Any = create_chat_llm(temperature=0)
-logger.debug("[Planner] Initialized LLM provider=%s model=%s", LLM_PROVIDER, _LLM_MODEL or "-")
+logger.debug(
+    "[Planner] Initialized LLM provider=%s model=%s", LLM_PROVIDER, _LLM_MODEL or "-"
+)
 
 
 class PlannerTimeoutError(TimeoutError):
@@ -82,7 +102,9 @@ def _extract_text(response: Any) -> str:
 
 def _extract_json_block(text: str) -> str:
     candidate = text.strip()
-    fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", candidate, flags=re.DOTALL | re.IGNORECASE)
+    fenced = re.match(
+        r"^```(?:json)?\s*(.*?)\s*```$", candidate, flags=re.DOTALL | re.IGNORECASE
+    )
     if fenced:
         candidate = fenced.group(1).strip()
 
@@ -119,7 +141,9 @@ def _assert_no_empty_groupby_entries(payload: Dict[str, Any]) -> None:
 
         for gb_idx, item in enumerate(group_by_entries):
             if isinstance(item, dict) and not item:
-                raise ValueError(f"Invalid AnalysisPlan: charts[{chart_idx}].group_by[{gb_idx}] is an empty object. Use an explicit GroupBy spec or set group_by to null.")
+                raise ValueError(
+                    f"Invalid AnalysisPlan: charts[{chart_idx}].group_by[{gb_idx}] is an empty object. Use an explicit GroupBy spec or set group_by to null."
+                )
 
 
 def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
@@ -156,7 +180,11 @@ def get_schema_description(model: Type[Any]) -> str:
                 # Recurse for nested models
                 outer = get_origin(field.annotation)
                 inner = get_args(field.annotation)
-                if outer in (list, List) and inner and hasattr(inner[0], "model_fields"):
+                if (
+                    outer in (list, List)
+                    and inner
+                    and hasattr(inner[0], "model_fields")
+                ):
                     lines.append(describe(inner[0], indent + 2))
                 elif hasattr(field.annotation, "model_fields"):
                     lines.append(describe(field.annotation, indent + 2))
@@ -174,7 +202,9 @@ _plan_cache_hits = 0
 _plan_cache_misses = 0
 _plan_cache_expired = 0
 _PLAN_CACHE_STATS_LOCK = Lock()
-_LAST_CACHE_EVENT: ContextVar[Optional[bool]] = ContextVar("planner_last_cache_event", default=None)
+_LAST_CACHE_EVENT: ContextVar[Optional[bool]] = ContextVar(
+    "planner_last_cache_event", default=None
+)
 
 
 def _invoke_with_timeout(chain: Any, inputs: Dict[str, Any], label: str) -> Any:
@@ -184,7 +214,9 @@ def _invoke_with_timeout(chain: Any, inputs: Dict[str, Any], label: str) -> Any:
             return future.result(timeout=_PLANNER_REQUEST_TIMEOUT_SECONDS)
         except FuturesTimeoutError as exc:
             future.cancel()
-            raise PlannerTimeoutError(f"{label} timed out after {_PLANNER_REQUEST_TIMEOUT_SECONDS:.1f}s") from exc
+            raise PlannerTimeoutError(
+                f"{label} timed out after {_PLANNER_REQUEST_TIMEOUT_SECONDS:.1f}s"
+            ) from exc
 
 
 def _plan_for_cache(plan: AnalysisPlan) -> AnalysisPlan:
@@ -207,7 +239,9 @@ def _cache_key(question: str, entities: Dict[str, Any], language: str) -> str:
         "intent_w": _FEWSHOT_INTENT_WEIGHT,
         "intent_keywords": _INTENT_KEYWORDS,
     }
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
 
 
 def _cache_get(key: str) -> Optional[AnalysisPlan]:
@@ -364,8 +398,12 @@ def _intent_features(text: str) -> set[str]:
     return features
 
 
-def _match_score(question: str, entities: Dict[str, Any], example: Dict[str, str]) -> float:
-    query_text = f"{question}\n{json.dumps(entities, ensure_ascii=False, sort_keys=True)}"
+def _match_score(
+    question: str, entities: Dict[str, Any], example: Dict[str, str]
+) -> float:
+    query_text = (
+        f"{question}\n{json.dumps(entities, ensure_ascii=False, sort_keys=True)}"
+    )
     query_tokens = _tokenize(query_text)
     ex_text = example.get("user", "")
     ex_tokens = _tokenize(ex_text)
@@ -381,7 +419,10 @@ def _match_score(question: str, entities: Dict[str, Any], example: Dict[str, str
     entity_key_score = float(len(key_overlap)) * _FEWSHOT_ENTITY_KEY_WEIGHT
     entity_value_score = 0.0
     for key in key_overlap:
-        entity_value_score += float(len(query_entities[key] & example_entities[key])) * _FEWSHOT_ENTITY_VALUE_WEIGHT
+        entity_value_score += (
+            float(len(query_entities[key] & example_entities[key]))
+            * _FEWSHOT_ENTITY_VALUE_WEIGHT
+        )
 
     query_intent = _intent_features(query_text)
     example_intent = _intent_features(ex_text)
@@ -390,12 +431,17 @@ def _match_score(question: str, entities: Dict[str, Any], example: Dict[str, str
     return token_overlap_score + entity_key_score + entity_value_score + intent_score
 
 
-def _select_few_shot_examples(question: str, entities: Dict[str, Any], max_items: int) -> List[Dict[str, str]]:
+def _select_few_shot_examples(
+    question: str, entities: Dict[str, Any], max_items: int
+) -> List[Dict[str, str]]:
     if not few_shot_examples:
         return []
 
     capped = max(1, min(max_items, len(few_shot_examples)))
-    scored = [(_match_score(question, entities, ex), idx, ex) for idx, ex in enumerate(few_shot_examples)]
+    scored = [
+        (_match_score(question, entities, ex), idx, ex)
+        for idx, ex in enumerate(few_shot_examples)
+    ]
     scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
 
     selected = [item[2] for item in scored[:capped]]
@@ -439,12 +485,19 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
             "Sex semantics guidance: phrases like 'males only' or 'females only' should usually be chart filters (SexFilter), while 'split/group by sex' should use GroupBySex. "
             "Prefer LINE/BAR for trends or comparisons; BOX/VIOLIN/HISTOGRAM for distributions. "
             "Chart intent guidance: If user asks for one graph/one chart/single visual with multiple splits, prefer one chart with multiple group_by dimensions. If user asks for separate charts/multiple visuals, produce multiple chart specs. "
-            "Statistical test guidance: Only use test types listed in SUPPORTED_STAT_TESTS_JSON; otherwise omit statistical_tests and return charts.",
+            "Statistical test guidance: Only use test types listed in SUPPORTED_STAT_TESTS_JSON; otherwise omit statistical_tests and return charts."
+            "Time grouping guidance: When group_by entity is quarter or quarterly, use GroupByTime with grain=QUARTER. When month or monthly, use grain=MONTH. When year or yearly, use grain=YEAR. Never emit an empty object for group_by entries."
+            "Update guidance: When the question starts with 'Previous chart plan', treat that plan as the base. Inherit all fields (chart_type, group_by, filters, metrics, origin_scope) and only replace what the user explicitly mentions in their new request. If the user says 'show X instead', only change the metric. If they say 'filter by females', only add a filter. Never drop group_by or other dimensions unless explicitly asked. "
+            "Filter merging rule: When adding a new filter to a chart that already has a filter of a different type, combine them using AndFilter rather than replacing. For example, if the existing filter is {{'type': 'StrokeFilter', 'value': 'ISCHEMIC'}} and the user adds a sex filter, produce {{'type': 'AndFilter', 'and_': [{{'type': 'StrokeFilter', 'value': 'ISCHEMIC'}}, {{'type': 'SexFilter', 'value': 'FEMALE'}}]}}. Only replace an existing filter when the user specifies a different value of the same filter type (e.g. replace SexFilter with SexFilter if the user wants a different sex). Never silently drop a filter."
+            "Date filter guidance: When the user specifies a year (e.g. 'in 2025', 'from 2025', 'during 2024'), produce two DateFilter nodes wrapped in an AndFilter: one with operator 'GE' and value '{{year}}-01-01', one with operator 'LE' and value '{{year}}-12-31'. Valid operators are GE, LE, GT, LT, EQ, NE only — never invent others. Never use GroupByTime for a date filter.",
         ),
         ("system", "SCHEMA:\n" + SCHEMA_DESCRIPTION),
         ("system", "FEW_SHOT_EXAMPLES:\n{few_shots}"),
         ("system", "SUPPORTED_STAT_TESTS_JSON:\n{supported_stat_tests}"),
-        ("system", "REASONING (English internal reasoning shown below can differ from output language):\n{reasoning}"),
+        (
+            "system",
+            "REASONING (English internal reasoning shown below can differ from output language):\n{reasoning}",
+        ),
         ("user", "USER_UTTERANCE:\n{question}\n\nENTITIES_DETECTED(JSON):\n{entities}"),
     ]
 )
@@ -531,7 +584,9 @@ def generate_analysis_plan(
 
         cache_key: Optional[str] = None
         if _ENABLE_PLAN_CACHE and not debug:
-            cache_key = _cache_key(question=question, entities=entities, language=language)
+            cache_key = _cache_key(
+                question=question, entities=entities, language=language
+            )
             cached_plan = _cache_get(cache_key)
             if cached_plan is not None:
                 _record_cache_event(True)
@@ -556,7 +611,12 @@ def generate_analysis_plan(
 
         logger.debug(
             "[Planner] generate_analysis_plan invoked",
-            extra={"log_context": {"question_length": len(question or ""), "entity_count": len(entities or {})}},
+            extra={
+                "log_context": {
+                    "question_length": len(question or ""),
+                    "entity_count": len(entities or {}),
+                }
+            },
         )
 
         steps: List[Any] = []
@@ -578,9 +638,13 @@ def generate_analysis_plan(
 
         for attempt in range(1, total_attempts + 1):
             if progress_cb is not None:
-                progress_cb(f"Thinking about a plan (attempt {attempt}/{total_attempts}).")
+                progress_cb(
+                    f"Thinking about a plan (attempt {attempt}/{total_attempts})."
+                )
 
-            raw_result: Any = _invoke_with_timeout(plan_chain, plan_inputs, label=f"plan_chain_attempt_{attempt}")
+            raw_result: Any = _invoke_with_timeout(
+                plan_chain, plan_inputs, label=f"plan_chain_attempt_{attempt}"
+            )
             steps.append(
                 {
                     "step": f"plan_attempt_{attempt}",
@@ -603,10 +667,14 @@ def generate_analysis_plan(
                 )
                 if attempt >= total_attempts:
                     break
-                plan_inputs["reasoning"] = f"Previous output failed schema validation. Return ONLY a valid AnalysisPlan JSON object. Validation error: {exc}"
+                plan_inputs["reasoning"] = (
+                    f"Previous output failed schema validation. Return ONLY a valid AnalysisPlan JSON object. Validation error: {exc}"
+                )
 
         if result is None:
-            raise ValueError(f"Planner failed to produce a valid AnalysisPlan after {total_attempts} attempts") from last_error
+            raise ValueError(
+                f"Planner failed to produce a valid AnalysisPlan after {total_attempts} attempts"
+            ) from last_error
 
         if debug:
             debug_payload: GeneratePlanDebug = {

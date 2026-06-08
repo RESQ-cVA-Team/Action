@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, List, Optional, Sequence
 
 from src.domain.graphql.request import (
@@ -13,7 +13,6 @@ from src.domain.graphql.request import (
 from src.domain.graphql.request import DateFilter as GQLDateFilter
 from src.domain.graphql.request import LogicalFilter as GQLLogicalFilter
 from src.domain.graphql.ssot_enums import GroupByType
-from src.executors.mapping.series_mapper import period_to_label
 from src.executors.planning.query_compiler import Dimension
 from src.util import env as env_util
 
@@ -31,9 +30,15 @@ def _parse_int_csv(raw: str) -> List[int]:
     return out
 
 
-_DEFAULT_PROVIDER_GROUP_IDS = _parse_int_csv(env_util.get_env("EXECUTOR_DEFAULT_PROVIDER_GROUP_IDS", default="1") or "1")
-_DEFAULT_PROVIDER_IDS = _parse_int_csv(env_util.get_env("EXECUTOR_DEFAULT_PROVIDER_IDS", default="") or "")
-_INCLUDE_GENERAL_STATS = env_util.env_flag("EXECUTOR_INCLUDE_GENERAL_STATS", default=True)
+_DEFAULT_PROVIDER_GROUP_IDS = _parse_int_csv(
+    env_util.get_env("EXECUTOR_DEFAULT_PROVIDER_GROUP_IDS", default="1") or "1"
+)
+_DEFAULT_PROVIDER_IDS = _parse_int_csv(
+    env_util.get_env("EXECUTOR_DEFAULT_PROVIDER_IDS", default="") or ""
+)
+_INCLUDE_GENERAL_STATS = env_util.env_flag(
+    "EXECUTOR_INCLUDE_GENERAL_STATS", default=True
+)
 
 
 def _build_data_origin(override: Optional[DataOrigin] = None) -> DataOrigin:
@@ -71,9 +76,12 @@ class RequestSpec:
     group_by_field: Optional[str]
     add_time_period_labels: bool
     scope_label: Optional[str] = None
+    batched_time_periods: List[TimePeriod] = field(default_factory=list)
 
 
-def _collect_date_bounds(filter_obj: Optional[Any]) -> tuple[Optional[str], Optional[str]]:
+def _collect_date_bounds(
+    filter_obj: Optional[Any],
+) -> tuple[Optional[str], Optional[str]]:
     if filter_obj is None:
         return None, None
 
@@ -100,7 +108,9 @@ def _collect_date_bounds(filter_obj: Optional[Any]) -> tuple[Optional[str], Opti
     return min_start, max_end
 
 
-def _build_case_filter(chart_filter: Optional[Any], filter_dims: List[Dimension], combo: tuple[Any, ...]) -> tuple[Optional[Any], List[str]]:
+def _build_case_filter(
+    chart_filter: Optional[Any], filter_dims: List[Dimension], combo: tuple[Any, ...]
+) -> tuple[Optional[Any], List[str]]:
     combo_filters: List[Any] = []
     label_parts: List[str] = []
 
@@ -138,7 +148,9 @@ def build_primary_request_specs(
 ) -> tuple[List[RequestSpec], List[ComboContext]]:
     specs: List[RequestSpec] = []
     combo_contexts: List[ComboContext] = []
-    per_metric_data_origin = any(origin is not None for origin in (metric_data_origins or []))
+    per_metric_data_origin = any(
+        origin is not None for origin in (metric_data_origins or [])
+    )
 
     for combo in combos_list:
         case_filter, label_parts = _build_case_filter(chart_filter, filter_dims, combo)
@@ -152,9 +164,21 @@ def build_primary_request_specs(
 
         if per_metric_data_origin:
             for idx, metric_request in enumerate(metric_requests):
-                metric_origin = (metric_data_origins[idx] if metric_data_origins and idx < len(metric_data_origins) else None) or data_origin
-                scope_label = metric_scope_labels[idx] if metric_scope_labels and idx < len(metric_scope_labels) else None
-                effective_scope_label = scope_label.strip() if isinstance(scope_label, str) and scope_label.strip() else None
+                metric_origin = (
+                    metric_data_origins[idx]
+                    if metric_data_origins and idx < len(metric_data_origins)
+                    else None
+                ) or data_origin
+                scope_label = (
+                    metric_scope_labels[idx]
+                    if metric_scope_labels and idx < len(metric_scope_labels)
+                    else None
+                )
+                effective_scope_label = (
+                    scope_label.strip()
+                    if isinstance(scope_label, str) and scope_label.strip()
+                    else None
+                )
 
                 req = GraphQLQueryRequest(
                     metrics=[metric_request],
@@ -173,6 +197,7 @@ def build_primary_request_specs(
                         group_by_field=group_by_field,
                         add_time_period_labels=batched_time_enabled,
                         scope_label=effective_scope_label,
+                        batched_time_periods=batched_time_periods,
                     )
                 )
                 combo_contexts.append(
@@ -202,6 +227,7 @@ def build_primary_request_specs(
                     include_metric_alias=include_metric_alias,
                     group_by_field=group_by_field,
                     add_time_period_labels=batched_time_enabled,
+                    batched_time_periods=batched_time_periods,
                 )
             )
             combo_contexts.append(
@@ -226,15 +252,20 @@ def build_fallback_request_specs(
 
     for context in combo_contexts:
         for period in batched_time_periods:
-            period_label = period_to_label(period)
-            retry_label_parts = [*context.label_parts, period_label]
+            # period_label = period_to_label(period)
+            # retry_label_parts = [*context.label_parts, period_label]
+            retry_label_parts = context.label_parts
             req = GraphQLQueryRequest(
                 metrics=context.metric_requests,
                 timePeriod=period,
                 dataOrigin=_build_data_origin(context.data_origin),
                 includeGeneralStats=_INCLUDE_GENERAL_STATS,
                 caseFilter=context.case_filter,
-                groupBy=(GroupByType(context.group_by_field) if context.group_by_field else None),
+                groupBy=(
+                    GroupByType(context.group_by_field)
+                    if context.group_by_field
+                    else None
+                ),
             )
             specs.append(
                 RequestSpec(
@@ -243,6 +274,7 @@ def build_fallback_request_specs(
                     include_metric_alias=context.include_metric_alias,
                     group_by_field=context.group_by_field,
                     add_time_period_labels=True,
+                    batched_time_periods=[period],
                 )
             )
 
