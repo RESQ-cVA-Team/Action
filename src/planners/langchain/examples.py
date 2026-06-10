@@ -3,6 +3,7 @@ from typing import Dict, List, Tuple
 
 from src.domain.langchain.schema import (
     AnalysisPlan,
+    AndFilter,
     ChartSpec,
     DateFilter,
     GroupByCanonicalField,
@@ -13,6 +14,7 @@ from src.domain.langchain.schema import (
     OriginScopeSpec,
     SexFilter,
     StatisticalTestSpec,
+    StrokeFilter,
     TimeWindow,
 )
 
@@ -421,6 +423,108 @@ def example_dtn_year_filter() -> Tuple[str, str]:
     return user, assistant
 
 
+def example_dtn_quarterly() -> Tuple[str, str]:
+    detected_entities = {
+        "metric": ["DTN"],
+        "chart_type": ["LINE"],
+        "group_by": ["quarter"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="LINE",
+                group_by=[GroupByTime(grain="QUARTER")],
+                metrics=[MetricSpec(metric="DTN")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nShow me a line chart of DTN per quarter\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
+def example_dtn_monthly() -> Tuple[str, str]:
+    detected_entities = {
+        "metric": ["DTN"],
+        "chart_type": ["LINE"],
+        "group_by": ["month"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="LINE",
+                group_by=[GroupByTime(grain="MONTH")],
+                metrics=[MetricSpec(metric="DTN")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nShow me a line chart of DTN per month\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
+def example_dtn_ischemic_only_filter() -> Tuple[str, str]:
+    detected_entities = {
+        "stroke_type": ["ISCHEMIC"],
+        "metric": ["DTN"],
+        "chart_type": ["LINE"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="LINE",
+                filters=StrokeFilter(value="ISCHEMIC"),
+                group_by=None,
+                metrics=[MetricSpec(metric="DTN")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nShow me a line graph of DTN for ischemic strokes only\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
+def example_dtn_ischemic_and_female_filter() -> Tuple[str, str]:
+    detected_entities = {"sex": ["FEMALE"], "metric": ["DTN"], "chart_type": ["LINE"]}
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="LINE",
+                filters=AndFilter(
+                    and_=[
+                        StrokeFilter(value="ISCHEMIC"),
+                        SexFilter(value="FEMALE"),
+                    ]
+                ),
+                group_by=[GroupByTime(grain="QUARTER")],
+                metrics=[MetricSpec(metric="DTN")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nPrevious chart plan (carry over everything except what the user explicitly changes):\n"
+        '{"charts": [{"chart_type": "LINE", "filters": {"type": "StrokeFilter", "value": "ISCHEMIC"}, '
+        '"group_by": [{"grain": "QUARTER"}], "metrics": [{"metric": "DTN"}]}]}\n\n'
+        "Conversation context (oldest to newest user turns):\nfilter for female patients\n\n"
+        "ENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
 def example_mw_hospital_vs_hospital() -> Tuple[str, str]:
     detected_entities = {
         "metric": ["DTN"],
@@ -476,11 +580,15 @@ def get_few_shot_examples() -> List[Dict[str, str]]:
         example_dtn_distribution_line(),
         example_dtn_males_only_filter(),
         example_dtn_females_only_filter(),
+        example_dtn_ischemic_only_filter(),
         example_dtn_by_first_contact_place(),
         example_dtn_by_sex(),
         example_dtn_by_sex_and_stroke(),
         example_statistical_test_dtn_by_sex(),
         example_dtn_year_filter(),
+        example_dtn_quarterly(),
+        example_dtn_monthly(),
+        example_dtn_ischemic_and_female_filter(),
     ]:
         examples.append(
             {

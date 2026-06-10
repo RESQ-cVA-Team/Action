@@ -934,6 +934,7 @@ async def _execute_request_spec(
         semaphore=context.semaphore,
         log_graphql_query=context.log_graphql_query,
         request_warnings=request_warnings,
+        batched_time_periods=spec.batched_time_periods,
     )
     return RequestExecutionResult(spec=spec, series=series)
 

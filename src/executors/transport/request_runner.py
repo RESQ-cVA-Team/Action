@@ -52,9 +52,12 @@ async def run_graphql_request(
     scope_label: Optional[str] = None,
     request_warnings: Optional[List[str]] = None,
     log_graphql_query: bool = False,
+    batched_time_periods: Optional[List[Any]] = None,
 ) -> List[ChartSeries]:
     trace_label = trace_id
-    request_label = scope_label or " | ".join([part for part in label_parts if part]) or "(none)"
+    request_label = (
+        scope_label or " | ".join([part for part in label_parts if part]) or "(none)"
+    )
     async with semaphore:
         query_str = req.to_graphql_string()
         q_hash = hashlib.sha256(query_str.encode("utf-8")).hexdigest()[:12]
@@ -83,7 +86,13 @@ async def run_graphql_request(
             except GraphQLProxyError as exc:
                 if exc.kind == "timeout":
                     request_failures.append("timeout")
-                elif exc.kind == "http_error" and exc.status_code in {429, 500, 502, 503, 504}:
+                elif exc.kind == "http_error" and exc.status_code in {
+                    429,
+                    500,
+                    502,
+                    503,
+                    504,
+                }:
                     request_failures.append("service_unavailable")
                 else:
                     request_failures.append("upstream_error")
@@ -203,6 +212,7 @@ async def run_graphql_request(
         group_by_field=group_by_field,
         add_time_period_labels=add_time_period_labels,
         scope_label=scope_label,
+        batched_time_periods=batched_time_periods,
     )
 
     skipped_rows = 0
@@ -244,12 +254,18 @@ async def run_graphql_request(
             if skipped_rows > 0 or getattr(resp, "errors", None):
                 detail_bits: List[str] = []
                 if skipped_rows > 0:
-                    detail_bits.append(f"{skipped_rows}/{total_rows} row(s) were omitted")
+                    detail_bits.append(
+                        f"{skipped_rows}/{total_rows} row(s) were omitted"
+                    )
                 if getattr(resp, "errors", None):
                     detail_bits.append("the backend returned validation errors")
-                _append_warning(f"Partial data returned for {request_label}; {' and '.join(detail_bits)}.")
+                _append_warning(
+                    f"Partial data returned for {request_label}; {' and '.join(detail_bits)}."
+                )
             else:
-                _append_warning(f"No usable data was returned for {request_label}; 0/{total_rows} row(s) had valid data.")
+                _append_warning(
+                    f"No usable data was returned for {request_label}; 0/{total_rows} row(s) had valid data."
+                )
 
         logger.warning(
             "[plan_executor] Metrics payload mapped to zero series (groupBy=%s, labels=%s, hash=%s, metrics=%s, kpi_groups=%s)",
@@ -280,7 +296,9 @@ async def run_graphql_request(
         if has_graphql_errors:
             warning_bits.append("the backend returned validation errors")
 
-        warning_text = f"Partial data returned for {request_label}; {' and '.join(warning_bits)}."
+        warning_text = (
+            f"Partial data returned for {request_label}; {' and '.join(warning_bits)}."
+        )
         _append_warning(warning_text)
 
     return series
