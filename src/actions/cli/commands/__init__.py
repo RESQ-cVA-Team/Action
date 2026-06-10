@@ -40,7 +40,6 @@ from .test import box as _test_box  # noqa: E402
 from .test import charts as _test_charts  # noqa: E402
 from .test import graphql as _test_graphql  # noqa: E402
 from .test import histogram as _test_histogram  # noqa: E402
-from .test import hospitals as _test_hospitals  # noqa: E402
 from .test import line as _test_line  # noqa: E402
 from .test import pie as _test_pie  # noqa: E402
 from .test import radar as _test_radar  # noqa: E402
@@ -51,7 +50,6 @@ from .test import waterfall as _test_waterfall  # noqa: E402
 _ = (
     _core,
     _test_graphql,
-    _test_hospitals,
     _test_analytics,
     _test_bar,
     _test_pie,

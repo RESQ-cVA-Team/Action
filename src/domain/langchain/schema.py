@@ -21,6 +21,7 @@ from src.domain.graphql.ssot_enums import (
 from src.domain.graphql.ssot_enums import (
     Operator as OperatorType,
 )
+from src.shared.ssot_loader import get_metric_metadata, get_metric_text_lookup
 
 
 def _deep_freeze(value: Any) -> Any:
@@ -528,15 +529,7 @@ class OriginScopeSpec(BaseModel):
     @field_validator("scope_type")
     def validate_scope_type(cls, v: str) -> str:
         raw = (v or "").strip().lower().replace("-", "_").replace(" ", "_")
-        aliases = {
-            "hospital_name": "provider_name",
-            "provider": "provider_name",
-            "group_id": "provider_group_id",
-            "group_name": "provider_group_name",
-            "country": "country_code",
-            "all": "all_accessible",
-        }
-        normalized = aliases.get(raw, raw)
+        normalized = raw
         allowed = {
             "mine",
             "provider_id",
@@ -578,7 +571,36 @@ class DistributionSpec(BaseModel):
     max_value: int = Field(description="Maximum value of the distribution range.")
 
 
-_CHART_ANALYSIS_MODES = {"TIME_SERIES", "DISTRIBUTION", "SUMMARY", "COMPARISON"}
+_Y_STATISTICS = {"MEAN", "MEDIAN", "P25", "P75", "COUNT", "PERCENT", "CASE_COUNT"}
+
+
+def _metric_data_shape(metric_code: str) -> tuple[Optional[str], Optional[str]]:
+    meta = get_metric_metadata().get(metric_code, {})
+    data_type_raw = meta.get("data_type")
+    data_type = str(data_type_raw).strip().upper() if isinstance(data_type_raw, str) else None
+
+    unit_raw = meta.get("unit")
+    unit = str(unit_raw).strip().lower() if isinstance(unit_raw, str) and str(unit_raw).strip() else None
+
+    if unit is None:
+        numeric_block = meta.get("numeric")
+        if isinstance(numeric_block, dict):
+            nested_unit = numeric_block.get("unit")
+            if isinstance(nested_unit, str) and nested_unit.strip():
+                unit = nested_unit.strip().lower()
+
+    if data_type is None or unit is None:
+        text_meta = get_metric_text_lookup().get((metric_code or "").strip().lower(), {})
+        if data_type is None:
+            fallback_data_type = text_meta.get("data_type")
+            if isinstance(fallback_data_type, str) and fallback_data_type.strip():
+                data_type = fallback_data_type.strip().upper()
+        if unit is None:
+            fallback_unit = text_meta.get("unit")
+            if isinstance(fallback_unit, str) and fallback_unit.strip():
+                unit = fallback_unit.strip().lower()
+
+    return data_type, unit
 
 
 class MetricSpec(BaseModel):
@@ -606,23 +628,130 @@ class MetricSpec(BaseModel):
         return v_norm
 
 
+class TimeXAxis(HashableBaseModel):
+    grain: str = Field(description="Time aggregation grain.")
+    window: Optional[Union[TimeWindow, TimeRange]] = Field(default=None, description="Optional relative or absolute time window.")
+    include_partial: Optional[bool] = Field(default=None, alias="includePartial")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @field_validator("grain")
+    def validate_grain(cls, v: str) -> str:
+        v_norm = v.upper()
+        if v_norm not in TIME_INTERVALS:
+            raise ValueError(f"{v} is not a valid time grain. Allowed: {sorted(TIME_INTERVALS)}")
+        return v_norm
+
+
+class CategoryXAxis(HashableBaseModel):
+    group_by: GroupBySpec = Field(alias="groupBy")
+    order: Optional[str] = Field(default=None, description="Optional category ordering hint.")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class NumericXAxis(HashableBaseModel):
+    metric: str
+    bins: int = Field(gt=0, default=20)
+    min_value: Optional[int] = Field(default=None, alias="minValue")
+    max_value: Optional[int] = Field(default=None, alias="maxValue")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @field_validator("metric")
+    def validate_metric(cls, v: str) -> str:
+        v_norm = (v or "").strip().upper()
+        allowed_values = _enum_allowed_values(MetricType)
+        if v_norm not in allowed_values:
+            raise ValueError(f"{v} is not a valid MetricType. Allowed: {sorted(allowed_values)}")
+        return v_norm
+
+
+class ScopeXAxis(HashableBaseModel):
+    scopes: List[OriginScopeSpec] = Field(min_length=1)
+
+
+XAxisSpec = Union[TimeXAxis, CategoryXAxis, NumericXAxis, ScopeXAxis]
+
+
+class YAxisSpec(BaseModel):
+    metrics: List[MetricSpec] = Field(min_length=1)
+    statistic: str = Field(default="MEAN")
+    axis_id: Optional[str] = Field(default=None, alias="axisId")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @field_validator("statistic")
+    def validate_statistic(cls, v: str) -> str:
+        token = (v or "").strip().upper()
+        if token not in _Y_STATISTICS:
+            raise ValueError(f"{v} is not a valid y-axis statistic. Allowed: {sorted(_Y_STATISTICS)}")
+        return token
+
+    @model_validator(mode="after")
+    def validate_unit_compatibility(self) -> "YAxisSpec":
+        if len(self.metrics) <= 1:
+            return self
+
+        units: set[str] = set()
+        metric_codes: List[str] = []
+        for metric in self.metrics:
+            metric_codes.append(metric.metric)
+            _, unit = _metric_data_shape(metric.metric)
+            if unit:
+                units.add(unit)
+
+        if len(units) > 1:
+            raise ValueError(
+                "Mixed units in the same y-axis are not supported in v1. "
+                f"Metrics {metric_codes} resolved to units {sorted(units)}. "
+                "Use separate charts or a future dual-axis extension."
+            )
+
+        return self
+
+
+class SeriesSpec(BaseModel):
+    split_by: GroupBySpec = Field(alias="splitBy")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="after")
+    def validate_series_groupby(self) -> "SeriesSpec":
+        if isinstance(self.split_by, GroupByTime):
+            raise ValueError("seriesBy cannot use GroupByTime; time grouping belongs on xAxis.")
+        return self
+
+
+class SummarySpec(BaseModel):
+    metrics: List[MetricSpec] = Field(min_length=1)
+    statistic: str = Field(default="MEAN")
+    filters: Optional[FilterNode] = None
+
+    @field_validator("statistic")
+    def validate_summary_statistic(cls, v: str) -> str:
+        token = (v or "").strip().upper()
+        if token not in _Y_STATISTICS:
+            raise ValueError(f"{v} is not a valid summary statistic. Allowed: {sorted(_Y_STATISTICS)}")
+        return token
+
+
 class ChartSpec(BaseModel):
     """
     Specification for a chart to be generated.
 
     Attributes:
         chart_type: The chart type (must be in ChartType).
-        analysis_mode: Semantic intent for the chart.
-        filters: Optional chart-level filters applied to all metrics/series.
-        group_by: Optional chart-level groupings applied to all metrics/series.
-        metrics: List of metrics to include in the chart.
+        x_axis/y_axes/series_by: explicit chart semantics.
+        filters: Optional chart-level filters applied to all series.
     """
 
     chart_type: str  # Should be a value from ChartType
-    analysis_mode: str = Field(alias="analysisMode")
+    x_axis: XAxisSpec = Field(alias="xAxis")
+    y_axes: List[YAxisSpec] = Field(alias="yAxes", min_length=1)
+    series_by: Optional[SeriesSpec] = Field(default=None, alias="seriesBy")
     filters: Optional[FilterNode] = None
-    group_by: Optional[List[GroupBySpec]] = None
-    metrics: List[MetricSpec]
+    title: Optional[str] = None
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -633,72 +762,30 @@ class ChartSpec(BaseModel):
             raise ValueError(f"{v} is not a valid ChartType. Allowed: {ChartType}")
         return v_norm
 
-    @field_validator("analysis_mode")
-    def validate_analysis_mode(cls, v: str) -> str:
-        mode = (v or "").strip().upper()
-        if mode not in _CHART_ANALYSIS_MODES:
-            raise ValueError(f"{v} is not a valid chart analysis mode. Allowed: {sorted(_CHART_ANALYSIS_MODES)}")
-        return mode
-
     @model_validator(mode="after")
-    def validate_chart_level_groupby(self) -> "ChartSpec":
-        """Validate chart-level group_by and filters.
+    def validate_shape_compatibility(self) -> "ChartSpec":
+        if self.chart_type in {"PIE", "RADAR"}:
+            if not isinstance(self.x_axis, CategoryXAxis):
+                raise ValueError(f"{self.chart_type} charts require xAxis=CategoryXAxis.")
+            if self.series_by is not None:
+                raise ValueError(f"{self.chart_type} charts do not support seriesBy.")
 
-        Rules enforced:
-        - No duplicate GroupBy of the same exact spec.
-        - At most one GroupBySex and one GroupByStrokeType.
-        - At most one GroupByAge and one GroupByNIHSS.
-        - GroupByBoolean: at most one per boolean_type.
-        - GroupByCanonicalField: no duplicates of the same field (multiple distinct canonical fields are allowed).
-        """
-        gb = self.group_by or []
-        if not gb:
-            return self
+        if self.chart_type == "HISTOGRAM":
+            if not isinstance(self.x_axis, NumericXAxis):
+                raise ValueError("HISTOGRAM charts require xAxis=NumericXAxis.")
+            if self.series_by is not None:
+                raise ValueError("HISTOGRAM charts do not support seriesBy in v1.")
+            if len(self.y_axes) != 1 or len(self.y_axes[0].metrics) != 1:
+                raise ValueError("HISTOGRAM charts require exactly one yAxis with one metric.")
 
-        seen_specs: set[GroupBySpec] = set()
-        sex_count = 0
-        stroke_count = 0
-        age_count = 0
-        nihss_count = 0
-        time_count = 0
-        boolean_by_type: dict[str, int] = {}
-        canonical_fields: set[str] = set()
+        if self.chart_type in {"LINE", "AREA"} and not isinstance(self.x_axis, (TimeXAxis, CategoryXAxis)):
+            raise ValueError(f"{self.chart_type} charts require xAxis=TimeXAxis or CategoryXAxis.")
 
-        for g in gb:
-            if g in seen_specs:
-                raise ValueError("Duplicate groupBy spec detected in chart.group_by; remove duplicates.")
-            seen_specs.add(g)
+        if self.chart_type == "SCATTER":
+            raise ValueError("SCATTER is not supported in v1. Use another chart type.")
 
-            if isinstance(g, GroupBySex):
-                sex_count += 1
-                if sex_count > 1:
-                    raise ValueError("Only one GroupBySex is allowed per chart.")
-            elif isinstance(g, GroupByStrokeType):
-                stroke_count += 1
-                if stroke_count > 1:
-                    raise ValueError("Only one GroupByStrokeType is allowed per chart.")
-            elif isinstance(g, GroupByAge):
-                age_count += 1
-                if age_count > 1:
-                    raise ValueError("Only one GroupByAge is allowed per chart.")
-            elif isinstance(g, GroupByNIHSS):
-                nihss_count += 1
-                if nihss_count > 1:
-                    raise ValueError("Only one GroupByNIHSS is allowed per chart.")
-            elif isinstance(g, GroupByTime):
-                time_count += 1
-                if time_count > 1:
-                    raise ValueError("Only one GroupByTime is allowed per chart.")
-            elif isinstance(g, GroupByBoolean):
-                boolean_by_type[g.boolean_type] = boolean_by_type.get(g.boolean_type, 0) + 1
-            elif isinstance(g, GroupByCanonicalField):
-                if g.field in canonical_fields:
-                    raise ValueError("Duplicate GroupByCanonicalField for the same field is not allowed.")
-                canonical_fields.add(g.field)
-
-        for btype, count in boolean_by_type.items():
-            if count > 1:
-                raise ValueError(f"Only one GroupByBoolean per boolean_type is allowed (duplicate for '{btype}').")
+        if self.chart_type == "BOX" and self.series_by is not None and isinstance(self.series_by.split_by, GroupByTime):
+            raise ValueError("BOX charts cannot use GroupByTime in seriesBy.")
 
         return self
 
@@ -786,10 +873,18 @@ class AnalysisPlan(BaseModel):
     """
 
     charts: Optional[List[ChartSpec]] = None
+    summaries: Optional[List[SummarySpec]] = None
     statistical_tests: Optional[List[StatisticalTestSpec]] = None
 
 
 MetricSpec.model_rebuild()
 ChartSpec.model_rebuild()
 StatisticalTestSpec.model_rebuild()
+TimeXAxis.model_rebuild()
+CategoryXAxis.model_rebuild()
+NumericXAxis.model_rebuild()
+ScopeXAxis.model_rebuild()
+YAxisSpec.model_rebuild()
+SeriesSpec.model_rebuild()
+SummarySpec.model_rebuild()
 AnalysisPlan.model_rebuild()

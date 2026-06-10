@@ -17,40 +17,13 @@ from src.executors.mapping.series_mapper import period_to_label
 from src.executors.planning.query_compiler import Dimension
 from src.util import env as env_util
 
-
-def _parse_int_csv(raw: str) -> List[int]:
-    out: List[int] = []
-    for part in (raw or "").split(","):
-        token = part.strip()
-        if not token:
-            continue
-        try:
-            out.append(int(token))
-        except Exception:
-            continue
-    return out
-
-
-_DEFAULT_PROVIDER_GROUP_IDS = _parse_int_csv(env_util.get_env("EXECUTOR_DEFAULT_PROVIDER_GROUP_IDS", default="1") or "1")
-_DEFAULT_PROVIDER_IDS = _parse_int_csv(env_util.get_env("EXECUTOR_DEFAULT_PROVIDER_IDS", default="") or "")
 _INCLUDE_GENERAL_STATS = env_util.env_flag("EXECUTOR_INCLUDE_GENERAL_STATS", default=True)
 
 
 def _build_data_origin(override: Optional[DataOrigin] = None) -> DataOrigin:
-    if override is not None:
-        return override
-
-    provider_group_ids = list(_DEFAULT_PROVIDER_GROUP_IDS)
-    provider_ids = list(_DEFAULT_PROVIDER_IDS)
-    if not provider_group_ids and not provider_ids:
-        provider_group_ids = [1]
-
-    kwargs: dict[str, Any] = {}
-    if provider_group_ids:
-        kwargs["providerGroupId"] = provider_group_ids
-    if provider_ids:
-        kwargs["providerId"] = provider_ids
-    return DataOrigin(**kwargs)
+    if override is None:
+        raise ValueError("Explicit data origin is required; implicit defaults are disabled.")
+    return override
 
 
 @dataclass

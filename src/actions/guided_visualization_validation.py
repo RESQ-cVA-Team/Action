@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import socket
 from typing import Any, Dict, List, Optional, Protocol, cast
 from uuid import uuid4
 
+from src.actions.guided_scope import (
+    GuidedScopeIntent,
+    parse_guided_scope_intent,
+    resolve_mine_scope_json,
+    resolve_provider_group_mine_scope_json,
+    scope_json,
+)
 from src.actions.i18n import resolve_language_from_tracker, translate
-from src.actions.ssot_lookup import normalize_text, resolve_catalog_candidates, resolve_metric_candidates
+from src.actions.ssot_lookup import resolve_catalog_candidates, resolve_metric_candidates
 from src.domain.langchain import schema as S
 from src.executors.analytics_center.client import AnalyticsCenterError, get_analytics_center_client
 from src.util.logging_utils import log_context
@@ -16,19 +21,6 @@ from src.util.logging_utils import log_context
 logger = logging.getLogger(__name__)
 
 SKIP_SENTINEL = "__skip__"
-ALL_SCOPE_TOKENS = {"all", "all hospitals", "all sites", "all providers"}
-MINE_SCOPE_TOKENS = {
-    "mine",
-    "my",
-    "my hospital",
-    "my site",
-    "my center",
-    "my centre",
-    "our hospital",
-    "our site",
-    "our center",
-    "our centre",
-}
 SKIP_TOKENS = {
     SKIP_SENTINEL,
     "/skip_guided_step",
@@ -118,113 +110,6 @@ def _trace_id_from_tracker(tracker: TrackerLike) -> Optional[str]:
     return None
 
 
-def _runtime_instance_fields() -> tuple[int, str]:
-    return os.getpid(), socket.gethostname()
-
-
-def _extract_provider_id(provider: Dict[str, Any]) -> Optional[int]:
-    for key in ("id", "providerId", "provider_id"):
-        value = provider.get(key)
-        if isinstance(value, int):
-            return value
-        if isinstance(value, str) and value.strip().isdigit():
-            return int(value.strip())
-    return None
-
-
-def _provider_name(provider: Dict[str, Any]) -> str:
-    for key in ("nameEnglish", "nameNative", "shortName", "name"):
-        value = provider.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
-
-
-def _is_truthy_flag(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        return value != 0
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
-    return False
-
-
-def _resolve_mine_scope(user_sub: str, trace_id: str) -> Optional[str]:
-    """Resolve personal scope ('mine') to a concrete provider scope when possible.
-
-    Strategy:
-    - Use analytics-center /myself settings first (currentProvider/currentProviderGroup).
-    - If exactly one provider is visible for the user, use it.
-    - Else, look for an explicitly flagged default/current provider.
-    - Otherwise, return None and let the caller request clarification.
-    """
-
-    client = get_analytics_center_client()
-    default_scope = client.resolve_my_default_scope(user_sub=user_sub, trace_id=trace_id, raise_on_error=False)
-    if isinstance(default_scope, dict):
-        provider_id_any = default_scope.get("provider_id")
-        if isinstance(provider_id_any, int):
-            return _json_scope("provider_id", provider_id_any)
-
-        provider_group_id_any = default_scope.get("provider_group_id")
-        if isinstance(provider_group_id_any, int):
-            return _json_scope("group_id", provider_group_id_any)
-
-    page = client.list_providers(user_sub=user_sub, user=user_sub, limit=200, offset=0, trace_id=trace_id, raise_on_error=False)
-    if not page:
-        page = client.list_providers(user_sub=user_sub, limit=200, offset=0, trace_id=trace_id, raise_on_error=False)
-    providers_any: Any = page.get("results", []) if isinstance(page, dict) else []
-    providers: List[Dict[str, Any]] = []
-    if isinstance(providers_any, list):
-        for provider_any in cast(List[Any], providers_any):
-            if isinstance(provider_any, dict):
-                providers.append(cast(Dict[str, Any], provider_any))
-
-    if not providers:
-        return None
-
-    if len(providers) == 1:
-        provider = providers[0]
-        provider_id = _extract_provider_id(provider)
-        label = _provider_name(provider)
-        if provider_id is not None:
-            return _json_scope("provider_id", provider_id, label=label)
-        if label:
-            return _json_scope("hospital_name", label, label=label)
-        return None
-
-    default_flag_keys = (
-        "isDefault",
-        "default",
-        "isPrimary",
-        "primary",
-        "isCurrent",
-        "current",
-        "selected",
-        "isUserProvider",
-        "isMine",
-    )
-    flagged = [p for p in providers if any(_is_truthy_flag(p.get(key)) for key in default_flag_keys)]
-    if len(flagged) == 1:
-        provider = flagged[0]
-        provider_id = _extract_provider_id(provider)
-        label = _provider_name(provider)
-        if provider_id is not None:
-            return _json_scope("provider_id", provider_id, label=label)
-        if label:
-            return _json_scope("hospital_name", label, label=label)
-
-    return None
-
-
-def _json_scope(scope_type: str, value: Any, label: Optional[str] = None) -> str:
-    payload: Dict[str, Any] = {"scope_type": scope_type, "value": value}
-    if isinstance(label, str) and label.strip():
-        payload["label"] = label.strip()
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
-
-
 def _utter_invalid(dispatcher: DispatcherLike, message: str) -> None:
     dispatcher.utter_message(text=message)
 
@@ -310,120 +195,81 @@ def validate_optional_catalog_slot(
 
 
 def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, tracker: TrackerLike) -> Dict[str, Any]:
+    """Resolve hospital scope input to a canonical scope JSON blob.
+
+    Priority order (first match wins, no cross-entity fallbacks):
+            1. provider_id / provider_group_id entities
+            2. scope_kind entity (`mine`, `provider_group`)
+            3. country_code entity
+            4. region entity -> unsupported clarify
+            5. Bare numeric text with no typed entity -> provider/group clarify
+            6. Missing structured scope -> clarify
+    """
     language = resolve_language_from_tracker(tracker)
     user_sub = tracker.sender_id
     trace_id = _trace_id_from_tracker(tracker) or uuid4().hex
-    client = get_analytics_center_client()
     entities = _latest_entities(tracker)
+    intent: GuidedScopeIntent = parse_guided_scope_intent(slot_value=slot_value, entities=entities)
+
     with log_context(trace_id=trace_id, sender_id=tracker.sender_id, user_sub=user_sub, validator="guided_hospital_scope"):
-        scope_ref_any = entities.get("hospital_scope_reference")
-        if isinstance(scope_ref_any, str) and scope_ref_any.strip():
-            scope_ref_norm = normalize_text(scope_ref_any)
-            if scope_ref_norm in ALL_SCOPE_TOKENS:
-                return {
-                    "guided_hospital_scope": _json_scope(
-                        "all",
-                        "all",
-                        label=translate("action.guided.all_hospitals_label", language=language),
-                    )
-                }
-            if scope_ref_norm in MINE_SCOPE_TOKENS:
-                process_id, hostname = _runtime_instance_fields()
-                logger.debug(
-                    "[GuidedVisualizationValidation] Mine scope validation",
-                    extra={
-                        "log_context": {
-                            "pid": process_id,
-                            "host": hostname,
-                            "scope_ref": scope_ref_any,
-                        }
-                    },
-                )
-                try:
-                    mine_scope = _resolve_mine_scope(user_sub=user_sub, trace_id=trace_id)
-                except AnalyticsCenterError as exc:
-                    details = exc.details if isinstance(exc.details, dict) else {}
-                    proxy_any = details.get("proxy")
-                    proxy_info = cast(Dict[str, Any], proxy_any) if isinstance(proxy_any, dict) else {}
-                    reason_any = proxy_info.get("reason")
-                    reason = reason_any.strip() if isinstance(reason_any, str) and reason_any.strip() else ""
-
-                    if exc.status_code == 401 or "cached user access token" in reason.lower() or "user token unavailable" in reason.lower():
-                        _utter_invalid(
-                            dispatcher,
-                            translate("action.guided.mine_scope_auth_unavailable", language=language),
-                        )
-                        return {"guided_hospital_scope": None}
-
-                    _utter_invalid(
-                        dispatcher,
-                        translate("action.guided.mine_scope_unknown", language=language),
-                    )
-                    return {"guided_hospital_scope": None}
-                if mine_scope is not None:
-                    return {"guided_hospital_scope": mine_scope}
-                _utter_invalid(
-                    dispatcher,
-                    translate("action.guided.mine_scope_not_found", language=language),
-                )
-                return {"guided_hospital_scope": None}
-
-        country_any = entities.get("country_code") or entities.get("countryCode") or entities.get("country")
-        if isinstance(country_any, str) and country_any.strip():
-            resolved = client.resolve_country_code(user_sub=user_sub, country_input=country_any.strip(), trace_id=trace_id, raise_on_error=False)
-            if resolved:
-                return {"guided_hospital_scope": _json_scope("country_code", resolved, label=resolved)}
-
-        hospital_any = entities.get("hospital_name") or entities.get("hospital") or entities.get("provider") or slot_value
-        if isinstance(hospital_any, str) and hospital_any.strip() and normalize_text(hospital_any) not in ALL_SCOPE_TOKENS:
-            page = client.list_providers(user_sub=user_sub, limit=200, offset=0, trace_id=trace_id, raise_on_error=False)
-            providers_any: Any = page.get("results", []) if isinstance(page, dict) else []
-            providers_list: List[Dict[str, Any]] = []
-            if isinstance(providers_any, list):
-                for provider_any in cast(List[Any], providers_any):
-                    if isinstance(provider_any, dict):
-                        providers_list.append(cast(Dict[str, Any], provider_any))
-            normalized = normalize_text(hospital_any)
-            exact_matches: List[Dict[str, Any]] = []
-            fuzzy_matches: List[Dict[str, Any]] = []
-            for provider_any in providers_list:
-                provider = provider_any
-                name = _provider_name(provider)
-                if not name:
-                    continue
-                provider_norm = normalize_text(name)
-                if provider_norm == normalized:
-                    exact_matches.append(provider)
-                elif normalized in provider_norm or provider_norm in normalized:
-                    fuzzy_matches.append(provider)
-            matches = exact_matches or fuzzy_matches
-            if len(matches) == 1:
-                provider = matches[0]
-                provider_id = _extract_provider_id(provider)
-                label = _provider_name(provider)
-                if provider_id is not None:
-                    return {"guided_hospital_scope": _json_scope("provider_id", provider_id, label=label)}
-                return {"guided_hospital_scope": _json_scope("hospital_name", label or hospital_any.strip(), label=label or hospital_any.strip())}
-            if len(matches) > 1:
-                _utter_invalid(dispatcher, translate("action.guided.hospital_name_ambiguous", language=language))
-                return {"guided_hospital_scope": None}
-
-        group_any = entities.get("group_id") or entities.get("group") or slot_value
-        if isinstance(group_any, int):
-            return {"guided_hospital_scope": _json_scope("group_id", group_any, label=str(group_any))}
-        if isinstance(group_any, str) and group_any.strip().isdigit():
-            return {"guided_hospital_scope": _json_scope("group_id", int(group_any.strip()), label=group_any.strip())}
-
-        raw_source = scope_ref_any if scope_ref_any is not None else slot_value
-        raw = raw_source if isinstance(raw_source, str) else str(raw_source or "")
-        if normalize_text(raw) in ALL_SCOPE_TOKENS:
+        if intent.kind == "all_accessible":
             return {
-                "guided_hospital_scope": _json_scope(
-                    "all",
-                    "all",
+                "guided_hospital_scope": scope_json(
+                    "all_accessible",
+                    intent.value if intent.value is not None else "all",
                     label=translate("action.guided.all_hospitals_label", language=language),
                 )
             }
+
+        if intent.kind == "mine":
+            try:
+                mine_scope = resolve_mine_scope_json(user_sub=user_sub, trace_id=trace_id)
+            except AnalyticsCenterError as exc:
+                details = exc.details if isinstance(exc.details, dict) else {}
+                proxy_info = cast(Dict[str, Any], details.get("proxy") or {})
+                reason = str(proxy_info.get("reason") or "").strip().lower()
+                if exc.status_code == 401 or "cached user access token" in reason or "user token unavailable" in reason:
+                    _utter_invalid(dispatcher, translate("action.guided.mine_scope_auth_unavailable", language=language))
+                else:
+                    _utter_invalid(dispatcher, translate("action.guided.mine_scope_unknown", language=language))
+                return {"guided_hospital_scope": None}
+            if mine_scope is not None:
+                return {"guided_hospital_scope": mine_scope}
+            _utter_invalid(dispatcher, translate("action.guided.mine_scope_not_found", language=language))
+            return {"guided_hospital_scope": None}
+
+        if intent.kind == "provider_group_id":
+            if isinstance(intent.value, int):
+                return {"guided_hospital_scope": scope_json("provider_group_id", intent.value, label=str(intent.value))}
+
+        if intent.kind == "provider_id":
+            if isinstance(intent.value, int):
+                return {"guided_hospital_scope": scope_json("provider_id", intent.value, label=str(intent.value))}
+
+        if intent.kind == "provider_group_mine":
+            group_scope = resolve_provider_group_mine_scope_json(user_sub=user_sub, trace_id=trace_id)
+            if group_scope is not None:
+                return {"guided_hospital_scope": group_scope}
+            _utter_invalid(dispatcher, translate("action.guided.mine_scope_not_found", language=language))
+            return {"guided_hospital_scope": None}
+
+        if intent.kind == "country_code" and isinstance(intent.value, str):
+            client = get_analytics_center_client()
+            resolved = client.resolve_country_code(user_sub=user_sub, country_input=intent.value, trace_id=trace_id, raise_on_error=False)
+            if resolved:
+                return {"guided_hospital_scope": scope_json("country_code", resolved, label=resolved)}
+
+        if intent.kind == "numeric_ambiguous":
+            _utter_invalid(dispatcher, translate("action.guided.hospital_scope_numeric_ambiguous", language=language))
+            return {"guided_hospital_scope": None}
+
+        if intent.kind == "region_unsupported":
+            _utter_invalid(dispatcher, translate("action.guided.hospital_scope_region_unsupported", language=language))
+            return {"guided_hospital_scope": None}
+
+        if intent.kind == "missing_structured_scope":
+            _utter_invalid(dispatcher, translate("action.guided.hospital_scope_missing_structured", language=language))
+            return {"guided_hospital_scope": None}
 
         _utter_invalid(dispatcher, translate("action.guided.hospital_scope_invalid", language=language))
         return {"guided_hospital_scope": None}
@@ -450,85 +296,6 @@ def parse_guided_scope(scope_raw: Any, trace_id: Optional[str] = None) -> Option
                 ),
             )
             return None
-    return None
-
-
-def resolve_scope_to_data_origin(scope: Dict[str, Any], user_sub: str, trace_id: str) -> Optional[Dict[str, Any]]:
-    scope_type = str(scope.get("scope_type") or "").strip().lower()
-    value = scope.get("value")
-    client = get_analytics_center_client()
-
-    if scope_type == "provider_id":
-        if isinstance(value, int):
-            return {"providerId": [value]}
-        if isinstance(value, str) and value.strip().isdigit():
-            return {"providerId": [int(value.strip())]}
-        return None
-
-    if scope_type == "group_id":
-        if isinstance(value, int):
-            return {"providerGroupId": [value]}
-        if isinstance(value, str) and value.strip().isdigit():
-            return {"providerGroupId": [int(value.strip())]}
-        return None
-
-    if scope_type == "country_code":
-        if not isinstance(value, str) or not value.strip():
-            return None
-        country_code = value.strip().upper()
-        provider_ids: List[int] = []
-        offset = 0
-        limit = 200
-        while True:
-            page = client.list_providers(
-                user_sub=user_sub,
-                limit=limit,
-                offset=offset,
-                country_code=country_code,
-                trace_id=trace_id,
-                raise_on_error=False,
-            )
-            if not page:
-                break
-            providers_any: Any = page.get("results", [])
-            providers_list: List[Dict[str, Any]] = []
-            if isinstance(providers_any, list):
-                for provider_any in cast(List[Any], providers_any):
-                    if isinstance(provider_any, dict):
-                        providers_list.append(cast(Dict[str, Any], provider_any))
-            for provider_any in providers_list:
-                provider_id = _extract_provider_id(provider_any)
-                if provider_id is not None:
-                    provider_ids.append(provider_id)
-            returned = len(providers_list)
-            total = page.get("count")
-            offset += returned
-            if returned == 0 or offset >= total:
-                break
-        provider_ids = sorted(set(provider_ids))
-        return {"providerId": provider_ids} if provider_ids else None
-
-    if scope_type == "all":
-        return None
-
-    if scope_type == "hospital_name" and isinstance(value, str) and value.strip():
-        page = client.list_providers(user_sub=user_sub, limit=200, offset=0, trace_id=trace_id, raise_on_error=False)
-        providers_any: Any = page.get("results", []) if isinstance(page, dict) else []
-        providers_list: List[Dict[str, Any]] = []
-        if isinstance(providers_any, list):
-            for provider_any in cast(List[Any], providers_any):
-                if isinstance(provider_any, dict):
-                    providers_list.append(cast(Dict[str, Any], provider_any))
-        normalized = normalize_text(value)
-        for provider_any in providers_list:
-            provider = provider_any
-            if normalize_text(_provider_name(provider)) != normalized:
-                continue
-            provider_id = _extract_provider_id(provider)
-            if provider_id is not None:
-                return {"providerId": [provider_id]}
-        return None
-
     return None
 
 
@@ -573,12 +340,6 @@ def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[s
         group_specs.append(S.GroupByCanonicalField(field=group_by.strip().upper()))
 
     chart_type_norm = chart_type.strip().upper()
-    if chart_type_norm in {"HISTOGRAM", "VIOLIN"}:
-        analysis_mode = "DISTRIBUTION"
-    elif chart_type_norm == "BOX":
-        analysis_mode = "SUMMARY"
-    else:
-        analysis_mode = "COMPARISON"
 
     metric_origin_scope: Optional[S.OriginScopeSpec] = None
     if isinstance(guided_scope, dict) and guided_scope:
@@ -599,14 +360,29 @@ def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[s
             )
             metric_origin_scope = None
 
+    metric_spec = S.MetricSpec(metric=metric, originScope=metric_origin_scope)
+
+    if chart_type_norm in {"HISTOGRAM", "VIOLIN"}:
+        x_axis: S.XAxisSpec = S.NumericXAxis(metric=metric, bins=20)
+        statistic = "COUNT"
+        series_by = None
+    elif group_specs:
+        x_axis = S.CategoryXAxis(groupBy=group_specs[0])
+        statistic = "MEAN"
+        series_by = None
+    else:
+        x_axis = S.TimeXAxis(grain="MONTH", window=S.TimeWindow(last_n=24, unit="MONTH"))
+        statistic = "MEAN"
+        series_by = None
+
     return S.AnalysisPlan(
         charts=[
             S.ChartSpec(
                 chart_type=chart_type,
-                analysis_mode=analysis_mode,
+                xAxis=x_axis,
+                yAxes=[S.YAxisSpec(metrics=[metric_spec], statistic=statistic)],
+                seriesBy=series_by,
                 filters=filter_node,
-                group_by=group_specs or None,
-                metrics=[S.MetricSpec(metric=metric, originScope=metric_origin_scope)],
             )
         ],
         statistical_tests=None,

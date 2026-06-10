@@ -12,6 +12,10 @@ def _group_by_list() -> List[S.GroupBySpec]:
     return []
 
 
+def _y_axis_list() -> List["SemanticYAxis"]:
+    return []
+
+
 def _chart_list() -> List["SemanticChart"]:
     return []
 
@@ -25,12 +29,20 @@ class SemanticMetric:
 
 
 @dataclass
+class SemanticYAxis:
+    metrics: List[SemanticMetric] = field(default_factory=_metric_list)
+    statistic: str = "MEAN"
+    axis_id: Optional[str] = None
+
+
+@dataclass
 class SemanticChart:
     chart_type: str
-    analysis_mode: str = ""
-    metrics: List[SemanticMetric] = field(default_factory=_metric_list)
+    x_axis: S.XAxisSpec
+    y_axes: List[SemanticYAxis] = field(default_factory=_y_axis_list)
+    series_by: Optional[S.SeriesSpec] = None
     filters: Optional[S.FilterNode] = None
-    group_by: List[S.GroupBySpec] = field(default_factory=_group_by_list)
+    title: Optional[str] = None
 
 
 @dataclass

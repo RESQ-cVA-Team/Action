@@ -274,7 +274,14 @@ class CompiledChartGrouping:
 
 
 def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
-    collected_groups: List[GroupBySpec] = list(coalesce(chart.group_by, []))
+    collected_groups: List[GroupBySpec] = []
+    if isinstance(chart.x_axis, S.TimeXAxis):
+        collected_groups.append(S.GroupByTime(grain=chart.x_axis.grain, window=chart.x_axis.window, include_partial=chart.x_axis.include_partial))
+    elif isinstance(chart.x_axis, S.CategoryXAxis):
+        collected_groups.append(chart.x_axis.group_by)
+
+    if chart.series_by is not None:
+        collected_groups.append(chart.series_by.split_by)
 
     seen: set[GroupBySpec] = set()
     uniq_groups: List[GroupBySpec] = []

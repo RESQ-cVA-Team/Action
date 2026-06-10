@@ -69,9 +69,10 @@ def _is_semantic_ambiguity_error(exc: Exception) -> bool:
     if not text:
         return False
     return (
-        "unable to infer chart analysis intent" in text
-        or "analysis_mode" in text
-        or "analysis mode" in text
+        "unable to infer chart semantics" in text
+        or "xaxis" in text
+        or "yaxes" in text
+        or "seriesby" in text
     )
 
 
@@ -116,12 +117,11 @@ def _extract_json_block(text: str) -> str:
     return candidate[start : end + 1]
 
 
-def _assert_no_empty_groupby_entries(payload: Dict[str, Any]) -> None:
+def _assert_no_empty_chart_semantics(payload: Dict[str, Any]) -> None:
     """Reject ambiguous planner output instead of auto-correcting it.
 
-    Empty dict items in group_by (e.g., group_by=[{}]) can be coerced by the
-    schema Union into unintended groupings. We fail fast so retry feedback forces
-    the model to return an explicit valid group_by spec or null.
+    Empty dict values in xAxis/yAxes/seriesBy can be coerced by union parsing.
+    We fail fast so retry feedback forces explicit and valid chart semantics.
     """
     charts_any = payload.get("charts")
     if not isinstance(charts_any, list):
@@ -132,14 +132,23 @@ def _assert_no_empty_groupby_entries(payload: Dict[str, Any]) -> None:
         if not isinstance(chart_any, dict):
             continue
         chart = cast(Dict[str, Any], chart_any)
-        group_by_any = chart.get("group_by")
-        if not isinstance(group_by_any, list):
-            continue
-        group_by_entries = cast(List[Any], group_by_any)
+        for key in ("xAxis", "seriesBy"):
+            value = chart.get(key)
+            if isinstance(value, dict) and not value:
+                raise ValueError(
+                    f"Invalid AnalysisPlan: charts[{chart_idx}].{key} is an empty object. "
+                    "Provide explicit chart semantics."
+                )
 
-        for gb_idx, item in enumerate(group_by_entries):
-            if isinstance(item, dict) and not item:
-                raise ValueError(f"Invalid AnalysisPlan: charts[{chart_idx}].group_by[{gb_idx}] is an empty object. Use an explicit GroupBy spec or set group_by to null.")
+        y_axes_any = chart.get("yAxes")
+        if isinstance(y_axes_any, list):
+            y_axes_entries = cast(List[Any], y_axes_any)
+            for y_idx, item in enumerate(y_axes_entries):
+                if isinstance(item, dict) and not item:
+                    raise ValueError(
+                        f"Invalid AnalysisPlan: charts[{chart_idx}].yAxes[{y_idx}] is an empty object. "
+                        "Provide explicit y-axis metrics and statistic."
+                    )
 
 
 def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
@@ -149,7 +158,7 @@ def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
         return response
 
     if isinstance(response, dict):
-        _assert_no_empty_groupby_entries(cast(Dict[str, Any], response))
+        _assert_no_empty_chart_semantics(cast(Dict[str, Any], response))
         return AnalysisPlan.model_validate(response)
 
     text = _extract_text(response)
@@ -157,7 +166,7 @@ def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
     parsed = json.loads(json_block)
     if not isinstance(parsed, dict):
         raise ValueError("Model output JSON must be an object")
-    _assert_no_empty_groupby_entries(cast(Dict[str, Any], parsed))
+    _assert_no_empty_chart_semantics(cast(Dict[str, Any], parsed))
     return AnalysisPlan.model_validate(parsed)
 
 
@@ -455,14 +464,12 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
             "Put human references in originScope.value and ISO country in originScope.countryCode when available. "
             "Only use dataOrigin when explicit numeric provider/group IDs are directly provided by the user. "
             "When comparing multiple scopes in one chart, use separate metric entries with metric-level originScope/dataOrigin. "
-            "Never emit empty objects in group_by. If no grouping is intended, set group_by to null or omit it. "
+            "Use explicit chart semantics: xAxis, yAxes, optional seriesBy. Do not emit deprecated chart-shape fields. "
             "Sex semantics guidance: phrases like 'males only' or 'females only' should usually be chart filters (SexFilter), while 'split/group by sex' should use GroupBySex. "
             "Prefer LINE/BAR for trends or comparisons; BOX/VIOLIN/HISTOGRAM for distributions. "
-            "Monthly trend language means time_series with a monthly GroupByTime. Monthly distribution language means DISTRIBUTION mode with no GroupByTime (shows the overall value spread). "
-            "DISTRIBUTION and GroupByTime cannot be combined; use TIME_SERIES+GroupByTime for monthly trends or DISTRIBUTION (no grouping) for value spread. "
-            "Use COMPARISON only when the user is comparing categories or multiple metrics; do not use COMPARISON for a single metric line chart or over-time request. "
-            "Set chart analysis_mode explicitly for every chart; valid values are TIME_SERIES, DISTRIBUTION, SUMMARY, COMPARISON. Do not emit AUTO. "
-            "Chart intent guidance: If user asks for one graph/one chart/single visual with multiple splits, prefer one chart with multiple group_by dimensions. If user asks for separate charts/multiple visuals, produce multiple chart specs. "
+            "Monthly trend language means xAxis=TimeXAxis with grain MONTH. Monthly distribution language means HISTOGRAM with xAxis=NumericXAxis. "
+            "DISTRIBUTION is represented structurally by NumericXAxis. "
+            "Chart intent guidance: If user asks for one graph/one chart/single visual with multiple splits, prefer one chart with xAxis plus seriesBy. If user asks for separate charts/multiple visuals, produce multiple chart specs. "
             "Statistical test guidance: Only use test types listed in SUPPORTED_STAT_TESTS_JSON; otherwise omit statistical_tests and return charts.",
         ),
         ("system", "SCHEMA:\n" + SCHEMA_DESCRIPTION),

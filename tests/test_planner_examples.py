@@ -28,7 +28,7 @@ class PlannerExamplesTests(unittest.TestCase):
         self.assertTrue(any("box plot of dtn by sex" in user.lower() for user in users))
         self.assertTrue(any("dtn over time" in user.lower() for user in users), "Missing 'dtn over time' TIME_SERIES example")
 
-    def test_monthly_examples_have_expected_analysis_modes(self) -> None:
+    def test_monthly_examples_have_expected_xaxis_shapes(self) -> None:
         few_shots = examples.get_few_shot_examples()
 
         def parse_plan(user_phrase: str) -> schema.AnalysisPlan:
@@ -42,13 +42,13 @@ class PlannerExamplesTests(unittest.TestCase):
         box_plan = parse_plan("box plot of dtn by sex")
         over_time_plan = parse_plan("dtn over time")
 
-        self.assertEqual(trend_plan.charts[0].analysis_mode, "TIME_SERIES")
-        self.assertEqual(distribution_plan.charts[0].analysis_mode, "DISTRIBUTION")
-        self.assertEqual(box_plan.charts[0].analysis_mode, "SUMMARY")
-        self.assertEqual(over_time_plan.charts[0].analysis_mode, "TIME_SERIES")
+        self.assertEqual(type(trend_plan.charts[0].x_axis).__name__, "TimeXAxis")
+        self.assertEqual(type(distribution_plan.charts[0].x_axis).__name__, "NumericXAxis")
+        self.assertEqual(type(box_plan.charts[0].x_axis).__name__, "CategoryXAxis")
+        self.assertEqual(type(over_time_plan.charts[0].x_axis).__name__, "TimeXAxis")
 
-    def test_distribution_examples_have_no_time_groupby(self) -> None:
-        """DISTRIBUTION+GroupByTime is rejected by the semantic adapter; examples must not teach it."""
+    def test_distribution_examples_use_numeric_xaxis(self) -> None:
+        """Histogram examples must use explicit NumericXAxis in the new plan domain."""
         few_shots = examples.get_few_shot_examples()
         for item in few_shots:
             try:
@@ -58,13 +58,12 @@ class PlannerExamplesTests(unittest.TestCase):
                 # the DISTRIBUTION+GroupByTime constraint on valid examples.
                 continue
             for chart in (plan.charts or []):
-                if chart.analysis_mode == "DISTRIBUTION":
-                    for gb in (chart.group_by or []):
-                        self.assertNotIsInstance(
-                            gb,
-                            schema.GroupByTime,
-                            msg=f"Example '{item['user'][:80]}' has DISTRIBUTION+GroupByTime which is not supported",
-                        )
+                if chart.chart_type == "HISTOGRAM":
+                    self.assertEqual(
+                        type(chart.x_axis).__name__,
+                        "NumericXAxis",
+                        msg=f"Example '{item['user'][:80]}' uses HISTOGRAM without NumericXAxis",
+                    )
 
 
 if __name__ == "__main__":

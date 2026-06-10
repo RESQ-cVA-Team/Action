@@ -56,8 +56,9 @@ class D1(BaseModel):
 
 class Kpi1(BaseModel):
     case_count: List[int] = Field(..., alias="caseCount")
-    percents: Optional[List[float]] = None
-    normalized_percents: Optional[List[float]] = Field(default=None, alias="normalizedPercents")
+    # Upstream may emit null placeholders in numeric arrays.
+    percents: Optional[List[Optional[float]]] = None
+    normalized_percents: Optional[List[Optional[float]]] = Field(default=None, alias="normalizedPercents")
     cohort_size: Optional[int] = Field(default=None, alias="cohortSize")
     normalized_cohort_size: Optional[List[int]] = Field(default=None, alias="normalizedCohortSize")
     median: Optional[float] = None
@@ -66,7 +67,7 @@ class Kpi1(BaseModel):
     confidence_interval_mean: Optional[List[Optional[float]]] = Field(default=None, alias="confidenceIntervalMean")
     confidence_interval_median: Optional[List[Optional[float]]] = Field(default=None, alias="confidenceIntervalMedian")
     interquartile_range: Optional[float] = Field(default=None, alias="interquartileRange")
-    quartiles: Optional[List[float]] = None
+    quartiles: Optional[List[Optional[float]]] = None
     d1: Optional[D1] = None
 
     model_config = ConfigDict(populate_by_name=True)

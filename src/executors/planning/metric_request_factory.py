@@ -17,13 +17,6 @@ def derive_distribution_defaults(metric: S.MetricSpec) -> DistributionSpec:
     return DistributionSpec(num_buckets=20, min_value=0, max_value=200)
 
 
-def _normalize_analysis_mode(analysis_mode: str | None) -> str:
-    mode = (analysis_mode or "").strip().upper()
-    if mode in {"TIME_SERIES", "DISTRIBUTION", "SUMMARY", "COMPARISON"}:
-        return mode
-    return ""
-
-
 def _metric_scope_label(metric: S.MetricSpec) -> Optional[str]:
     scope = cast(Optional[S.OriginScopeSpec], getattr(metric, "origin_scope", None))
     if scope is None:
@@ -64,24 +57,22 @@ def build_metric_requests(
     metric_data_origins: List[Optional[DataOrigin]] = []
     metric_scope_labels: List[Optional[str]] = []
     derived_axes: Optional[tuple[ChartAxis, ChartAxis]] = None
-    has_grouping = bool(plan_chart.group_by)
-    chart_analysis_mode = _normalize_analysis_mode(getattr(plan_chart, "analysis_mode", None))
-    if not chart_analysis_mode:
-        raise ValueError("Chart analysis_mode must be resolved before execution.")
+    chart_distribution_mode = type(plan_chart.x_axis).__name__ == "NumericXAxis"
+    plan_metrics: List[S.MetricSpec] = [metric for axis in plan_chart.y_axes for metric in axis.metrics]
 
-    for metric in plan_chart.metrics:
+    for metric in plan_metrics:
         metric_data_origin: Optional[DataOrigin] = None
         if metric.data_origin is not None:
             metric_data_origin = DataOrigin.model_validate(metric.data_origin.model_dump(by_alias=True, exclude_none=True))
         metric_scope_label = _metric_scope_label(metric)
 
-        request_distribution = chart_analysis_mode == "DISTRIBUTION" or metric.distribution is not None
+        request_distribution = chart_distribution_mode or metric.distribution is not None
         if request_distribution:
             distribution = metric.distribution
             if distribution is None:
                 bins, rmin, rmax = derive_defaults_fn(metric.metric)
                 distribution = DistributionSpec(num_buckets=bins, min_value=rmin, max_value=rmax)
-            if len(plan_chart.metrics) == 1:
+            if len(plan_metrics) == 1:
                 derived_axes = axis_from_meta_fn(metric.metric, distribution.min_value, distribution.max_value)
             metric_requests.append(
                 MetricRequest(metricType=MetricType(metric.metric)).with_distribution(

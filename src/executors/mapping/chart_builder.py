@@ -76,7 +76,8 @@ def _normalize_title_token(value: str) -> str:
 
 def _metric_codes(plan_chart: S.ChartSpec) -> List[str]:
     out: List[str] = []
-    for metric in plan_chart.metrics:
+    metrics: List[S.MetricSpec] = [metric for axis in plan_chart.y_axes for metric in axis.metrics]
+    for metric in metrics:
         code = (metric.metric or "").strip().upper()
         if code and code not in out:
             out.append(code)
@@ -346,7 +347,8 @@ def _fallback_across(plan_chart: S.ChartSpec, metric_codes: List[str]) -> str:
 
     metric_code = metric_codes[0]
     metric_unit = _metric_unit(metric_code)
-    metric_spec = plan_chart.metrics[0] if plan_chart.metrics else None
+    flat_metrics: List[S.MetricSpec] = [metric for axis in plan_chart.y_axes for metric in axis.metrics]
+    metric_spec = flat_metrics[0] if flat_metrics else None
     distribution = getattr(metric_spec, "distribution", None) if metric_spec is not None else None
 
     if distribution is not None:

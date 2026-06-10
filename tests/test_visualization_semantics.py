@@ -20,27 +20,27 @@ def load_module(module_name: str, relative_path: str):
 schema = load_module("action_schema_under_test", "src/domain/langchain/schema.py")
 metric_request_factory = load_module("action_metric_request_factory_under_test", "src/executors/planning/metric_request_factory.py")
 chart_types = load_module("action_chart_types_under_test", "src/domain/dto/charts/types.py")
-semantic_adapter = load_module("action_semantic_adapter_under_test", "src/planners/langchain/semantic_adapter.py")
 chart_builder = load_module("action_chart_builder_under_test", "src/executors/mapping/chart_builder.py")
-query_compiler = load_module("action_query_compiler_under_test", "src/executors/planning/query_compiler.py")
 
 
 class VisualizationSemanticsTests(unittest.TestCase):
-    def test_chart_spec_normalizes_analysis_mode(self) -> None:
-        chart = schema.ChartSpec(
-            chart_type="line",
-            analysis_mode="distribution",
-            metrics=[schema.MetricSpec(metric="DTN")],
-        )
+    def test_origin_scope_rejects_legacy_group_id(self) -> None:
+        with self.assertRaises(ValidationError):
+            schema.OriginScopeSpec(scopeType="group_id", value=1)
 
-        self.assertEqual(chart.chart_type, "LINE")
-        self.assertEqual(chart.analysis_mode, "DISTRIBUTION")
+    def test_origin_scope_accepts_canonical_provider_group_id(self) -> None:
+        spec = schema.OriginScopeSpec(scopeType="provider_group_id", value=1)
+        self.assertEqual(spec.scope_type, "provider_group_id")
 
-    def test_distribution_mode_builds_distribution_request(self) -> None:
+    def test_chart_spec_requires_explicit_axes(self) -> None:
+        with self.assertRaises(ValidationError):
+            schema.ChartSpec(chart_type="LINE")
+
+    def test_numeric_xaxis_builds_distribution_request(self) -> None:
         chart = schema.ChartSpec(
-            chart_type="LINE",
-            analysis_mode="DISTRIBUTION",
-            metrics=[schema.MetricSpec(metric="DTN")],
+            chart_type="HISTOGRAM",
+            xAxis={"metric": "DTN", "bins": 18, "minValue": 5, "maxValue": 95},
+            yAxes=[{"metrics": [{"metric": "DTN"}], "statistic": "COUNT"}],
         )
 
         derived_axes_calls: list[tuple[str, int, int]] = []
@@ -69,20 +69,12 @@ class VisualizationSemanticsTests(unittest.TestCase):
         self.assertEqual(derived_axes_calls, [("DTN", 5, 95)])
         self.assertEqual(derived_axes, (chart_types.ChartAxis(label="x"), chart_types.ChartAxis(label="y")))
 
-    def test_time_grouping_keeps_stats_request(self) -> None:
-        plan = schema.AnalysisPlan(
-            charts=[
-                schema.ChartSpec(
-                    chart_type="LINE",
-                    analysis_mode="TIME_SERIES",
-                    group_by=[schema.GroupByTime(grain="MONTH")],
-                    metrics=[schema.MetricSpec(metric="DTN")],
-                )
-            ],
-            statistical_tests=None,
+    def test_time_xaxis_keeps_stats_request(self) -> None:
+        chart = schema.ChartSpec(
+            chart_type="LINE",
+            xAxis={"grain": "MONTH", "window": {"last_n": 24, "unit": "MONTH"}},
+            yAxes=[{"metrics": [{"metric": "DTN"}], "statistic": "MEAN"}],
         )
-
-        chart = semantic_adapter.validate_analysis_plan_semantics(plan).charts[0]
 
         metric_requests, derived_axes, _, _ = metric_request_factory.build_metric_requests(
             plan_chart=chart,
@@ -96,98 +88,51 @@ class VisualizationSemanticsTests(unittest.TestCase):
         self.assertIsNone(metric_requests[0].distribution_options)
         self.assertIsNone(derived_axes)
 
-    def test_time_series_without_groupby_gets_default_month_window(self) -> None:
-        plan = schema.AnalysisPlan(
-            charts=[
-                schema.ChartSpec(
-                    chart_type="LINE",
-                    analysis_mode="TIME_SERIES",
-                    metrics=[schema.MetricSpec(metric="DTN")],
-                )
-            ],
-            statistical_tests=None,
-        )
-
-        normalized = semantic_adapter.validate_analysis_plan_semantics(plan)
-        chart = normalized.charts[0]
-
-        self.assertEqual(chart.analysis_mode, "TIME_SERIES")
-        self.assertEqual(len(chart.group_by or []), 1)
-        time_group = chart.group_by[0]
-        self.assertEqual(type(time_group).__name__, "GroupByTime")
-        self.assertEqual(time_group.grain, "MONTH")
-        self.assertIsNotNone(time_group.window)
-        self.assertEqual(time_group.window.last_n, 24)
-        self.assertEqual(time_group.window.unit, "MONTH")
-
-        compiled = query_compiler.compile_chart_grouping(chart)
-        self.assertTrue(compiled.batches[0].batched_time_enabled)
-        self.assertGreater(len(compiled.batches[0].batched_time_periods), 0)
-
-    def test_schema_rejects_auto_analysis_mode(self) -> None:
+    def test_mixed_unit_yaxis_is_rejected(self) -> None:
         with self.assertRaises(ValidationError):
-            schema.AnalysisPlan.model_validate(
-                {
-                    "charts": [
-                        {
-                            "chart_type": "LINE",
-                            "analysisMode": "AUTO",
-                            "metrics": [{"metric": "DTN"}],
-                        }
-                    ],
-                    "statistical_tests": None,
-                }
-            )
-
-    def test_grouped_chart_infers_comparison_mode(self) -> None:
-        plan = schema.AnalysisPlan.model_validate(
-            {
-                "charts": [
+            schema.ChartSpec(
+                chart_type="LINE",
+                xAxis={"grain": "MONTH"},
+                yAxes=[
                     {
-                        "chart_type": "LINE",
-                        "analysisMode": "COMPARISON",
-                        "group_by": [{"categories": None}],
-                        "metrics": [{"metric": "DTN"}],
+                        "metrics": [
+                            {"metric": "DTN"},
+                            {"metric": "AGE"},
+                        ],
+                        "statistic": "MEAN",
                     }
                 ],
-                "statistical_tests": None,
-            }
-        )
+            )
 
-        normalized = semantic_adapter.validate_analysis_plan_semantics(plan)
-        self.assertEqual(normalized.charts[0].analysis_mode, "COMPARISON")
+    def test_histogram_requires_numeric_xaxis(self) -> None:
+        with self.assertRaises(ValidationError):
+            schema.ChartSpec(
+                chart_type="HISTOGRAM",
+                xAxis={"grain": "MONTH"},
+                yAxes=[{"metrics": [{"metric": "DTN"}], "statistic": "COUNT"}],
+            )
 
-    def test_grouped_distribution_stays_on_distribution_path(self) -> None:
-        plan = schema.AnalysisPlan(
-            charts=[
-                schema.ChartSpec(
-                    chart_type="HISTOGRAM",
-                    analysis_mode="DISTRIBUTION",
-                    group_by=[schema.GroupBySex(categories=["MALE", "FEMALE"])],
-                    metrics=[schema.MetricSpec(metric="DTN")],
-                )
-            ],
-            statistical_tests=None,
-        )
+    def test_pie_requires_category_xaxis(self) -> None:
+        with self.assertRaises(ValidationError):
+            schema.ChartSpec(
+                chart_type="PIE",
+                xAxis={"grain": "MONTH"},
+                yAxes=[{"metrics": [{"metric": "DTN"}], "statistic": "COUNT"}],
+            )
 
-        normalized = semantic_adapter.validate_analysis_plan_semantics(plan)
-        self.assertEqual(normalized.charts[0].analysis_mode, "DISTRIBUTION")
-        self.assertEqual(normalized.charts[0].chart_type, "BAR")
-
-        metric_requests, _, _, _ = metric_request_factory.build_metric_requests(
-            plan_chart=normalized.charts[0],
-            derive_defaults_fn=lambda metric_code: (18, 5, 95),
-            axis_from_meta_fn=lambda metric_code, lower, upper: (chart_types.ChartAxis(label="x"), chart_types.ChartAxis(label="y")),
-        )
-
-        self.assertTrue(metric_requests[0].include_distribution)
-        self.assertFalse(metric_requests[0].include_stats)
+    def test_scatter_is_explicitly_unsupported_in_v1(self) -> None:
+        with self.assertRaises(ValidationError):
+            schema.ChartSpec(
+                chart_type="SCATTER",
+                xAxis={"grain": "MONTH"},
+                yAxes=[{"metrics": [{"metric": "DTN"}], "statistic": "MEAN"}],
+            )
 
     def test_grouped_box_chart_emits_one_entry_per_series(self) -> None:
         plan = schema.ChartSpec(
             chart_type="BOX",
-            analysis_mode="SUMMARY",
-            metrics=[schema.MetricSpec(metric="DTN")],
+            xAxis={"groupBy": {"categories": ["MALE", "FEMALE"]}},
+            yAxes=[{"metrics": [{"metric": "DTN"}], "statistic": "MEDIAN"}],
         )
         series = [
             chart_types.ChartSeries(name="Males", data=[chart_types.ChartPoint(x=1, y=10), chart_types.ChartPoint(x=2, y=14)]),

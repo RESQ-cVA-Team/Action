@@ -111,13 +111,17 @@ proxy_url, action_server_token = env_util.require_all_env(
     "RASA_PROXY_URL", "ACTION_SERVER_TOKEN"
 )
 graphql_target = env_util.require_any_env("RASA_PROXY_GRAPHQL_TARGET")
+
+_graphql_timeout_seconds = 45.0
+_graphql_total_timeout_seconds = 55.0
+
 client = GraphQLProxyClient(
     proxy_url=proxy_url,
     action_server_token=action_server_token,
     target=graphql_target if isinstance(graphql_target, str) and graphql_target.strip() else "graphql",
-    timeout_seconds=90,
+    timeout_seconds=_graphql_timeout_seconds,
     connect_timeout_seconds=5,
-    max_total_timeout_seconds=95,
+    max_total_timeout_seconds=_graphql_total_timeout_seconds,
     retry_attempts=1,
     retry_backoff_seconds=0.2,
 )
@@ -1096,7 +1100,7 @@ async def execute_plan_async(
 
             gb_field = batch.server_groupby
             fallback_specs: List[RequestSpec] = []
-            include_metric_alias = len(planChart.metrics) > 1
+            include_metric_alias = sum(len(axis.metrics) for axis in planChart.y_axes) > 1
 
             chart_filter = to_gql_filter(coalesce(planChart.filters, None))
 

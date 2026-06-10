@@ -87,6 +87,53 @@ class TrackerLike(Protocol):
     def current_state(self) -> Dict[str, Any]: ...
 
 
+def _iter_exception_chain(exc: Exception, max_depth: int = 6) -> List[Exception]:
+    chain: List[Exception] = []
+    seen: set[int] = set()
+    current: Optional[BaseException] = exc
+    depth = 0
+    while isinstance(current, Exception) and depth < max_depth:
+        marker = id(current)
+        if marker in seen:
+            break
+        seen.add(marker)
+        chain.append(current)
+        next_exc: Optional[BaseException] = current.__cause__ or current.__context__
+        current = next_exc
+        depth += 1
+    return chain
+
+
+def _origin_scope_clarification_from_exception(
+    exc: Exception, language: str
+) -> Optional[Dict[str, Any]]:
+    lowered_chain = "\n".join(str(item or "") for item in _iter_exception_chain(exc)).lower()
+
+    if "data_origin.provider_id" in lowered_chain:
+        message = translate(
+            "action.guided.hospital_scope_numeric_ambiguous", language=language
+        )
+        return {
+            "reason": "origin_scope_resolution",
+            "clarification_type": "provider_id",
+            "clarification_options": ["provider 279", "group 1"],
+            "message": message,
+        }
+
+    if "data_origin.provider_group_id" in lowered_chain:
+        message = translate(
+            "action.guided.hospital_scope_numeric_ambiguous", language=language
+        )
+        return {
+            "reason": "origin_scope_resolution",
+            "clarification_type": "provider_group_id",
+            "clarification_options": ["provider 279", "group 1"],
+            "message": message,
+        }
+
+    return None
+
+
 def _extract_intent_name_from_user_event(event: Dict[str, Any]) -> str:
     parse_data_any = event.get("parse_data")
     parse_data = (
@@ -906,13 +953,39 @@ class ActionOneShotGenerateVisualization(LongAction):
                             "trace_id": trace_id,
                             "decision": "clarify",
                             "reason": "semantic_intent_ambiguity",
-                            "clarification_type": "analysis_mode",
+                            "clarification_type": "chart_semantics",
                             "clarification_options": clarification_options,
                             "message": message,
                         }
                     )
                     ctx.say(text=message)
                     return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", True)], proceed=False)
+
+                language = resolve_language(metadata=ctx.metadata, slots=ctx.slots)
+                scope_clarification = _origin_scope_clarification_from_exception(
+                    e, language=language
+                )
+                if scope_clarification is not None:
+                    ctx.say(
+                        json_message={
+                            "type": "visualization_query_decision",
+                            "trace_id": trace_id,
+                            "decision": "clarify",
+                            "reason": scope_clarification["reason"],
+                            "clarification_type": scope_clarification[
+                                "clarification_type"
+                            ],
+                            "clarification_options": scope_clarification[
+                                "clarification_options"
+                            ],
+                            "message": scope_clarification["message"],
+                        }
+                    )
+                    ctx.say(text=cast(str, scope_clarification["message"]))
+                    return PreworkResult(
+                        events=[SlotSet("awaiting_visualization_clarification", True)],
+                        proceed=False,
+                    )
 
                 logger.exception(
                     "Error generating visualization during prework",
@@ -923,7 +996,6 @@ class ActionOneShotGenerateVisualization(LongAction):
                         outcome="failure",
                     ),
                 )
-                language = resolve_language(metadata=ctx.metadata, slots=ctx.slots)
                 payload = visualization_error_payload(
                     e, trace_id=trace_id, language=language
                 )
@@ -1082,7 +1154,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             "trace_id": trace_id,
                             "decision": "clarify",
                             "reason": "semantic_intent_ambiguity",
-                            "clarification_type": "analysis_mode",
+                            "clarification_type": "chart_semantics",
                             "clarification_options": clarification_options,
                             "message": message,
                         }
@@ -1091,6 +1163,15 @@ class ActionOneShotGenerateVisualization(LongAction):
                     return None
 
                 if isinstance(e, VisualizationExecutionError) and e.reason == "origin_scope_resolution":
+                    clarification_options = [
+                        option.strip()
+                        for option in (e.clarification_options or [])
+                        if isinstance(option, str) and option.strip()
+                    ]
+                    message = (e.user_message or "").strip()
+                    if clarification_options:
+                        message = f"{message} Try one of: {', '.join(clarification_options[:5])}."
+
                     ctx.say(
                         json_message={
                             "type": "visualization_query_decision",
@@ -1099,10 +1180,10 @@ class ActionOneShotGenerateVisualization(LongAction):
                             "reason": e.reason,
                             "clarification_type": e.clarification_type,
                             "clarification_options": e.clarification_options,
-                            "message": e.user_message,
+                            "message": message,
                         }
                     )
-                    ctx.say(text=e.user_message)
+                    ctx.say(text=message)
                     return None
 
                 logger.exception(

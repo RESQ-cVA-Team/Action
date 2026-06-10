@@ -11,7 +11,7 @@ from src.util import env as env_util
 logger = logging.getLogger(__name__)
 
 _DEFAULT_SCOPE_TYPE = (env_util.get_env("EXECUTOR_DEFAULT_ORIGIN_SCOPE", default="mine") or "mine").strip().lower()
-_FAIL_OPEN = env_util.env_flag("EXECUTOR_ORIGIN_SCOPE_FAIL_OPEN", default=True)
+_FAIL_OPEN = env_util.env_flag("EXECUTOR_ORIGIN_SCOPE_FAIL_OPEN", default=False)
 _MAX_PROVIDER_IDS_RAW = env_util.get_env("EXECUTOR_ORIGIN_SCOPE_MAX_PROVIDER_IDS", default="500") or "500"
 
 
@@ -94,6 +94,16 @@ def _provider_name(provider: Dict[str, Any]) -> str:
     return ""
 
 
+def _provider_option_label(provider: Dict[str, Any]) -> Optional[str]:
+    provider_id = _provider_id(provider)
+    if provider_id is None:
+        return None
+    name = _provider_name(provider)
+    if name:
+        return f"provider {provider_id} ({name})"
+    return f"provider {provider_id}"
+
+
 def _provider_country_code(provider: Dict[str, Any]) -> Optional[str]:
     for key in ("countryCode", "country_code", "country"):
         value = provider.get(key)
@@ -121,6 +131,16 @@ def _provider_group_name(group: Dict[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
+
+
+def _provider_group_option_label(group: Dict[str, Any]) -> Optional[str]:
+    group_id = _provider_group_id(group)
+    if group_id is None:
+        return None
+    name = _provider_group_name(group)
+    if name:
+        return f"group {group_id} ({name})"
+    return f"group {group_id}"
 
 
 def _provider_group_country_code(group: Dict[str, Any]) -> Optional[str]:
@@ -218,16 +238,30 @@ def _list_accessible_provider_groups(user_sub: str, trace_id: str, country_code:
 def _resolve_mine_scope(user_sub: str, trace_id: str) -> Optional[S.DataOriginSpec]:
     client = get_analytics_center_client()
     scope = client.resolve_my_default_scope(user_sub=user_sub, trace_id=trace_id, raise_on_error=False)
-    if not isinstance(scope, dict):
-        return None
+    providers = _list_accessible_providers(user_sub=user_sub, trace_id=trace_id)
+    provider_ids = {_provider_id(provider) for provider in providers}
+    provider_ids.discard(None)
 
-    provider_id_any = scope.get("provider_id")
-    if isinstance(provider_id_any, int):
-        return S.DataOriginSpec(providerId=[provider_id_any])
+    groups = _list_accessible_provider_groups(user_sub=user_sub, trace_id=trace_id)
+    group_ids = {_provider_group_id(group) for group in groups}
+    group_ids.discard(None)
 
-    provider_group_id_any = scope.get("provider_group_id")
-    if isinstance(provider_group_id_any, int):
-        return S.DataOriginSpec(providerGroupId=[provider_group_id_any])
+    if isinstance(scope, dict):
+        provider_id_any = scope.get("provider_id")
+        if isinstance(provider_id_any, int) and provider_id_any in provider_ids:
+            return S.DataOriginSpec(providerId=[provider_id_any])
+
+        provider_group_id_any = scope.get("provider_group_id")
+        if isinstance(provider_group_id_any, int) and provider_group_id_any in group_ids:
+            return S.DataOriginSpec(providerGroupId=[provider_group_id_any])
+
+    if len(provider_ids) == 1:
+        only_provider_id = next(iter(cast(set[int], provider_ids)))
+        return S.DataOriginSpec(providerId=[only_provider_id])
+
+    if len(group_ids) == 1:
+        only_group_id = next(iter(cast(set[int], group_ids)))
+        return S.DataOriginSpec(providerGroupId=[only_group_id])
 
     return None
 
@@ -481,27 +515,81 @@ def _resolve_scope(
         return resolved
 
     if scope_type == "provider_id":
+        provider_id: Optional[int] = None
         if isinstance(value, int):
-            return S.DataOriginSpec(providerId=[value])
-        if isinstance(value, str) and value.strip().isdigit():
-            return S.DataOriginSpec(providerId=[int(value.strip())])
-        raise OriginScopeResolutionError(
-            "Provider scope requires a numeric provider ID.",
-            clarification_type="provider_id",
-        )
+            provider_id = value
+        elif isinstance(value, str) and value.strip().isdigit():
+            provider_id = int(value.strip())
+        if provider_id is None:
+            raise OriginScopeResolutionError(
+                "Provider scope requires a numeric provider ID.",
+                clarification_type="provider_id",
+            )
+
+        providers = _list_accessible_providers(user_sub=user_sub, trace_id=trace_id)
+        accessible_provider_ids: List[int] = []
+        clarification_options: List[str] = []
+        for provider in providers:
+            pid = _provider_id(provider)
+            if pid is not None and pid not in accessible_provider_ids:
+                accessible_provider_ids.append(pid)
+            if len(clarification_options) < 5:
+                option = _provider_option_label(provider)
+                if option and option not in clarification_options:
+                    clarification_options.append(option)
+
+        if provider_id not in accessible_provider_ids:
+            raise OriginScopeResolutionError(
+                (
+                    f"Provider ID {provider_id} is not authorized for KPI queries with your current access. "
+                    "I did not automatically switch to another provider."
+                ),
+                reason="unauthorized_origin",
+                clarification_type="provider_id",
+                clarification_options=clarification_options,
+            )
+
+        return S.DataOriginSpec(providerId=[provider_id])
+
+    if scope_type == "provider_group_id":
+        provider_group_id: Optional[int] = None
+        if isinstance(value, int):
+            provider_group_id = value
+        elif isinstance(value, str) and value.strip().isdigit():
+            provider_group_id = int(value.strip())
+        if provider_group_id is None:
+            raise OriginScopeResolutionError(
+                "Provider-group scope requires a numeric group ID.",
+                clarification_type="provider_group_id",
+            )
+
+        groups = _list_accessible_provider_groups(user_sub=user_sub, trace_id=trace_id)
+        accessible_group_ids: List[int] = []
+        clarification_options: List[str] = []
+        for group in groups:
+            gid = _provider_group_id(group)
+            if gid is not None and gid not in accessible_group_ids:
+                accessible_group_ids.append(gid)
+            if len(clarification_options) < 5:
+                option = _provider_group_option_label(group)
+                if option and option not in clarification_options:
+                    clarification_options.append(option)
+
+        if provider_group_id not in accessible_group_ids:
+            raise OriginScopeResolutionError(
+                (
+                    f"Provider-group ID {provider_group_id} is not authorized for KPI queries with your current access. "
+                    "I did not automatically switch to another group."
+                ),
+                reason="unauthorized_origin",
+                clarification_type="provider_group_id",
+                clarification_options=clarification_options,
+            )
+
+        return S.DataOriginSpec(providerGroupId=[provider_group_id])
 
     if scope_type == "provider_name":
         return _resolve_provider_name(value=value, user_sub=user_sub, trace_id=trace_id)
-
-    if scope_type == "provider_group_id":
-        if isinstance(value, int):
-            return S.DataOriginSpec(providerGroupId=[value])
-        if isinstance(value, str) and value.strip().isdigit():
-            return S.DataOriginSpec(providerGroupId=[int(value.strip())])
-        raise OriginScopeResolutionError(
-            "Provider-group scope requires a numeric group ID.",
-            clarification_type="provider_group_id",
-        )
 
     if scope_type == "country_code":
         return _resolve_country_scope(
@@ -638,9 +726,10 @@ def _metric_needs_country_inference(metric: S.MetricSpec) -> bool:
 
 def _plan_needs_country_inference(plan: S.AnalysisPlan) -> bool:
     for chart in plan.charts or []:
-        for metric in chart.metrics:
-            if _metric_needs_country_inference(metric):
-                return True
+        for axis in chart.y_axes:
+            for metric in axis.metrics:
+                if _metric_needs_country_inference(metric):
+                    return True
 
     for test in plan.statistical_tests or []:
         for metric in test.metrics:
@@ -657,26 +746,35 @@ def resolve_plan_metric_origins(plan: S.AnalysisPlan, user_sub: str, trace_id: s
     charts = plan.charts or []
     resolved_charts: List[S.ChartSpec] = []
     for chart in charts:
-        resolved_metrics: List[S.MetricSpec] = []
-        for metric in chart.metrics:
-            resolved_metric = _resolve_metric_origin(
-                metric,
-                default_scope=default_scope,
-                user_sub=user_sub,
-                trace_id=trace_id,
-                fail_open_for_default_scope=_FAIL_OPEN,
-                inferred_country_code=inferred_country_code,
+        resolved_axes: List[S.YAxisSpec] = []
+        for axis in chart.y_axes:
+            resolved_metrics: List[S.MetricSpec] = []
+            for metric in axis.metrics:
+                resolved_metric = _resolve_metric_origin(
+                    metric,
+                    default_scope=default_scope,
+                    user_sub=user_sub,
+                    trace_id=trace_id,
+                    fail_open_for_default_scope=_FAIL_OPEN,
+                    inferred_country_code=inferred_country_code,
+                )
+                resolved_metrics.append(resolved_metric)
+            resolved_axes.append(
+                S.YAxisSpec(
+                    metrics=resolved_metrics,
+                    statistic=axis.statistic,
+                    axisId=axis.axis_id,
+                )
             )
-            resolved_metrics.append(resolved_metric)
 
         chart_filters = cast(Optional[S.FilterNode], getattr(chart, "filters", None))
-        chart_group_by = cast(Optional[List[S.GroupBySpec]], getattr(chart, "group_by", None))
         resolved_chart = S.ChartSpec(
             chart_type=chart.chart_type,
-            analysis_mode=chart.analysis_mode,
+            xAxis=chart.x_axis,
+            yAxes=resolved_axes,
+            seriesBy=chart.series_by,
             filters=chart_filters,
-            group_by=chart_group_by,
-            metrics=resolved_metrics,
+            title=chart.title,
         )
         resolved_charts.append(resolved_chart)
 
