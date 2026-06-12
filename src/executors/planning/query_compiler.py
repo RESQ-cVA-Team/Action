@@ -162,6 +162,16 @@ class Dimension:
                     buckets.append(_month_bucket(y, m))
                     y, m = _shift_month(y, m, 1)
                 return buckets
+            # No explicit window: apply the default 36-month rolling window so a
+            # time-axis with grain=MONTH but no window still produces monthly batches.
+            if grain == "MONTH":
+                today = date.today()
+                buckets = []
+                for i in range(36):
+                    y, m = _shift_month(today.year, today.month, -i)
+                    buckets.append(_month_bucket(y, m))
+                buckets.reverse()
+                return buckets
             return []
         if isinstance(self.spec, GroupByAge):
             return list(self.spec.buckets)
@@ -275,13 +285,21 @@ class CompiledChartGrouping:
 
 def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
     collected_groups: List[GroupBySpec] = []
-    if isinstance(chart.x_axis, S.TimeXAxis):
-        collected_groups.append(S.GroupByTime(grain=chart.x_axis.grain, window=chart.x_axis.window, include_partial=chart.x_axis.include_partial))
-    elif isinstance(chart.x_axis, S.CategoryXAxis):
-        collected_groups.append(chart.x_axis.group_by)
 
-    if chart.series_by is not None:
-        collected_groups.append(chart.series_by.split_by)
+    if isinstance(chart, S.LineChartSpec):
+        x_keys_used = {series.x_axis for series in chart.series}
+        for x_key in x_keys_used:
+            x_axis = chart.x_axes.get(x_key)
+            if isinstance(x_axis, S.TimeXAxis):
+                collected_groups.append(
+                    S.GroupByTime(
+                        grain=x_axis.grain,
+                        window=x_axis.window,
+                        include_partial=x_axis.include_partial,
+                    )
+                )
+            elif isinstance(x_axis, S.CategoryXAxis):
+                collected_groups.append(x_axis.group_by)
 
     seen: set[GroupBySpec] = set()
     uniq_groups: List[GroupBySpec] = []

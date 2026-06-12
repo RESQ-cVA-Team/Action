@@ -9,16 +9,7 @@ from src.domain.langchain import schema as S
 from src.domain.langchain.schema import DistributionSpec
 
 
-def derive_distribution_defaults(metric: S.MetricSpec) -> DistributionSpec:
-    if metric.distribution is not None:
-        return metric.distribution
-
-    # Conservative defaults; caller may inject smarter SSOT-derived defaults via wrappers if needed.
-    return DistributionSpec(num_buckets=20, min_value=0, max_value=200)
-
-
-def _metric_scope_label(metric: S.MetricSpec) -> Optional[str]:
-    scope = cast(Optional[S.OriginScopeSpec], getattr(metric, "origin_scope", None))
+def _scope_label(scope: Optional[S.OriginScopeSpec]) -> Optional[str]:
     if scope is None:
         return None
 
@@ -57,33 +48,46 @@ def build_metric_requests(
     metric_data_origins: List[Optional[DataOrigin]] = []
     metric_scope_labels: List[Optional[str]] = []
     derived_axes: Optional[tuple[ChartAxis, ChartAxis]] = None
-    chart_distribution_mode = type(plan_chart.x_axis).__name__ == "NumericXAxis"
-    plan_metrics: List[S.MetricSpec] = [metric for axis in plan_chart.y_axes for metric in axis.metrics]
+    if isinstance(plan_chart, S.LineChartSpec):
+        for series in plan_chart.series:
+            metric_requests.append(MetricRequest(metricType=MetricType(series.metric)).with_stats())
 
-    for metric in plan_metrics:
-        metric_data_origin: Optional[DataOrigin] = None
-        if metric.data_origin is not None:
-            metric_data_origin = DataOrigin.model_validate(metric.data_origin.model_dump(by_alias=True, exclude_none=True))
-        metric_scope_label = _metric_scope_label(metric)
-
-        request_distribution = chart_distribution_mode or metric.distribution is not None
-        if request_distribution:
-            distribution = metric.distribution
-            if distribution is None:
-                bins, rmin, rmax = derive_defaults_fn(metric.metric)
-                distribution = DistributionSpec(num_buckets=bins, min_value=rmin, max_value=rmax)
-            if len(plan_metrics) == 1:
-                derived_axes = axis_from_meta_fn(metric.metric, distribution.min_value, distribution.max_value)
-            metric_requests.append(
-                MetricRequest(metricType=MetricType(metric.metric)).with_distribution(
-                    bin_count=distribution.num_buckets,
-                    lower=distribution.min_value,
-                    upper=distribution.max_value,
+            metric_data_origin: Optional[DataOrigin] = None
+            if series.data_origin is not None:
+                metric_data_origin = DataOrigin.model_validate(
+                    series.data_origin.model_dump(by_alias=True, exclude_none=True)
                 )
+            metric_data_origins.append(metric_data_origin)
+            metric_scope_labels.append(_scope_label(series.origin_scope))
+
+    elif isinstance(plan_chart, S.HistogramChartSpec):
+        metric = plan_chart.x_axis.metric
+        bins = int(plan_chart.x_axis.bins)
+        min_value = plan_chart.x_axis.min_value
+        max_value = plan_chart.x_axis.max_value
+        if min_value is None or max_value is None:
+            _, rmin, rmax = derive_defaults_fn(metric)
+            if min_value is None:
+                min_value = rmin
+            if max_value is None:
+                max_value = rmax
+
+        distribution = DistributionSpec(num_buckets=bins, min_value=int(min_value), max_value=int(max_value))
+        derived_axes = axis_from_meta_fn(metric, distribution.min_value, distribution.max_value)
+        metric_requests.append(
+            MetricRequest(metricType=MetricType(metric)).with_distribution(
+                bin_count=distribution.num_buckets,
+                lower=distribution.min_value,
+                upper=distribution.max_value,
             )
-        else:
-            metric_requests.append(MetricRequest(metricType=MetricType(metric.metric)).with_stats())
+        )
+
+        metric_data_origin: Optional[DataOrigin] = None
+        if plan_chart.data_origin is not None:
+            metric_data_origin = DataOrigin.model_validate(
+                plan_chart.data_origin.model_dump(by_alias=True, exclude_none=True)
+            )
         metric_data_origins.append(metric_data_origin)
-        metric_scope_labels.append(metric_scope_label)
+        metric_scope_labels.append(_scope_label(plan_chart.origin_scope))
 
     return metric_requests, derived_axes, metric_data_origins, metric_scope_labels

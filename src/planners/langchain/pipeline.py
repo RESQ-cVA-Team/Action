@@ -44,7 +44,7 @@ _PLANNER_REQUEST_TIMEOUT_SECONDS = 30.0
 _MAX_FEW_SHOTS = 2
 _PLAN_CACHE_SIZE = 256
 _PLAN_CACHE_TTL_SECONDS = 900.0
-_PLAN_CACHE_KEY_VERSION = "v2"
+_PLAN_CACHE_KEY_VERSION = "v3"
 
 LLM_PROVIDER = get_llm_provider()
 _LLM_MODEL = (env_util.get_env("LLM_MODEL", default="") or "").strip()
@@ -71,8 +71,10 @@ def _is_semantic_ambiguity_error(exc: Exception) -> bool:
     return (
         "unable to infer chart semantics" in text
         or "xaxis" in text
+        or "xaxes" in text
         or "yaxes" in text
         or "seriesby" in text
+        or "series" in text
     )
 
 
@@ -120,7 +122,7 @@ def _extract_json_block(text: str) -> str:
 def _assert_no_empty_chart_semantics(payload: Dict[str, Any]) -> None:
     """Reject ambiguous planner output instead of auto-correcting it.
 
-    Empty dict values in xAxis/yAxes/seriesBy can be coerced by union parsing.
+    Empty dict values in xAxes/yAxes/series can pass shallow JSON checks.
     We fail fast so retry feedback forces explicit and valid chart semantics.
     """
     charts_any = payload.get("charts")
@@ -132,7 +134,7 @@ def _assert_no_empty_chart_semantics(payload: Dict[str, Any]) -> None:
         if not isinstance(chart_any, dict):
             continue
         chart = cast(Dict[str, Any], chart_any)
-        for key in ("xAxis", "seriesBy"):
+        for key in ("xAxes", "yAxes"):
             value = chart.get(key)
             if isinstance(value, dict) and not value:
                 raise ValueError(
@@ -140,14 +142,18 @@ def _assert_no_empty_chart_semantics(payload: Dict[str, Any]) -> None:
                     "Provide explicit chart semantics."
                 )
 
-        y_axes_any = chart.get("yAxes")
-        if isinstance(y_axes_any, list):
-            y_axes_entries = cast(List[Any], y_axes_any)
-            for y_idx, item in enumerate(y_axes_entries):
+        series_any = chart.get("series")
+        if isinstance(series_any, list) and len(series_any) == 0:
+            raise ValueError(
+                f"Invalid AnalysisPlan: charts[{chart_idx}].series must contain at least one entry."
+            )
+        if isinstance(series_any, list):
+            series_entries = cast(List[Any], series_any)
+            for s_idx, item in enumerate(series_entries):
                 if isinstance(item, dict) and not item:
                     raise ValueError(
-                        f"Invalid AnalysisPlan: charts[{chart_idx}].yAxes[{y_idx}] is an empty object. "
-                        "Provide explicit y-axis metrics and statistic."
+                        f"Invalid AnalysisPlan: charts[{chart_idx}].series[{s_idx}] is an empty object. "
+                        "Provide explicit metric/xAxis/yAxis references."
                     )
 
 
@@ -463,13 +469,13 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
             "Use originScope.scopeType from: mine, provider_name, provider_group_name, country_code, country_average, all_accessible, provider_id, provider_group_id. "
             "Put human references in originScope.value and ISO country in originScope.countryCode when available. "
             "Only use dataOrigin when explicit numeric provider/group IDs are directly provided by the user. "
-            "When comparing multiple scopes in one chart, use separate metric entries with metric-level originScope/dataOrigin. "
-            "Use explicit chart semantics: xAxis, yAxes, optional seriesBy. Do not emit deprecated chart-shape fields. "
+            "When comparing multiple scopes in one chart, use separate series entries with per-series metric-level originScope/dataOrigin. "
+            "Use explicit chart semantics with the new contract: LINE charts require chartType=LINE, xAxes map, yAxes map, and series list with xAxis/yAxis keys; HISTOGRAM requires chartType=HISTOGRAM, xAxis numeric metric, yAxis count. "
+            "Always emit schemaVersion=2. Do not emit deprecated fields (xAxis object for LINE, yAxes list, seriesBy, summaries). "
             "Sex semantics guidance: phrases like 'males only' or 'females only' should usually be chart filters (SexFilter), while 'split/group by sex' should use GroupBySex. "
             "Prefer LINE/BAR for trends or comparisons; BOX/VIOLIN/HISTOGRAM for distributions. "
-            "Monthly trend language means xAxis=TimeXAxis with grain MONTH. Monthly distribution language means HISTOGRAM with xAxis=NumericXAxis. "
-            "DISTRIBUTION is represented structurally by NumericXAxis. "
-            "Chart intent guidance: If user asks for one graph/one chart/single visual with multiple splits, prefer one chart with xAxis plus seriesBy. If user asks for separate charts/multiple visuals, produce multiple chart specs. "
+            "Monthly trend language means LINE with a time x-axis entry in xAxes and series referencing it. Monthly distribution language means HISTOGRAM with xAxis numeric_metric. "
+            "Chart intent guidance: If user asks for one graph/one chart/single visual with multiple splits, prefer one LINE chart with multiple series. If user asks for separate charts/multiple visuals, produce multiple chart specs. "
             "Statistical test guidance: Only use test types listed in SUPPORTED_STAT_TESTS_JSON; otherwise omit statistical_tests and return charts.",
         ),
         ("system", "SCHEMA:\n" + SCHEMA_DESCRIPTION),

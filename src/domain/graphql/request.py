@@ -53,7 +53,7 @@ _NUMERIC_FILTER_PROPERTIES = _numeric_filter_properties()
 
 def _default_time_bounds() -> tuple[str, str]:
     end_date = datetime.now(timezone.utc).date()
-    start_date = end_date - timedelta(days=730)
+    start_date = end_date - timedelta(days=1095)
     return start_date.isoformat(), end_date.isoformat()
 
 

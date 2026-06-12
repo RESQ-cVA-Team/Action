@@ -1,344 +1,81 @@
 from __future__ import annotations
 
-from typing import List
+from typing import Dict, List
 
-from src.domain.dto.execution_summary import PlanNormalizationSummary
-from src.domain.dto.semantic_plan import SemanticChart, SemanticMetric, SemanticPlan, SemanticYAxis
 from src.domain.langchain import schema as S
-from src.shared.ssot_loader import resolve_chart_type, resolve_groupby_canonical
+from src.shared.ssot_loader import get_metric_metadata, get_metric_text_lookup
 
 
-def _normalize_chart_type(chart_type: str | None) -> tuple[str, bool, bool]:
-    raw = (chart_type or "").strip()
-    resolved = resolve_chart_type(raw)
-    if isinstance(resolved, str) and resolved:
-        return resolved, resolved != (chart_type or ""), False
+def _metric_unit(metric_code: str) -> str | None:
+    code = (metric_code or "").strip().upper()
+    meta = get_metric_metadata().get(code, {})
 
-    return "LINE", True, bool(raw)
+    unit_raw = meta.get("unit")
+    if isinstance(unit_raw, str) and unit_raw.strip():
+        return unit_raw.strip().lower()
+
+    numeric = meta.get("numeric")
+    if isinstance(numeric, dict):
+        nested = numeric.get("unit")
+        if isinstance(nested, str) and nested.strip():
+            return nested.strip().lower()
+
+    text_meta = get_metric_text_lookup().get(code.lower(), {})
+    text_unit = text_meta.get("unit")
+    if isinstance(text_unit, str) and text_unit.strip():
+        return text_unit.strip().lower()
+
+    return None
 
 
-def _normalize_metric_code(metric_code: str) -> str:
-    return (metric_code or "").strip().upper()
-
-
-def _dedupe_group_by(group_by: List[S.GroupBySpec]) -> List[S.GroupBySpec]:
-    seen: set[S.GroupBySpec] = set()
-    out: List[S.GroupBySpec] = []
-    for g in group_by:
-        if g in seen:
+def _line_axis_metric_units(chart: S.LineChartSpec) -> Dict[str, List[str]]:
+    units_by_y: Dict[str, List[str]] = {}
+    for series in chart.series:
+        unit = _metric_unit(series.metric)
+        if unit is None:
             continue
-        seen.add(g)
-        out.append(g)
-    return out
-
-
-def _chart_group_by(chart: S.ChartSpec | SemanticChart) -> List[S.GroupBySpec]:
-    out: List[S.GroupBySpec] = []
-    if isinstance(chart.x_axis, S.TimeXAxis):
-        out.append(
-            S.GroupByTime(
-                grain=chart.x_axis.grain,
-                window=chart.x_axis.window,
-                include_partial=chart.x_axis.include_partial,
-            )
-        )
-    elif isinstance(chart.x_axis, S.CategoryXAxis):
-        out.append(chart.x_axis.group_by)
-
-    series_by = chart.series_by
-    if series_by is not None:
-        out.append(series_by.split_by)
-    return out
-
-
-def _normalize_group_by(group_by: List[S.GroupBySpec]) -> tuple[List[S.GroupBySpec], int, int]:
-    normalized: List[S.GroupBySpec] = []
-    normalized_canonical_fields = 0
-    dropped_invalid_fields = 0
-
-    for g in group_by:
-        if isinstance(g, S.GroupByCanonicalField):
-            resolved = resolve_groupby_canonical(g.field)
-            if resolved is None:
-                dropped_invalid_fields += 1
-                continue
-
-            if resolved != g.field:
-                normalized_canonical_fields += 1
-            normalized.append(S.GroupByCanonicalField(field=resolved, values=g.values))
-            continue
-
-        normalized.append(g)
-
-    return normalized, normalized_canonical_fields, dropped_invalid_fields
-
-
-def _normalize_chart_type_for_semantics(
-    chart_type: str,
-    x_axis: S.XAxisSpec,
-    series_by: S.SeriesSpec | None,
-) -> str:
-    if isinstance(x_axis, S.NumericXAxis) and series_by is not None:
-        return "BAR"
-    return chart_type
-
-
-def _has_time_groupby(group_by: List[S.GroupBySpec]) -> bool:
-    return any(type(g).__name__ == "GroupByTime" for g in group_by)
-
-
-def _has_non_time_groupby(group_by: List[S.GroupBySpec]) -> bool:
-    return any(type(g).__name__ != "GroupByTime" for g in group_by)
-
-
-def _normalize_group_by_spec(spec: S.GroupBySpec) -> tuple[S.GroupBySpec | None, int, int]:
-    if isinstance(spec, S.GroupByCanonicalField):
-        resolved = resolve_groupby_canonical(spec.field)
-        if resolved is None:
-            return None, 0, 1
-        if resolved != spec.field:
-            return S.GroupByCanonicalField(field=resolved, values=spec.values), 1, 0
-        return spec, 0, 0
-    return spec, 0, 0
-
-
-def _normalize_chart_axes(chart: S.ChartSpec) -> tuple[S.XAxisSpec | None, S.SeriesSpec | None, int, int]:
-    normalized_fields_count = 0
-    dropped_invalid_fields = 0
-
-    x_axis: S.XAxisSpec | None = chart.x_axis
-    if isinstance(chart.x_axis, S.CategoryXAxis):
-        spec, norm_count, drop_count = _normalize_group_by_spec(chart.x_axis.group_by)
-        normalized_fields_count += norm_count
-        dropped_invalid_fields += drop_count
-        if spec is None:
-            x_axis = None
-        else:
-            x_axis = S.CategoryXAxis(groupBy=spec, order=chart.x_axis.order)
-
-    series_by: S.SeriesSpec | None = chart.series_by
-    if chart.series_by is not None:
-        spec, norm_count, drop_count = _normalize_group_by_spec(chart.series_by.split_by)
-        normalized_fields_count += norm_count
-        dropped_invalid_fields += drop_count
-        if spec is None:
-            series_by = None
-        else:
-            series_by = S.SeriesSpec(splitBy=spec)
-
-    return x_axis, series_by, normalized_fields_count, dropped_invalid_fields
+        units = units_by_y.setdefault(series.y_axis, [])
+        if unit not in units:
+            units.append(unit)
+    return units_by_y
 
 
 def validate_analysis_plan_semantics(plan: S.AnalysisPlan) -> S.AnalysisPlan:
-    """Normalize and validate chart semantics from explicit axes/series structure."""
+    """Run deterministic semantic checks without mutating plan shape."""
 
-    # DISTRIBUTION + GroupByTime is not supported by the executor: it fetches one flat
-    # distribution and silently drops the time grain.  Fail fast here so the planner retries
-    # with corrective feedback instead of producing a silently wrong query.
-    dist_time_indices: List[int] = []
     for idx, chart in enumerate(plan.charts or []):
-        if isinstance(chart.x_axis, S.NumericXAxis) and _has_time_groupby(_chart_group_by(chart)):
-            dist_time_indices.append(idx + 1)
-    if dist_time_indices:
-        joined = ", ".join(str(i) for i in dist_time_indices)
-        raise ValueError(
-            f"Chart(s) {joined}: DISTRIBUTION analysis mode cannot be combined with GroupByTime. "
-            "To show value spread use DISTRIBUTION with no time grouping. "
-            "To show a monthly/yearly trend use TIME_SERIES with GroupByTime."
-        )
+        chart_number = idx + 1
 
-    # Single-metric comparison requests without a real comparison dimension are usually the
-    # planner drifting into a stats query that the analytics backend cannot satisfy.
-    comparison_only_time_indices: List[int] = []
-    for idx, chart in enumerate(plan.charts or []):
-        if not isinstance(chart.x_axis, (S.CategoryXAxis, S.ScopeXAxis)):
-            continue
-        metrics = [m for axis in chart.y_axes for m in axis.metrics]
-        if len(metrics) != 1:
-            continue
-        group_by = _chart_group_by(chart)
-        if not group_by or not _has_non_time_groupby(group_by):
-            comparison_only_time_indices.append(idx + 1)
-    if comparison_only_time_indices:
-        joined = ", ".join(str(i) for i in comparison_only_time_indices)
-        raise ValueError(
-            f"Chart(s) {joined}: COMPARISON analysis mode needs a real comparison dimension such as sex, provider, "
-            "or another categorical group. For a single metric over time, use TIME_SERIES with GroupByTime; "
-            "for a single metric distribution, use DISTRIBUTION."
-        )
-
-    return normalize_analysis_plan(plan)
-
-
-def to_semantic_plan(plan: S.AnalysisPlan) -> SemanticPlan:
-    semantic, _ = to_semantic_plan_with_diagnostics(plan)
-    return semantic
-
-
-def to_semantic_plan_with_diagnostics(plan: S.AnalysisPlan) -> tuple[SemanticPlan, PlanNormalizationSummary]:
-    diagnostics = PlanNormalizationSummary()
-
-    input_charts = plan.charts or []
-    diagnostics.charts_in = len(input_charts)
-
-    charts: List[SemanticChart] = []
-    for chart in input_charts:
-        metrics_in_chart = [metric for axis in chart.y_axes for metric in axis.metrics]
-        diagnostics.metrics_in += len(metrics_in_chart)
-
-        normalized_y_axes: List[SemanticYAxis] = []
-        for axis in chart.y_axes:
-            normalized_metrics: List[SemanticMetric] = []
-            for metric in axis.metrics:
-                code = _normalize_metric_code(metric.metric)
-                if not code:
-                    diagnostics.dropped_empty_metrics += 1
-                    continue
-
-                if code != (metric.metric or ""):
-                    diagnostics.normalized_metric_codes += 1
-
-                normalized_metrics.append(
-                    SemanticMetric(
-                        metric=code,
-                        distribution=metric.distribution,
-                        data_origin=metric.data_origin,
-                        origin_scope=metric.origin_scope,
+        if isinstance(chart, S.LineChartSpec):
+            for x_key, x_axis in chart.x_axes.items():
+                if isinstance(x_axis, S.NumericMetricXAxis):
+                    raise ValueError(
+                        f"Chart(s) {chart_number}: LINE does not support numeric_metric x-axis ('{x_key}'). "
+                        "Use HISTOGRAM for metric distributions."
                     )
-                )
 
-            if not normalized_metrics:
-                continue
-
-            normalized_y_axes.append(
-                SemanticYAxis(
-                    metrics=normalized_metrics,
-                    statistic=axis.statistic,
-                    axis_id=axis.axis_id,
-                )
-            )
-
-        if not normalized_y_axes:
-            diagnostics.dropped_empty_charts += 1
-            continue
-
-        x_axis, series_by, axis_norm_count, axis_drop_count = _normalize_chart_axes(chart)
-        diagnostics.normalized_canonical_groupby_fields += axis_norm_count
-        diagnostics.dropped_invalid_groupby_fields += axis_drop_count
-        if x_axis is None:
-            diagnostics.dropped_empty_charts += 1
-            continue
-
-        raw_group_by = _chart_group_by(
-            SemanticChart(
-                chart_type=chart.chart_type,
-                x_axis=x_axis,
-                y_axes=normalized_y_axes,
-                series_by=series_by,
-                filters=chart.filters,
-                title=chart.title,
-            )
-        )
-        normalized_group_by, group_norm_count, group_drop_count = _normalize_group_by(raw_group_by)
-        diagnostics.normalized_canonical_groupby_fields += group_norm_count
-        diagnostics.dropped_invalid_groupby_fields += group_drop_count
-
-        group_by = _dedupe_group_by(normalized_group_by)
-        diagnostics.deduped_groupby_entries += max(0, len(raw_group_by) - len(group_by))
-
-        normalized_chart_type, chart_type_changed, chart_type_fallback = _normalize_chart_type(chart.chart_type)
-        normalized_chart_type = _normalize_chart_type_for_semantics(normalized_chart_type, x_axis, series_by)
-        if chart_type_changed:
-            diagnostics.normalized_chart_types += 1
-        if chart_type_fallback:
-            diagnostics.fallback_chart_type_count += 1
-
-        normalized_series_by = series_by
-        if normalized_series_by is not None:
-            series_spec = normalized_series_by.split_by
-            for gb in group_by:
-                if isinstance(gb, S.GroupByTime):
-                    continue
-                if type(series_spec) is type(gb):
-                    normalized_series_by = S.SeriesSpec(splitBy=gb)
-                    break
-
-        normalized_x_axis = x_axis
-        if isinstance(x_axis, S.CategoryXAxis):
-            for gb in group_by:
-                if isinstance(gb, S.GroupByTime):
-                    continue
-                if normalized_series_by is not None and gb == normalized_series_by.split_by:
-                    continue
-                normalized_x_axis = S.CategoryXAxis(groupBy=gb, order=x_axis.order)
-                break
-
-        charts.append(
-            SemanticChart(
-                chart_type=normalized_chart_type,
-                x_axis=normalized_x_axis,
-                y_axes=normalized_y_axes,
-                series_by=normalized_series_by,
-                filters=chart.filters,
-                title=chart.title,
-            )
-        )
-
-    diagnostics.metrics_out = sum(len(axis.metrics) for c in charts for axis in c.y_axes)
-    diagnostics.charts_out = len(charts)
-
-    return SemanticPlan(charts=charts, statistical_tests=plan.statistical_tests), diagnostics
-
-
-def to_analysis_plan(plan: SemanticPlan) -> S.AnalysisPlan:
-    charts: List[S.ChartSpec] = []
-    for chart in plan.charts:
-        y_axes: List[S.YAxisSpec] = []
-        for axis in chart.y_axes:
-            metrics: List[S.MetricSpec] = []
-            for m in axis.metrics:
-                metrics.append(
-                    S.MetricSpec(
-                        metric=m.metric,
-                        distribution=m.distribution,
-                        dataOrigin=m.data_origin,
-                        originScope=m.origin_scope,
+            units_by_y = _line_axis_metric_units(chart)
+            for y_key, units in units_by_y.items():
+                if len(units) > 1:
+                    raise ValueError(
+                        f"Chart(s) {chart_number}: y-axis '{y_key}' mixes metric units {sorted(units)}. "
+                        "Use separate y-axes or separate charts for different units."
                     )
+
+            # A metric_value y-axis should always be referenced by at least one series.
+            # This is mostly enforced by schema axis-reference validation, but we keep
+            # this explicit check to fail with a domain-specific message.
+            used_y = {s.y_axis for s in chart.series}
+            for y_key, y_axis in chart.y_axes.items():
+                if isinstance(y_axis, S.MetricValueAxis) and y_key not in used_y:
+                    raise ValueError(
+                        f"Chart(s) {chart_number}: metric_value y-axis '{y_key}' is not referenced by any series."
+                    )
+
+        if isinstance(chart, S.HistogramChartSpec):
+            if not isinstance(chart.x_axis, S.NumericMetricXAxis):
+                raise ValueError(
+                    f"Chart(s) {chart_number}: HISTOGRAM requires a numeric_metric x-axis."
                 )
 
-            if not metrics:
-                continue
-
-            y_axes.append(
-                S.YAxisSpec(
-                    metrics=metrics,
-                    statistic=axis.statistic,
-                    axisId=axis.axis_id,
-                )
-            )
-
-        if not y_axes:
-            continue
-
-        charts.append(
-            S.ChartSpec(
-                chart_type=_normalize_chart_type(chart.chart_type)[0],
-                xAxis=chart.x_axis,
-                yAxes=y_axes,
-                seriesBy=chart.series_by,
-                filters=chart.filters,
-                title=chart.title,
-            )
-        )
-
-    return S.AnalysisPlan(charts=charts or None, statistical_tests=plan.statistical_tests)
-
-
-def normalize_analysis_plan(plan: S.AnalysisPlan) -> S.AnalysisPlan:
-    normalized, _ = normalize_analysis_plan_with_diagnostics(plan)
-    return normalized
-
-
-def normalize_analysis_plan_with_diagnostics(plan: S.AnalysisPlan) -> tuple[S.AnalysisPlan, PlanNormalizationSummary]:
-    semantic, diagnostics = to_semantic_plan_with_diagnostics(plan)
-    return to_analysis_plan(semantic), diagnostics
+    return plan

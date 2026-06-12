@@ -42,13 +42,23 @@ class PlannerExamplesTests(unittest.TestCase):
         box_plan = parse_plan("box plot of dtn by sex")
         over_time_plan = parse_plan("dtn over time")
 
-        self.assertEqual(type(trend_plan.charts[0].x_axis).__name__, "TimeXAxis")
-        self.assertEqual(type(distribution_plan.charts[0].x_axis).__name__, "NumericXAxis")
-        self.assertEqual(type(box_plan.charts[0].x_axis).__name__, "CategoryXAxis")
-        self.assertEqual(type(over_time_plan.charts[0].x_axis).__name__, "TimeXAxis")
+        trend_chart = trend_plan.charts[0]
+        distribution_chart = distribution_plan.charts[0]
+        box_chart = box_plan.charts[0]
+        over_time_chart = over_time_plan.charts[0]
 
-    def test_distribution_examples_use_numeric_xaxis(self) -> None:
-        """Histogram examples must use explicit NumericXAxis in the new plan domain."""
+        self.assertEqual(type(trend_chart).__name__, "LineChartSpec")
+        self.assertEqual(type(distribution_chart).__name__, "HistogramChartSpec")
+        self.assertEqual(type(box_chart).__name__, "LineChartSpec")
+        self.assertEqual(type(over_time_chart).__name__, "LineChartSpec")
+
+        self.assertEqual(type(trend_chart.x_axes["x1"]).__name__, "TimeXAxis")
+        self.assertEqual(type(distribution_chart.x_axis).__name__, "NumericMetricXAxis")
+        self.assertEqual(type(box_chart.x_axes["x1"]).__name__, "CategoryXAxis")
+        self.assertEqual(type(over_time_chart.x_axes["x1"]).__name__, "TimeXAxis")
+
+    def test_distribution_examples_use_numeric_metric_xaxis(self) -> None:
+        """Histogram examples must use explicit NumericMetricXAxis in the plan domain."""
         few_shots = examples.get_few_shot_examples()
         for item in few_shots:
             try:
@@ -61,8 +71,8 @@ class PlannerExamplesTests(unittest.TestCase):
                 if chart.chart_type == "HISTOGRAM":
                     self.assertEqual(
                         type(chart.x_axis).__name__,
-                        "NumericXAxis",
-                        msg=f"Example '{item['user'][:80]}' uses HISTOGRAM without NumericXAxis",
+                        "NumericMetricXAxis",
+                        msg=f"Example '{item['user'][:80]}' uses HISTOGRAM without NumericMetricXAxis",
                     )
 
 

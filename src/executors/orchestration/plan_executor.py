@@ -1100,7 +1100,7 @@ async def execute_plan_async(
 
             gb_field = batch.server_groupby
             fallback_specs: List[RequestSpec] = []
-            include_metric_alias = sum(len(axis.metrics) for axis in planChart.y_axes) > 1
+            include_metric_alias = len(metric_requests) > 1
 
             chart_filter = to_gql_filter(coalesce(planChart.filters, None))
 

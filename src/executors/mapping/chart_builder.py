@@ -76,9 +76,13 @@ def _normalize_title_token(value: str) -> str:
 
 def _metric_codes(plan_chart: S.ChartSpec) -> List[str]:
     out: List[str] = []
-    metrics: List[S.MetricSpec] = [metric for axis in plan_chart.y_axes for metric in axis.metrics]
-    for metric in metrics:
-        code = (metric.metric or "").strip().upper()
+    if isinstance(plan_chart, S.LineChartSpec):
+        for series in plan_chart.series:
+            code = (series.metric or "").strip().upper()
+            if code and code not in out:
+                out.append(code)
+    elif isinstance(plan_chart, S.HistogramChartSpec):
+        code = (plan_chart.x_axis.metric or "").strip().upper()
         if code and code not in out:
             out.append(code)
     return out
@@ -103,40 +107,37 @@ def _format_filter_text(filter_node: Optional[Any], include_date: bool = True) -
 
     def render(node: Any) -> str:
         if isinstance(node, S.AndFilter):
-            children = getattr(node, "and_", []) or []
-            parts = [render(child) for child in children]
-            parts = [part for part in parts if part]
+            parts = [render(child) for child in (node.clauses or [])]
+            parts = [p for p in parts if p]
             return " and ".join(parts)
         if isinstance(node, S.OrFilter):
-            children = getattr(node, "or_", []) or []
-            parts = [render(child) for child in children]
-            parts = [part for part in parts if part]
+            parts = [render(child) for child in (node.clauses or [])]
+            parts = [p for p in parts if p]
             return " or ".join(parts)
         if isinstance(node, S.NotFilter):
-            inner = render(getattr(node, "not_", None))
+            inner = render(node.clause)
             return f"not ({inner})" if inner else ""
-        if isinstance(node, S.DateFilter):
-            if not include_date:
-                return ""
-            operator = _format_operator(str(getattr(node, "operator", "")))
-            value = str(getattr(node, "value", ""))
-            return f"discharge date {operator} {value}"
-        if isinstance(node, S.AgeFilter):
-            operator = _format_operator(str(getattr(node, "operator", "")))
-            value = getattr(node, "value", "")
-            return f"age {operator} {value:g}" if isinstance(value, (int, float)) else f"age {operator} {value}"
-        if isinstance(node, S.NIHSSFilter):
-            operator = _format_operator(str(getattr(node, "operator", "")))
-            value = getattr(node, "value", "")
-            return f"nihss {operator} {value:g}" if isinstance(value, (int, float)) else f"nihss {operator} {value}"
-        if isinstance(node, S.SexFilter):
-            return f"sex = {_normalize_title_token(str(getattr(node, 'value', '')))}"
-        if isinstance(node, S.StrokeFilter):
-            return f"stroke type = {_normalize_title_token(str(getattr(node, 'value', '')))}"
-        if isinstance(node, S.BooleanFilter):
-            boolean_type = str(getattr(node, "boolean_type", ""))
-            field_label = _normalize_title_token(get_canonical_display_name(boolean_type))
-            return f"{field_label} = {'yes' if bool(getattr(node, 'value', False)) else 'no'}"
+        if isinstance(node, S.PredicateFilter):
+            field = (node.field or "").strip().upper()
+            operator = _format_operator(node.operator)
+            val = node.value if node.value is not None else (node.values[0] if node.values else "")
+            if field in {"DISCHARGE_DATE", "DATE"}:
+                if not include_date:
+                    return ""
+                return f"discharge date {operator} {val}"
+            if field in {"AGE", "ADMISSION_AGE"}:
+                return f"age {operator} {val:g}" if isinstance(val, (int, float)) else f"age {operator} {val}"
+            if field in {"ADMISSION_NIHSS", "NIHSS"}:
+                return f"nihss {operator} {val:g}" if isinstance(val, (int, float)) else f"nihss {operator} {val}"
+            if field == "SEX":
+                return f"sex = {_normalize_title_token(str(val))}"
+            if field == "STROKE_TYPE":
+                return f"stroke type = {_normalize_title_token(str(val))}"
+            # Generic canonical field fallback
+            field_label = _normalize_title_token(get_canonical_display_name(field))
+            if isinstance(val, bool):
+                return f"{field_label} = {'yes' if val else 'no'}"
+            return f"{field_label} {operator} {val}"
         return ""
 
     rendered = render(filter_node).strip()
@@ -176,21 +177,21 @@ def _sample_period(filter_node: Optional[Any]) -> Optional[str]:
         nonlocal ambiguous
         if node is None or ambiguous:
             return
-        if isinstance(node, S.DateFilter):
+        if isinstance(node, S.PredicateFilter) and (node.field or "").strip().upper() in {"DISCHARGE_DATE", "DATE"}:
             if inside_or:
                 ambiguous = True
                 return
-            op = str(getattr(node, "operator", "")).upper()
-            value = str(getattr(node, "value", "")).strip()
+            op = (node.operator or "").strip().upper()
+            value = str(node.value if node.value is not None else (node.values[0] if node.values else "")).strip()
             if op and value:
                 date_constraints.append((op, value))
             return
         if isinstance(node, S.AndFilter):
-            for child in getattr(node, "and_", []) or []:
+            for child in (node.clauses or []):
                 walk(child, inside_or)
             return
         if isinstance(node, S.OrFilter):
-            for child in getattr(node, "or_", []) or []:
+            for child in (node.clauses or []):
                 walk(child, True)
             return
         if isinstance(node, S.NotFilter):
@@ -347,17 +348,6 @@ def _fallback_across(plan_chart: S.ChartSpec, metric_codes: List[str]) -> str:
 
     metric_code = metric_codes[0]
     metric_unit = _metric_unit(metric_code)
-    flat_metrics: List[S.MetricSpec] = [metric for axis in plan_chart.y_axes for metric in axis.metrics]
-    metric_spec = flat_metrics[0] if flat_metrics else None
-    distribution = getattr(metric_spec, "distribution", None) if metric_spec is not None else None
-
-    if distribution is not None:
-        min_value = getattr(distribution, "min_value", None)
-        max_value = getattr(distribution, "max_value", None)
-        range_text = f"{min_value}-{max_value}" if min_value is not None and max_value is not None else "range"
-        if metric_unit:
-            return f"distribution bins {range_text} {metric_unit}"
-        return f"distribution bins {range_text}"
 
     if metric_unit:
         return f"value range in {metric_unit}"

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Union, cast
+from typing import Annotated, Any, Dict, List, Literal, Optional, Set, Union, cast
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -99,170 +99,64 @@ ChartType = _load_chart_or_test_enum("ChartType.yml")
 StatisticalTestType = _load_chart_or_test_enum("StatisticalTestType.yml")
 
 
-class DateFilter(BaseModel):
-    """
-    Filter for date fields using an operator and an ISO 8601 date string.
+class PredicateFilter(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
-    Attributes:
-        operator: The comparison operator (e.g., 'GE', 'LE', etc.), must be in OperatorType.
-        value: The date value to compare, as an ISO 8601 string.
-    """
-
+    op: Literal["predicate"] = "predicate"
+    field: str
     operator: str
-    value: str  # ISO 8601 date string
+    value: Optional[Union[str, int, float, bool]] = None
+    values: Optional[List[Union[str, int, float, bool]]] = None
+
+    @field_validator("field")
+    def validate_field(cls, v: str) -> str:
+        token = (v or "").strip().upper()
+        if not token:
+            raise ValueError("Predicate filter field must be non-empty.")
+        return token
 
     @field_validator("operator")
-    def validate_operator_type(cls, v: str) -> str:
-        v_norm = v.upper()
+    def validate_operator(cls, v: str) -> str:
+        token = (v or "").strip().upper()
         allowed = _enum_allowed_values(OperatorType)
-        if v_norm not in allowed:
+        if token not in allowed:
             raise ValueError(f"{v} is not a valid OperatorType. Allowed: {sorted(allowed)}")
-        return v_norm
+        return token
 
-    @field_validator("value")
-    def validate_date_value(cls, v: str) -> str:
-        try:
-            datetime.fromisoformat(v)
-        except ValueError:
-            raise ValueError(f"{v} is not a valid ISO 8601 date or datetime string.")
-        return v
-
-
-class AgeFilter(BaseModel):
-    """
-    Filter for patient age using an operator and a numeric value.
-
-    Attributes:
-        operator: The comparison operator (e.g., 'GE', 'LE', etc.), must be in OperatorType.
-        value: The age value to compare (float).
-    """
-
-    operator: str
-    value: float
-
-    @field_validator("operator")
-    def validate_operator_type(cls, v: str) -> str:
-        v_norm = v.upper()
-        allowed = _enum_allowed_values(OperatorType)
-        if v_norm not in allowed:
-            raise ValueError(f"{v} is not a valid OperatorType. Allowed: {sorted(allowed)}")
-        return v_norm
-
-
-class NIHSSFilter(BaseModel):
-    """
-    Filter for NIHSS score using an operator and a numeric value.
-
-    Attributes:
-        operator: The comparison operator (e.g., 'GE', 'LE', etc.), must be in OperatorType.
-        value: The NIHSS score to compare (float).
-    """
-
-    operator: str
-    value: float
-
-    @field_validator("operator")
-    def validate_operator_type(cls, v: str) -> str:
-        v_norm = v.upper()
-        allowed = _enum_allowed_values(OperatorType)
-        if v_norm not in allowed:
-            raise ValueError(f"{v} is not a valid OperatorType. Allowed: {sorted(allowed)}")
-        return v_norm
-
-
-class AndFilter(BaseModel):
-    """
-    Logical AND of multiple filter nodes.
-
-    Attributes:
-        and_: List of filter nodes to combine with AND logic.
-    """
-
-    and_: List["FilterNode"]
-
-
-class OrFilter(BaseModel):
-    """
-    Logical OR of multiple filter nodes.
-
-    Attributes:
-        or_: List of filter nodes to combine with OR logic.
-    """
-
-    or_: List["FilterNode"]
+    @model_validator(mode="after")
+    def validate_payload(self) -> "PredicateFilter":
+        has_value = self.value is not None
+        has_values = bool(self.values)
+        if has_value == has_values:
+            raise ValueError("Predicate filter requires exactly one of value or values.")
+        return self
 
 
 class NotFilter(BaseModel):
-    """
-    Logical NOT of a filter node.
+    model_config = ConfigDict(extra="forbid")
 
-    Attributes:
-        not_: The filter node to negate.
-    """
-
-    not_: "FilterNode"
+    op: Literal["not"] = "not"
+    clause: "FilterNode"
 
 
-class SexFilter(BaseModel):
-    """
-    Filter for patient sex.
+class AndFilter(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
-    Attributes:
-        value: The sex value to filter by (must be in SexType).
-    """
-
-    value: str  # Should be a value from SexType
-
-    @field_validator("value")
-    def validate_sex_type(cls, v: str) -> str:
-        v_norm = v.upper()
-        allowed = _enum_allowed_values(SexType)
-        if v_norm not in allowed:
-            raise ValueError(f"{v} is not a valid SexType. Allowed: {sorted(allowed)}")
-        return v_norm
+    op: Literal["and"] = "and"
+    clauses: List["FilterNode"] = Field(min_length=2)
 
 
-class StrokeFilter(BaseModel):
-    """
-    Filter for stroke type.
+class OrFilter(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
-    Attributes:
-        value: The stroke type to filter by (must be in StrokeType).
-    """
-
-    value: str  # Should be a value from StrokeType
-
-    @field_validator("value")
-    def validate_stroke_type(cls, v: str) -> str:
-        v_norm = v.upper()
-        allowed = _enum_allowed_values(StrokeType)
-        if v_norm not in allowed:
-            raise ValueError(f"{v} is not a valid StrokeType. Allowed: {sorted(allowed)}")
-        return v_norm
+    op: Literal["or"] = "or"
+    clauses: List["FilterNode"] = Field(min_length=2)
 
 
-class BooleanFilter(BaseModel):
-    """
-    Filter for boolean fields.
-
-    Attributes:
-        boolean_type: The boolean field to filter by (must be in BooleanType).
-        value: The boolean value to match (True/False).
-    """
-
-    boolean_type: str  # Should be a value from BooleanType
-    value: bool
-
-    @field_validator("boolean_type")
-    def validate_boolean_type(cls, v: str) -> str:
-        v_norm = v.upper()
-        allowed = _enum_allowed_values(BooleanType)
-        if v_norm not in allowed:
-            raise ValueError(f"{v} is not a valid BooleanType. Allowed: {sorted(allowed)}")
-        return v_norm
-
-
-FilterNode = Union[AndFilter, OrFilter, NotFilter, DateFilter, AgeFilter, NIHSSFilter, SexFilter, StrokeFilter, BooleanFilter]
+FilterNode = Annotated[
+    Union[PredicateFilter, NotFilter, AndFilter, OrFilter],
+    Field(discriminator="op"),
+]
 
 
 class GroupBySex(HashableBaseModel):
@@ -628,178 +522,9 @@ class MetricSpec(BaseModel):
         return v_norm
 
 
-class TimeXAxis(HashableBaseModel):
-    grain: str = Field(description="Time aggregation grain.")
-    window: Optional[Union[TimeWindow, TimeRange]] = Field(default=None, description="Optional relative or absolute time window.")
-    include_partial: Optional[bool] = Field(default=None, alias="includePartial")
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    @field_validator("grain")
-    def validate_grain(cls, v: str) -> str:
-        v_norm = v.upper()
-        if v_norm not in TIME_INTERVALS:
-            raise ValueError(f"{v} is not a valid time grain. Allowed: {sorted(TIME_INTERVALS)}")
-        return v_norm
-
-
-class CategoryXAxis(HashableBaseModel):
-    group_by: GroupBySpec = Field(alias="groupBy")
-    order: Optional[str] = Field(default=None, description="Optional category ordering hint.")
-
-    model_config = ConfigDict(populate_by_name=True)
-
-
-class NumericXAxis(HashableBaseModel):
-    metric: str
-    bins: int = Field(gt=0, default=20)
-    min_value: Optional[int] = Field(default=None, alias="minValue")
-    max_value: Optional[int] = Field(default=None, alias="maxValue")
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    @field_validator("metric")
-    def validate_metric(cls, v: str) -> str:
-        v_norm = (v or "").strip().upper()
-        allowed_values = _enum_allowed_values(MetricType)
-        if v_norm not in allowed_values:
-            raise ValueError(f"{v} is not a valid MetricType. Allowed: {sorted(allowed_values)}")
-        return v_norm
-
-
-class ScopeXAxis(HashableBaseModel):
-    scopes: List[OriginScopeSpec] = Field(min_length=1)
-
-
-XAxisSpec = Union[TimeXAxis, CategoryXAxis, NumericXAxis, ScopeXAxis]
-
-
-class YAxisSpec(BaseModel):
-    metrics: List[MetricSpec] = Field(min_length=1)
-    statistic: str = Field(default="MEAN")
-    axis_id: Optional[str] = Field(default=None, alias="axisId")
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    @field_validator("statistic")
-    def validate_statistic(cls, v: str) -> str:
-        token = (v or "").strip().upper()
-        if token not in _Y_STATISTICS:
-            raise ValueError(f"{v} is not a valid y-axis statistic. Allowed: {sorted(_Y_STATISTICS)}")
-        return token
-
-    @model_validator(mode="after")
-    def validate_unit_compatibility(self) -> "YAxisSpec":
-        if len(self.metrics) <= 1:
-            return self
-
-        units: set[str] = set()
-        metric_codes: List[str] = []
-        for metric in self.metrics:
-            metric_codes.append(metric.metric)
-            _, unit = _metric_data_shape(metric.metric)
-            if unit:
-                units.add(unit)
-
-        if len(units) > 1:
-            raise ValueError(
-                "Mixed units in the same y-axis are not supported in v1. "
-                f"Metrics {metric_codes} resolved to units {sorted(units)}. "
-                "Use separate charts or a future dual-axis extension."
-            )
-
-        return self
-
-
-class SeriesSpec(BaseModel):
-    split_by: GroupBySpec = Field(alias="splitBy")
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    @model_validator(mode="after")
-    def validate_series_groupby(self) -> "SeriesSpec":
-        if isinstance(self.split_by, GroupByTime):
-            raise ValueError("seriesBy cannot use GroupByTime; time grouping belongs on xAxis.")
-        return self
-
-
-class SummarySpec(BaseModel):
-    metrics: List[MetricSpec] = Field(min_length=1)
-    statistic: str = Field(default="MEAN")
-    filters: Optional[FilterNode] = None
-
-    @field_validator("statistic")
-    def validate_summary_statistic(cls, v: str) -> str:
-        token = (v or "").strip().upper()
-        if token not in _Y_STATISTICS:
-            raise ValueError(f"{v} is not a valid summary statistic. Allowed: {sorted(_Y_STATISTICS)}")
-        return token
-
-
-class ChartSpec(BaseModel):
-    """
-    Specification for a chart to be generated.
-
-    Attributes:
-        chart_type: The chart type (must be in ChartType).
-        x_axis/y_axes/series_by: explicit chart semantics.
-        filters: Optional chart-level filters applied to all series.
-    """
-
-    chart_type: str  # Should be a value from ChartType
-    x_axis: XAxisSpec = Field(alias="xAxis")
-    y_axes: List[YAxisSpec] = Field(alias="yAxes", min_length=1)
-    series_by: Optional[SeriesSpec] = Field(default=None, alias="seriesBy")
-    filters: Optional[FilterNode] = None
-    title: Optional[str] = None
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    @field_validator("chart_type")
-    def validate_chart_type(cls, v: str) -> str:
-        v_norm = v.upper()
-        if v_norm not in ChartType:
-            raise ValueError(f"{v} is not a valid ChartType. Allowed: {ChartType}")
-        return v_norm
-
-    @model_validator(mode="after")
-    def validate_shape_compatibility(self) -> "ChartSpec":
-        if self.chart_type in {"PIE", "RADAR"}:
-            if not isinstance(self.x_axis, CategoryXAxis):
-                raise ValueError(f"{self.chart_type} charts require xAxis=CategoryXAxis.")
-            if self.series_by is not None:
-                raise ValueError(f"{self.chart_type} charts do not support seriesBy.")
-
-        if self.chart_type == "HISTOGRAM":
-            if not isinstance(self.x_axis, NumericXAxis):
-                raise ValueError("HISTOGRAM charts require xAxis=NumericXAxis.")
-            if self.series_by is not None:
-                raise ValueError("HISTOGRAM charts do not support seriesBy in v1.")
-            if len(self.y_axes) != 1 or len(self.y_axes[0].metrics) != 1:
-                raise ValueError("HISTOGRAM charts require exactly one yAxis with one metric.")
-
-        if self.chart_type in {"LINE", "AREA"} and not isinstance(self.x_axis, (TimeXAxis, CategoryXAxis)):
-            raise ValueError(f"{self.chart_type} charts require xAxis=TimeXAxis or CategoryXAxis.")
-
-        if self.chart_type == "SCATTER":
-            raise ValueError("SCATTER is not supported in v1. Use another chart type.")
-
-        if self.chart_type == "BOX" and self.series_by is not None and isinstance(self.series_by.split_by, GroupByTime):
-            raise ValueError("BOX charts cannot use GroupByTime in seriesBy.")
-
-        return self
-
 
 class StatisticalTestSpec(BaseModel):
-    """
-    Specification for a statistical test to be performed.
-
-    Attributes:
-        test_type: The statistical test type (must be in StatisticalTestType).
-        metrics: List of metrics to include in the test.
-    """
-
-    test_type: str  # Should be a value from StatisticalTestType
+    test_type: str
     metrics: List[MetricSpec]
     group_by: Optional[List[GroupBySpec]] = None
     filters: Optional[FilterNode] = None
@@ -813,12 +538,6 @@ class StatisticalTestSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_test_groupby(self) -> "StatisticalTestSpec":
-        """Ensure no duplicate group_by specs and single-instance constraints similar to charts.
-
-        - Only one GroupBySex / GroupByStrokeType / GroupByAge / GroupByNIHSS per test.
-        - GroupByBoolean: only one per boolean_type.
-        - Allow multiple distinct GroupByCanonicalField but no duplicates of same field.
-        """
         gb = self.group_by or []
         if not gb:
             return self
@@ -863,28 +582,196 @@ class StatisticalTestSpec(BaseModel):
         return self
 
 
+# --- Plan axis and chart types ---
+
+
+class TimeXAxis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["time"] = "time"
+    grain: str
+    window: Optional[Union[TimeWindow, TimeRange]] = None
+    include_partial: Optional[bool] = Field(default=None, alias="includePartial")
+
+    @field_validator("grain")
+    def validate_grain(cls, v: str) -> str:
+        token = (v or "").strip().upper()
+        if token not in TIME_INTERVALS:
+            raise ValueError(f"{v} is not a valid time grain. Allowed: {sorted(TIME_INTERVALS)}")
+        return token
+
+
+class CategoryXAxis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["category"] = "category"
+    group_by: GroupBySpec = Field(alias="groupBy")
+    order: Optional[str] = None
+
+
+class NumericMetricXAxis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["numeric_metric"] = "numeric_metric"
+    metric: str
+    bins: int = Field(default=20, gt=0)
+    min_value: Optional[int] = Field(default=None, alias="minValue")
+    max_value: Optional[int] = Field(default=None, alias="maxValue")
+
+    @field_validator("metric")
+    def validate_metric(cls, v: str) -> str:
+        token = (v or "").strip().upper()
+        allowed = _enum_allowed_values(MetricType)
+        if token not in allowed:
+            raise ValueError(f"{v} is not a valid MetricType. Allowed: {sorted(allowed)}")
+        return token
+
+
+XAxisSpec = Annotated[
+    Union[TimeXAxis, CategoryXAxis, NumericMetricXAxis],
+    Field(discriminator="kind"),
+]
+
+
+class MetricValueAxis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["metric_value"] = "metric_value"
+    statistic: str = "MEAN"
+    unit: Optional[str] = None
+
+    @field_validator("statistic")
+    def validate_statistic(cls, v: str) -> str:
+        token = (v or "").strip().upper()
+        if token not in _Y_STATISTICS:
+            raise ValueError(f"{v} is not a valid y-axis statistic. Allowed: {sorted(_Y_STATISTICS)}")
+        return token
+
+
+class CountAxis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["count"] = "count"
+
+
+YAxisSpec = Annotated[Union[MetricValueAxis, CountAxis], Field(discriminator="kind")]
+
+
+class LineSeries(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    metric: str
+    x_axis: str = Field(alias="xAxis")
+    y_axis: str = Field(alias="yAxis")
+    label: Optional[str] = None
+    filters: Optional[FilterNode] = None
+    data_origin: Optional[DataOriginSpec] = Field(default=None, alias="dataOrigin")
+    origin_scope: Optional[OriginScopeSpec] = Field(default=None, alias="originScope")
+
+    @field_validator("metric")
+    def validate_metric(cls, v: str) -> str:
+        token = (v or "").strip().upper()
+        allowed = _enum_allowed_values(MetricType)
+        if token not in allowed:
+            raise ValueError(f"{v} is not a valid MetricType. Allowed: {sorted(allowed)}")
+        return token
+
+
+class LineChartSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    chart_type: Literal["LINE"] = Field(alias="chartType")
+    x_axes: Dict[str, XAxisSpec] = Field(alias="xAxes", min_length=1)
+    y_axes: Dict[str, YAxisSpec] = Field(alias="yAxes", min_length=1)
+    series: List[LineSeries] = Field(min_length=1)
+    filters: Optional[FilterNode] = None
+    title: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_axis_references(self) -> "LineChartSpec":
+        used_x: set[str] = set()
+        used_y: set[str] = set()
+        for item in self.series:
+            if item.x_axis not in self.x_axes:
+                raise ValueError(f"Unknown x-axis key '{item.x_axis}' in line series.")
+            if item.y_axis not in self.y_axes:
+                raise ValueError(f"Unknown y-axis key '{item.y_axis}' in line series.")
+            used_x.add(item.x_axis)
+            used_y.add(item.y_axis)
+
+        orphan_x = sorted(set(self.x_axes.keys()) - used_x)
+        orphan_y = sorted(set(self.y_axes.keys()) - used_y)
+        if orphan_x:
+            raise ValueError(f"Unused x-axis keys are not allowed: {orphan_x}")
+        if orphan_y:
+            raise ValueError(f"Unused y-axis keys are not allowed: {orphan_y}")
+        return self
+
+
+class HistogramChartSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    chart_type: Literal["HISTOGRAM"] = Field(alias="chartType")
+    x_axis: NumericMetricXAxis = Field(alias="xAxis")
+    y_axis: CountAxis = Field(default_factory=CountAxis, alias="yAxis")
+    filters: Optional[FilterNode] = None
+    title: Optional[str] = None
+    data_origin: Optional[DataOriginSpec] = Field(default=None, alias="dataOrigin")
+    origin_scope: Optional[OriginScopeSpec] = Field(default=None, alias="originScope")
+
+
+ChartSpec = Annotated[
+    Union[LineChartSpec, HistogramChartSpec],
+    Field(discriminator="chart_type"),
+]
+
+
 class AnalysisPlan(BaseModel):
-    """
-    The top-level plan object returned by the planner.
+    schema_version: Literal[2] = Field(alias="schemaVersion")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    Attributes:
-        charts: List of chart specifications to generate.
-        statistical_tests: List of statistical test specifications to perform.
-    """
+    charts: Optional[List[ChartSpec]] = Field(default=None, min_length=1)
+    statistical_tests: Optional[List[StatisticalTestSpec]] = Field(default=None, alias="statisticalTests")
 
-    charts: Optional[List[ChartSpec]] = None
-    summaries: Optional[List[SummarySpec]] = None
-    statistical_tests: Optional[List[StatisticalTestSpec]] = None
+    @model_validator(mode="after")
+    def validate_filter_complexity(self) -> "AnalysisPlan":
+        if not self.charts and not self.statistical_tests:
+            raise ValueError("AnalysisPlan must have at least one chart or statistical test.")
+
+        def _walk(node: FilterNode, depth: int) -> int:
+            if depth > 3:
+                raise ValueError("Filter nesting depth exceeds max_depth=3.")
+            if isinstance(node, PredicateFilter):
+                return 1
+            if isinstance(node, NotFilter):
+                return 1 + _walk(node.clause, depth + 1)
+            if isinstance(node, (AndFilter, OrFilter)):
+                return 1 + sum(_walk(child, depth + 1) for child in node.clauses)
+            return 1
+
+        total_nodes = 0
+        for chart in self.charts or []:
+            chart_filter = getattr(chart, "filters", None)
+            if chart_filter is not None:
+                total_nodes += _walk(chart_filter, 1)
+
+            if isinstance(chart, LineChartSpec):
+                for item in chart.series:
+                    if item.filters is not None:
+                        total_nodes += _walk(item.filters, 1)
+
+        if total_nodes > 30:
+            raise ValueError("Filter complexity exceeds max_nodes=30 across the plan.")
+        return self
 
 
-MetricSpec.model_rebuild()
-ChartSpec.model_rebuild()
-StatisticalTestSpec.model_rebuild()
-TimeXAxis.model_rebuild()
-CategoryXAxis.model_rebuild()
-NumericXAxis.model_rebuild()
-ScopeXAxis.model_rebuild()
-YAxisSpec.model_rebuild()
-SeriesSpec.model_rebuild()
-SummarySpec.model_rebuild()
+NotFilter.model_rebuild()
+AndFilter.model_rebuild()
+OrFilter.model_rebuild()
+CustomGroup.model_rebuild()
+LineSeries.model_rebuild()
+LineChartSpec.model_rebuild()
+HistogramChartSpec.model_rebuild()
 AnalysisPlan.model_rebuild()
+StatisticalTestSpec.model_rebuild()
+MetricSpec.model_rebuild()

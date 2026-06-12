@@ -61,18 +61,15 @@ class _FakeAnalyticsClient:
 
 def _single_metric_plan(origin_scope: resolver.S.OriginScopeSpec) -> resolver.S.AnalysisPlan:
     return resolver.S.AnalysisPlan(
+        schemaVersion=2,
         charts=[
-            resolver.S.ChartSpec(
-                chart_type="LINE",
-                xAxis={"grain": "MONTH"},
-                yAxes=[
-                    resolver.S.YAxisSpec(
-                        metrics=[resolver.S.MetricSpec(metric="DTN", originScope=origin_scope)],
-                        statistic="MEAN",
-                    )
-                ],
+            resolver.S.LineChartSpec(
+                chartType="LINE",
+                xAxes={"x1": resolver.S.TimeXAxis(kind="time", grain="MONTH")},
+                yAxes={"y1": resolver.S.MetricValueAxis(kind="metric_value", statistic="MEAN")},
+                series=[resolver.S.LineSeries(metric="DTN", xAxis="x1", yAxis="y1", originScope=origin_scope)],
             )
-        ]
+        ],
     )
 
 
@@ -84,10 +81,10 @@ class OriginScopeResolverTests(unittest.TestCase):
         with patch.object(resolver, "get_analytics_center_client", return_value=fake_client):
             resolved = resolver.resolve_plan_metric_origins(plan, user_sub="user-1", trace_id="trace-1")
 
-        metric = resolved.charts[0].y_axes[0].metrics[0]
-        self.assertIsNotNone(metric.data_origin)
-        self.assertEqual(metric.data_origin.provider_id, [279])
-        self.assertIsNone(metric.data_origin.provider_group_id)
+        series = resolved.charts[0].series[0]
+        self.assertIsNotNone(series.data_origin)
+        self.assertEqual(series.data_origin.provider_id, [279])
+        self.assertIsNone(series.data_origin.provider_group_id)
 
     def test_inaccessible_provider_group_id_is_rejected_without_fallback(self) -> None:
         plan = _single_metric_plan(resolver.S.OriginScopeSpec(scopeType="provider_group_id", value=1))

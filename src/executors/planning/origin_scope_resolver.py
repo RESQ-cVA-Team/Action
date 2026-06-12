@@ -726,10 +726,23 @@ def _metric_needs_country_inference(metric: S.MetricSpec) -> bool:
 
 def _plan_needs_country_inference(plan: S.AnalysisPlan) -> bool:
     for chart in plan.charts or []:
-        for axis in chart.y_axes:
-            for metric in axis.metrics:
-                if _metric_needs_country_inference(metric):
+        if isinstance(chart, S.LineChartSpec):
+            for series in chart.series:
+                probe = S.MetricSpec(
+                    metric=series.metric,
+                    dataOrigin=series.data_origin,
+                    originScope=series.origin_scope,
+                )
+                if _metric_needs_country_inference(probe):
                     return True
+        elif isinstance(chart, S.HistogramChartSpec):
+            probe = S.MetricSpec(
+                metric=chart.x_axis.metric,
+                dataOrigin=chart.data_origin,
+                originScope=chart.origin_scope,
+            )
+            if _metric_needs_country_inference(probe):
+                return True
 
     for test in plan.statistical_tests or []:
         for metric in test.metrics:
@@ -746,37 +759,69 @@ def resolve_plan_metric_origins(plan: S.AnalysisPlan, user_sub: str, trace_id: s
     charts = plan.charts or []
     resolved_charts: List[S.ChartSpec] = []
     for chart in charts:
-        resolved_axes: List[S.YAxisSpec] = []
-        for axis in chart.y_axes:
-            resolved_metrics: List[S.MetricSpec] = []
-            for metric in axis.metrics:
+        if isinstance(chart, S.LineChartSpec):
+            resolved_series: List[S.LineSeries] = []
+            for series in chart.series:
+                probe = S.MetricSpec(
+                    metric=series.metric,
+                    dataOrigin=series.data_origin,
+                    originScope=series.origin_scope,
+                )
                 resolved_metric = _resolve_metric_origin(
-                    metric,
+                    probe,
                     default_scope=default_scope,
                     user_sub=user_sub,
                     trace_id=trace_id,
                     fail_open_for_default_scope=_FAIL_OPEN,
                     inferred_country_code=inferred_country_code,
                 )
-                resolved_metrics.append(resolved_metric)
-            resolved_axes.append(
-                S.YAxisSpec(
-                    metrics=resolved_metrics,
-                    statistic=axis.statistic,
-                    axisId=axis.axis_id,
+                resolved_series.append(
+                    S.LineSeries(
+                        metric=series.metric,
+                        xAxis=series.x_axis,
+                        yAxis=series.y_axis,
+                        label=series.label,
+                        filters=series.filters,
+                        dataOrigin=resolved_metric.data_origin,
+                        originScope=resolved_metric.origin_scope,
+                    )
+                )
+
+            resolved_charts.append(
+                S.LineChartSpec(
+                    chartType=chart.chart_type,
+                    xAxes=chart.x_axes,
+                    yAxes=chart.y_axes,
+                    series=resolved_series,
+                    filters=cast(Optional[S.FilterNode], getattr(chart, "filters", None)),
+                    title=chart.title,
                 )
             )
-
-        chart_filters = cast(Optional[S.FilterNode], getattr(chart, "filters", None))
-        resolved_chart = S.ChartSpec(
-            chart_type=chart.chart_type,
-            xAxis=chart.x_axis,
-            yAxes=resolved_axes,
-            seriesBy=chart.series_by,
-            filters=chart_filters,
-            title=chart.title,
-        )
-        resolved_charts.append(resolved_chart)
+        elif isinstance(chart, S.HistogramChartSpec):
+            probe = S.MetricSpec(
+                metric=chart.x_axis.metric,
+                dataOrigin=chart.data_origin,
+                originScope=chart.origin_scope,
+            )
+            resolved_metric = _resolve_metric_origin(
+                probe,
+                default_scope=default_scope,
+                user_sub=user_sub,
+                trace_id=trace_id,
+                fail_open_for_default_scope=_FAIL_OPEN,
+                inferred_country_code=inferred_country_code,
+            )
+            resolved_charts.append(
+                S.HistogramChartSpec(
+                    chartType=chart.chart_type,
+                    xAxis=chart.x_axis,
+                    yAxis=chart.y_axis,
+                    filters=cast(Optional[S.FilterNode], getattr(chart, "filters", None)),
+                    title=chart.title,
+                    dataOrigin=resolved_metric.data_origin,
+                    originScope=resolved_metric.origin_scope,
+                )
+            )
 
     statistical_tests = plan.statistical_tests or []
     resolved_tests: List[S.StatisticalTestSpec] = []
@@ -801,4 +846,8 @@ def resolve_plan_metric_origins(plan: S.AnalysisPlan, user_sub: str, trace_id: s
         )
         resolved_tests.append(resolved_test)
 
-    return S.AnalysisPlan(charts=resolved_charts or None, statistical_tests=resolved_tests or None)
+    return S.AnalysisPlan(
+        schemaVersion=2,
+        charts=resolved_charts or None,
+        statisticalTests=resolved_tests or None,
+    )

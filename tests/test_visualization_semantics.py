@@ -20,7 +20,15 @@ def load_module(module_name: str, relative_path: str):
 schema = load_module("action_schema_under_test", "src/domain/langchain/schema.py")
 metric_request_factory = load_module("action_metric_request_factory_under_test", "src/executors/planning/metric_request_factory.py")
 chart_types = load_module("action_chart_types_under_test", "src/domain/dto/charts/types.py")
-chart_builder = load_module("action_chart_builder_under_test", "src/executors/mapping/chart_builder.py")
+
+
+def _line_chart_payload(metric: str = "DTN") -> dict:
+    return {
+        "chartType": "LINE",
+        "xAxes": {"x1": {"kind": "time", "grain": "MONTH"}},
+        "yAxes": {"y1": {"kind": "metric_value", "statistic": "MEAN"}},
+        "series": [{"metric": metric, "xAxis": "x1", "yAxis": "y1"}],
+    }
 
 
 class VisualizationSemanticsTests(unittest.TestCase):
@@ -32,15 +40,15 @@ class VisualizationSemanticsTests(unittest.TestCase):
         spec = schema.OriginScopeSpec(scopeType="provider_group_id", value=1)
         self.assertEqual(spec.scope_type, "provider_group_id")
 
-    def test_chart_spec_requires_explicit_axes(self) -> None:
+    def test_line_chart_requires_explicit_axes(self) -> None:
         with self.assertRaises(ValidationError):
-            schema.ChartSpec(chart_type="LINE")
+            schema.LineChartSpec(chartType="LINE", xAxes={}, yAxes={}, series=[])
 
-    def test_numeric_xaxis_builds_distribution_request(self) -> None:
-        chart = schema.ChartSpec(
-            chart_type="HISTOGRAM",
-            xAxis={"metric": "DTN", "bins": 18, "minValue": 5, "maxValue": 95},
-            yAxes=[{"metrics": [{"metric": "DTN"}], "statistic": "COUNT"}],
+    def test_histogram_builds_distribution_request(self) -> None:
+        chart = metric_request_factory.S.HistogramChartSpec(
+            chartType="HISTOGRAM",
+            xAxis={"kind": "numeric_metric", "metric": "DTN", "bins": 18, "minValue": 5, "maxValue": 95},
+            yAxis={"kind": "count"},
         )
 
         derived_axes_calls: list[tuple[str, int, int]] = []
@@ -70,10 +78,13 @@ class VisualizationSemanticsTests(unittest.TestCase):
         self.assertEqual(derived_axes, (chart_types.ChartAxis(label="x"), chart_types.ChartAxis(label="y")))
 
     def test_time_xaxis_keeps_stats_request(self) -> None:
-        chart = schema.ChartSpec(
-            chart_type="LINE",
-            xAxis={"grain": "MONTH", "window": {"last_n": 24, "unit": "MONTH"}},
-            yAxes=[{"metrics": [{"metric": "DTN"}], "statistic": "MEAN"}],
+        chart = metric_request_factory.S.LineChartSpec.model_validate(
+            {
+                "chartType": "LINE",
+                "xAxes": {"x1": {"kind": "time", "grain": "MONTH", "window": {"last_n": 24, "unit": "MONTH"}},},
+                "yAxes": {"y1": {"kind": "metric_value", "statistic": "MEAN"}},
+                "series": [{"metric": "DTN", "xAxis": "x1", "yAxis": "y1"}],
+            }
         )
 
         metric_requests, derived_axes, _, _ = metric_request_factory.build_metric_requests(
@@ -88,67 +99,27 @@ class VisualizationSemanticsTests(unittest.TestCase):
         self.assertIsNone(metric_requests[0].distribution_options)
         self.assertIsNone(derived_axes)
 
-    def test_mixed_unit_yaxis_is_rejected(self) -> None:
+    def test_line_chart_rejects_orphan_axis_keys(self) -> None:
         with self.assertRaises(ValidationError):
-            schema.ChartSpec(
-                chart_type="LINE",
-                xAxis={"grain": "MONTH"},
-                yAxes=[
-                    {
-                        "metrics": [
-                            {"metric": "DTN"},
-                            {"metric": "AGE"},
-                        ],
-                        "statistic": "MEAN",
-                    }
-                ],
+            schema.LineChartSpec.model_validate(
+                {
+                    "chartType": "LINE",
+                    "xAxes": {
+                        "x1": {"kind": "time", "grain": "MONTH"},
+                        "x2": {"kind": "time", "grain": "WEEK"},
+                    },
+                    "yAxes": {"y1": {"kind": "metric_value", "statistic": "MEAN"}},
+                    "series": [{"metric": "DTN", "xAxis": "x1", "yAxis": "y1"}],
+                }
             )
 
-    def test_histogram_requires_numeric_xaxis(self) -> None:
+    def test_analysis_plan_requires_schema_version(self) -> None:
         with self.assertRaises(ValidationError):
-            schema.ChartSpec(
-                chart_type="HISTOGRAM",
-                xAxis={"grain": "MONTH"},
-                yAxes=[{"metrics": [{"metric": "DTN"}], "statistic": "COUNT"}],
-            )
+            schema.AnalysisPlan.model_validate({"charts": [_line_chart_payload()]})
 
-    def test_pie_requires_category_xaxis(self) -> None:
+    def test_analysis_plan_requires_content(self) -> None:
         with self.assertRaises(ValidationError):
-            schema.ChartSpec(
-                chart_type="PIE",
-                xAxis={"grain": "MONTH"},
-                yAxes=[{"metrics": [{"metric": "DTN"}], "statistic": "COUNT"}],
-            )
-
-    def test_scatter_is_explicitly_unsupported_in_v1(self) -> None:
-        with self.assertRaises(ValidationError):
-            schema.ChartSpec(
-                chart_type="SCATTER",
-                xAxis={"grain": "MONTH"},
-                yAxes=[{"metrics": [{"metric": "DTN"}], "statistic": "MEAN"}],
-            )
-
-    def test_grouped_box_chart_emits_one_entry_per_series(self) -> None:
-        plan = schema.ChartSpec(
-            chart_type="BOX",
-            xAxis={"groupBy": {"categories": ["MALE", "FEMALE"]}},
-            yAxes=[{"metrics": [{"metric": "DTN"}], "statistic": "MEDIAN"}],
-        )
-        series = [
-            chart_types.ChartSeries(name="Males", data=[chart_types.ChartPoint(x=1, y=10), chart_types.ChartPoint(x=2, y=14)]),
-            chart_types.ChartSeries(name="Females", data=[chart_types.ChartPoint(x=1, y=20), chart_types.ChartPoint(x=2, y=24)]),
-        ]
-
-        chart = chart_builder.build_chart_dto(
-            plan_chart=plan,
-            dimensions=[],
-            series=series,
-            derived_axes=None,
-        )
-
-        self.assertEqual(chart.type, chart_types.ChartType.BOX)
-        self.assertEqual(len(chart.data), 2)
-        self.assertEqual([entry.name for entry in chart.data], ["Males", "Females"])
+            schema.AnalysisPlan.model_validate({"schemaVersion": 2})
 
 
 if __name__ == "__main__":
