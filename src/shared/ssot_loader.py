@@ -27,6 +27,38 @@ class SSOTLoadError(FileNotFoundError):
     pass
 
 
+def _flatten_synonyms(value: Any) -> List[str]:
+    """Return synonyms as a flat list from localized SSOT blocks."""
+
+    out: List[str] = []
+
+    if isinstance(value, dict):
+        for localized in cast(Dict[Any, Any], value).values():
+            if isinstance(localized, list):
+                for item in cast(List[Any], localized):
+                    if isinstance(item, str) and item.strip():
+                        out.append(item.strip())
+
+    return out
+
+
+def _coerce_description_map(value: Any) -> Dict[str, str]:
+    """Return descriptions as language -> text from localized SSOT blocks."""
+
+    out: Dict[str, str] = {}
+
+    if isinstance(value, dict):
+        for lang_any, text_any in cast(Dict[Any, Any], value).items():
+            if not isinstance(lang_any, str) or not isinstance(text_any, str):
+                continue
+            lang = lang_any.strip()
+            text = text_any.strip()
+            if lang and text:
+                out[lang] = text
+
+    return out
+
+
 @lru_cache(maxsize=64)
 def _load_yaml(filename: str) -> List[Dict[str, Any]]:
     path = BASE_SSOT / filename
@@ -83,11 +115,7 @@ def _canonical_lookup(filename: str) -> Dict[str, str]:
         canonical = canonical_any.strip().upper()
 
         keys: List[str] = [canonical]
-        syn_any = item.get("synonyms")
-        if isinstance(syn_any, list):
-            for s_any in cast(List[Any], syn_any):
-                if isinstance(s_any, str) and s_any.strip():
-                    keys.append(s_any.strip())
+        keys.extend(_flatten_synonyms(item.get("synonyms")))
 
         for key in keys:
             norm = normalize_metric_text_key(key)
@@ -147,15 +175,22 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
         meta: Dict[str, Any] = {}
 
         # Common fields
-        for key in ("synonyms", "data_type", "properties"):
+        synonyms = _flatten_synonyms(item.get("synonyms"))
+        if synonyms:
+            meta["synonyms"] = synonyms
+
+        for key in ("data_type", "properties"):
             val = item.get(key)
             if val is not None:
                 meta[key] = val
 
+        descriptions = _coerce_description_map(item.get("description"))
+        if descriptions:
+            meta["descriptions"] = descriptions
+
         # Display name: prefer first synonym if available
-        syn = meta.get("synonyms")
-        if isinstance(syn, list) and syn and isinstance(syn[0], str):
-            meta["display_name"] = syn[0]
+        if synonyms:
+            meta["display_name"] = synonyms[0]
 
         # Numeric-specific (nested or flat)
         numeric = item.get("numeric")
@@ -332,6 +367,7 @@ def normalize_metric_text_key(value: str) -> str:
     - Lowercases
     - Strips leading/trailing whitespace
     - Replaces punctuation and symbols with single spaces
+    - Preserves letters and digits across Unicode scripts
     - Collapses repeated whitespace
     """
 
@@ -340,9 +376,9 @@ def normalize_metric_text_key(value: str) -> str:
     text = value.strip().lower()
     if not text:
         return ""
-    # Replace any non-alphanumeric character with a space to be tolerant to
-    # punctuation variants (hyphens, slashes, etc.).
-    cleaned = re.sub(r"[^0-9a-z]+", " ", text)
+    # Replace punctuation-like separators while preserving letters and digits,
+    # including localized scripts used in multilingual SSOT synonyms.
+    cleaned = re.sub(r"[\W_]+", " ", text, flags=re.UNICODE)
     # Collapse multiple spaces
     return " ".join(cleaned.split())
 
@@ -377,30 +413,8 @@ def get_metric_text_lookup() -> Dict[str, Dict[str, Any]]:
             continue
         code = canonical.strip().upper()
 
-        syn_any: Any = item.get("synonyms") or []
-        synonyms: List[str] = []
-        if isinstance(syn_any, list):
-            syn_list: List[Any] = cast(List[Any], syn_any)
-            for s_any in syn_list:
-                if isinstance(s_any, str):
-                    s_val = s_any.strip()
-                    if s_val:
-                        synonyms.append(s_val)
-
-        desc_any: Any = item.get("descriptions")
-        descriptions: Dict[str, str] = {}
-        if isinstance(desc_any, dict):
-            desc_dict: Dict[Any, Any] = cast(Dict[Any, Any], desc_any)
-            for lang_any, text_any in desc_dict.items():
-                if not isinstance(lang_any, str) or not isinstance(text_any, str):
-                    continue
-                text_val = text_any.strip()
-                if not text_val:
-                    continue
-                lang_key = lang_any.strip()
-                if not lang_key:
-                    continue
-                descriptions[lang_key] = text_val
+        synonyms = _flatten_synonyms(item.get("synonyms"))
+        descriptions = _coerce_description_map(item.get("description"))
 
         data_type_any = _ci_get(item, "data_type")
         data_type: Optional[str]
@@ -575,13 +589,7 @@ def validate_metric_metadata_complete(logger: Optional[Any] = None) -> List[str]
                         warnings.append(msg)
                         active_logger.warning(msg)
                     seen_keys.add(k)
-                syns_list: List[Any] = (
-                    cast(List[Any], syns) if isinstance(syns, list) else []
-                )
-                if not (
-                    syns_list
-                    and all(isinstance(s, str) and s.strip() for s in syns_list)
-                ):
+                if not _flatten_synonyms(syns):
                     msg = f"SSOT incomplete [ENUM]: {code} option '{key}' missing synonyms"
                     warnings.append(msg)
                     active_logger.warning(msg)
@@ -595,9 +603,9 @@ def validate_metric_metadata_complete(logger: Optional[Any] = None) -> List[str]
 
 
 def _first_synonym(item: Dict[str, Any]) -> Optional[str]:
-    syn = item.get("synonyms")
-    if isinstance(syn, list) and syn and isinstance(syn[0], str):
-        return syn[0]
+    synonyms = _flatten_synonyms(item.get("synonyms"))
+    if synonyms:
+        return synonyms[0]
     return None
 
 
