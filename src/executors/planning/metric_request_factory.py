@@ -50,7 +50,34 @@ def build_metric_requests(
     derived_axes: Optional[tuple[ChartAxis, ChartAxis]] = None
     if isinstance(plan_chart, S.LineChartSpec):
         for series in plan_chart.series:
-            metric_requests.append(MetricRequest(metricType=MetricType(series.metric)).with_stats())
+            x_axis = plan_chart.x_axes[series.x_axis]
+            y_axis = plan_chart.y_axes[series.y_axis]
+
+            if isinstance(x_axis, S.NumericMetricXAxis) and isinstance(y_axis, S.CountAxis):
+                bins = x_axis.bins
+                min_value = x_axis.min_value
+                max_value = x_axis.max_value
+                if bins is None or min_value is None or max_value is None:
+                    default_bins, rmin, rmax = derive_defaults_fn(x_axis.metric)
+                    if bins is None:
+                        bins = default_bins
+                    if min_value is None:
+                        min_value = rmin
+                    if max_value is None:
+                        max_value = rmax
+
+                if derived_axes is None:
+                    derived_axes = axis_from_meta_fn(x_axis.metric, int(min_value), int(max_value))
+
+                metric_requests.append(
+                    MetricRequest(metricType=MetricType(series.metric)).with_distribution(
+                        bin_count=bins,
+                        lower=int(min_value),
+                        upper=int(max_value),
+                    )
+                )
+            else:
+                metric_requests.append(MetricRequest(metricType=MetricType(series.metric)).with_stats())
 
             metric_data_origin: Optional[DataOrigin] = None
             if series.data_origin is not None:
@@ -62,11 +89,13 @@ def build_metric_requests(
 
     elif isinstance(plan_chart, S.HistogramChartSpec):
         metric = plan_chart.x_axis.metric
-        bins = int(plan_chart.x_axis.bins)
+        bins = plan_chart.x_axis.bins
         min_value = plan_chart.x_axis.min_value
         max_value = plan_chart.x_axis.max_value
-        if min_value is None or max_value is None:
-            _, rmin, rmax = derive_defaults_fn(metric)
+        if bins is None or min_value is None or max_value is None:
+            default_bins, rmin, rmax = derive_defaults_fn(metric)
+            if bins is None:
+                bins = default_bins
             if min_value is None:
                 min_value = rmin
             if max_value is None:

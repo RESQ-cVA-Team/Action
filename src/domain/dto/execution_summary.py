@@ -24,11 +24,9 @@ class PlanNormalizationSummary(BaseModel):
     metrics_out: int = 0
     dropped_empty_metrics: int = 0
     normalized_metric_codes: int = 0
-    normalized_chart_types: int = 0
     deduped_groupby_entries: int = 0
     normalized_canonical_groupby_fields: int = 0
     dropped_invalid_groupby_fields: int = 0
-    fallback_chart_type_count: int = 0
     normalized_text_fields: int = 0
 
 

@@ -49,10 +49,23 @@ def validate_analysis_plan_semantics(plan: S.AnalysisPlan) -> S.AnalysisPlan:
         if isinstance(chart, S.LineChartSpec):
             for x_key, x_axis in chart.x_axes.items():
                 if isinstance(x_axis, S.NumericMetricXAxis):
-                    raise ValueError(
-                        f"Chart(s) {chart_number}: LINE does not support numeric_metric x-axis ('{x_key}'). "
-                        "Use HISTOGRAM for metric distributions."
-                    )
+                    referencing_series = [s for s in chart.series if s.x_axis == x_key]
+                    if not referencing_series:
+                        raise ValueError(
+                            f"Chart(s) {chart_number}: LINE numeric_metric x-axis ('{x_key}') is not referenced by any series."
+                        )
+
+                    for series in referencing_series:
+                        y_axis = chart.y_axes.get(series.y_axis)
+                        if not isinstance(y_axis, S.CountAxis):
+                            raise ValueError(
+                                f"Chart(s) {chart_number}: LINE numeric_metric x-axis ('{x_key}') requires count y-axis. "
+                                "Use metric_value with time/category x-axis for trends or comparisons."
+                            )
+                        if (series.metric or "").strip().upper() != (x_axis.metric or "").strip().upper():
+                            raise ValueError(
+                                f"Chart(s) {chart_number}: LINE distribution series metric '{series.metric}' must match numeric_metric x-axis metric '{x_axis.metric}'."
+                            )
 
             units_by_y = _line_axis_metric_units(chart)
             for y_key, units in units_by_y.items():

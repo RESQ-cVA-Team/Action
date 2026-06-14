@@ -317,8 +317,6 @@ def _optional_slot_value(slots: Dict[str, Any], name: str) -> Optional[str]:
 
 def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[str] = None) -> S.AnalysisPlan:
     metric = str(slots.get("metric") or "").strip().upper()
-    chart_type = (_optional_slot_value(slots, "chart_type") or "LINE").upper()
-    group_by = _optional_slot_value(slots, "group_by")
     stroke_type = _optional_slot_value(slots, "stroke_type")
     sex = _optional_slot_value(slots, "sex")
     guided_scope = parse_guided_scope(slots.get("guided_hospital_scope"), trace_id=trace_id)
@@ -334,12 +332,6 @@ def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[s
         filter_node = filter_clauses[0]
     elif len(filter_clauses) > 1:
         filter_node = S.AndFilter(op="and", clauses=filter_clauses)
-
-    group_specs: List[S.GroupBySpec] = []
-    if isinstance(group_by, str) and group_by.strip():
-        group_specs.append(S.GroupByCanonicalField(field=group_by.strip().upper()))
-
-    chart_type_norm = chart_type.strip().upper()
 
     metric_origin_scope: Optional[S.OriginScopeSpec] = None
     if isinstance(guided_scope, dict) and guided_scope:
@@ -360,41 +352,15 @@ def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[s
             )
             metric_origin_scope = None
 
-    if chart_type_norm in {"HISTOGRAM", "VIOLIN"}:
-        return S.AnalysisPlan(
-            schemaVersion=2,
-            charts=[
-                S.HistogramChartSpec(
-                    chartType="HISTOGRAM",
-                    xAxis=S.NumericMetricXAxis(kind="numeric_metric", metric=metric, bins=20),
-                    yAxis=S.CountAxis(kind="count"),
-                    filters=filter_node,
-                    originScope=metric_origin_scope,
-                )
-            ],
-        )
-
-    if group_specs:
-        x_axis_spec: S.XAxisSpec = S.CategoryXAxis(kind="category", groupBy=group_specs[0])
-    else:
-        x_axis_spec = S.TimeXAxis(kind="time", grain="MONTH", window=S.TimeWindow(last_n=36, unit="MONTH"))
-
     return S.AnalysisPlan(
         schemaVersion=2,
         charts=[
-            S.LineChartSpec(
-                chartType=chart_type_norm if chart_type_norm not in {"HISTOGRAM", "VIOLIN"} else "LINE",
-                xAxes={"x1": x_axis_spec},
-                yAxes={"y1": S.MetricValueAxis(kind="metric_value", statistic="MEAN")},
-                series=[
-                    S.LineSeries(
-                        metric=metric,
-                        xAxis="x1",
-                        yAxis="y1",
-                        originScope=metric_origin_scope,
-                        filters=filter_node,
-                    )
-                ],
+            S.HistogramChartSpec(
+                chartType="HISTOGRAM",
+                xAxis=S.NumericMetricXAxis(kind="numeric_metric", metric=metric),
+                yAxis=S.CountAxis(kind="count"),
+                filters=filter_node,
+                originScope=metric_origin_scope,
             )
         ],
     )

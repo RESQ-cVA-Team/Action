@@ -167,20 +167,18 @@ class GroupBySex(HashableBaseModel):
         categories: List of sex categories to group by (must be in SexType). None = all.
     """
 
-    categories: Optional[List[str]] = Field(default=None, description="List of sex categories to group by. None = all.")
+    categories: List[str] = Field(min_length=1, description="List of sex categories to group by.")
 
     @field_validator("categories")
-    def validate_categories(cls, v: Optional[List[str]]) -> Optional[List[str]]:
-        if v is not None:
-            allowed = _enum_allowed_values(SexType)
-            out: List[str] = []
-            for val in v:
-                val_norm = val.upper()
-                if val_norm not in allowed:
-                    raise ValueError(f"{val} is not a valid SexType. Allowed: {sorted(allowed)}")
-                out.append(val_norm)
-            return out
-        return v
+    def validate_categories(cls, v: List[str]) -> List[str]:
+        allowed = _enum_allowed_values(SexType)
+        out: List[str] = []
+        for val in v:
+            val_norm = val.upper()
+            if val_norm not in allowed:
+                raise ValueError(f"{val} is not a valid SexType. Allowed: {sorted(allowed)}")
+            out.append(val_norm)
+        return out
 
 
 class Bucket(BaseModel):
@@ -226,20 +224,18 @@ class GroupByStrokeType(HashableBaseModel):
         categories: List of stroke types to group by (must be in StrokeType). None = all.
     """
 
-    categories: Optional[List[str]] = Field(default=None, description="List of stroke types to group by. None = all.")
+    categories: List[str] = Field(min_length=1, description="List of stroke types to group by.")
 
     @field_validator("categories")
-    def validate_categories(cls, v: Optional[List[str]]) -> Optional[List[str]]:
-        if v is not None:
-            allowed = _enum_allowed_values(StrokeType)
-            out: List[str] = []
-            for val in v:
-                val_norm = val.upper()
-                if val_norm not in allowed:
-                    raise ValueError(f"{val} is not a valid StrokeType. Allowed: {sorted(allowed)}")
-                out.append(val_norm)
-            return out
-        return v
+    def validate_categories(cls, v: List[str]) -> List[str]:
+        allowed = _enum_allowed_values(StrokeType)
+        out: List[str] = []
+        for val in v:
+            val_norm = val.upper()
+            if val_norm not in allowed:
+                raise ValueError(f"{val} is not a valid StrokeType. Allowed: {sorted(allowed)}")
+            out.append(val_norm)
+        return out
 
 
 TIME_INTERVALS: Set[str] = {"DAY", "WEEK", "BIWEEK", "MONTH", "QUARTER", "YEAR"}
@@ -614,7 +610,7 @@ class NumericMetricXAxis(BaseModel):
 
     kind: Literal["numeric_metric"] = "numeric_metric"
     metric: str
-    bins: int = Field(default=20, gt=0)
+    bins: Optional[int] = Field(default=None, gt=0)
     min_value: Optional[int] = Field(default=None, alias="minValue")
     max_value: Optional[int] = Field(default=None, alias="maxValue")
 

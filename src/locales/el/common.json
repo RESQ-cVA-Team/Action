@@ -79,8 +79,6 @@
       "detail_metrics_transition": "μετρικές {metrics_in} -> {metrics_out}",
       "detail_dropped_metrics": "αφαιρέθηκαν {dropped_metrics} κενή(ές) μετρική(ές)",
       "detail_normalized_metric_codes": "κανονικοποιήθηκαν {metric_code_norm} κωδικοί μετρικών",
-      "detail_normalized_chart_types": "κανονικοποιήθηκαν {chart_type_norm} τύποι γραφημάτων",
-      "detail_applied_chart_fallback": "εφαρμόστηκαν {chart_type_fallback} fallback τύπου γραφήματος",
       "detail_removed_groupby_duplicates": "αφαιρέθηκαν {deduped_groupby} διπλές εγγραφές group-by",
       "detail_normalized_groupby_fields": "κανονικοποιήθηκαν {normalized_groupby_fields} πεδία canonical group-by",
       "detail_dropped_groupby_fields": "αφαιρέθηκαν {dropped_groupby_fields} μη έγκυρα πεδία group-by",

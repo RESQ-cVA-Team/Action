@@ -272,17 +272,8 @@ class ValidateGuidedVisualizationForm(FormValidationAction):  # pyright: ignore
         tracker: TrackerLike,
         domain: DomainDict,
     ) -> Dict[Text, Any]:
-        if is_skip_signal(slot_value=slot_value, tracker=tracker):
-            return {"group_by": SKIP_SENTINEL}
-        language = resolve_language_from_tracker(tracker)
-        return validate_optional_catalog_slot(
-            slot_name="group_by",
-            slot_value=slot_value,
-            dispatcher=dispatcher,
-            tracker=tracker,
-            filename="GroupByType.yml",
-            prompt=translate("action.guided.prompt_group_by", language=language),
-        )
+        # group_by is not used by guided distribution plans.
+        return {"group_by": SKIP_SENTINEL}
 
     def validate_chart_type(
         self,
@@ -291,14 +282,5 @@ class ValidateGuidedVisualizationForm(FormValidationAction):  # pyright: ignore
         tracker: TrackerLike,
         domain: DomainDict,
     ) -> Dict[Text, Any]:
-        if is_skip_signal(slot_value=slot_value, tracker=tracker):
-            return {"chart_type": SKIP_SENTINEL}
-        language = resolve_language_from_tracker(tracker)
-        return validate_optional_catalog_slot(
-            slot_name="chart_type",
-            slot_value=slot_value,
-            dispatcher=dispatcher,
-            tracker=tracker,
-            filename="ChartType.yml",
-            prompt=translate("action.guided.prompt_chart_type", language=language),
-        )
+        # chart_type is no longer required; distribution is the default for all KPI metrics.
+        return {"chart_type": SKIP_SENTINEL}

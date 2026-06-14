@@ -83,8 +83,6 @@
       "detail_metrics_transition": "metrics {metrics_in} -> {metrics_out}",
       "detail_dropped_metrics": "dropped {dropped_metrics} empty metric(s)",
       "detail_normalized_metric_codes": "normalized {metric_code_norm} metric code(s)",
-      "detail_normalized_chart_types": "normalized {chart_type_norm} chart type(s)",
-      "detail_applied_chart_fallback": "applied {chart_type_fallback} chart type fallback(s)",
       "detail_removed_groupby_duplicates": "removed {deduped_groupby} duplicate group-by entries",
       "detail_normalized_groupby_fields": "normalized {normalized_groupby_fields} canonical group-by field(s)",
       "detail_dropped_groupby_fields": "dropped {dropped_groupby_fields} invalid group-by field(s)",

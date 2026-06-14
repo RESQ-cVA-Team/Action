@@ -88,6 +88,13 @@ def _canonical_lookup(filename: str) -> Dict[str, str]:
             for s_any in cast(List[Any], syn_any):
                 if isinstance(s_any, str) and s_any.strip():
                     keys.append(s_any.strip())
+        elif isinstance(syn_any, dict):
+            # New locale map format: extract all locale synonyms
+            for locale_syns in cast(Dict[Any, Any], syn_any).values():
+                if isinstance(locale_syns, list):
+                    for s_any in cast(List[Any], locale_syns):
+                        if isinstance(s_any, str) and s_any.strip():
+                            keys.append(s_any.strip())
 
         for key in keys:
             norm = normalize_metric_text_key(key)
@@ -147,26 +154,39 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
         meta: Dict[str, Any] = {}
 
         # Common fields
-        for key in ("synonyms", "data_type", "properties"):
+        for key in ("data_type", "properties"):
             val = item.get(key)
             if val is not None:
                 meta[key] = val
 
-        # Display name: prefer first synonym if available
-        syn = meta.get("synonyms")
-        if isinstance(syn, list) and syn and isinstance(syn[0], str):
-            meta["display_name"] = syn[0]
+        # Synonyms: support both flat list (old) and locale map {en: [...]} (new)
+        syn_raw = item.get("synonyms")
+        if isinstance(syn_raw, list):
+            meta["synonyms"] = syn_raw
+        elif isinstance(syn_raw, dict):
+            en_syns = syn_raw.get("en") or []
+            if not isinstance(en_syns, list):
+                en_syns = [en_syns] if en_syns else []
+            meta["synonyms"] = [str(s) for s in en_syns if s]
 
-        # Numeric-specific (nested or flat)
-        numeric = item.get("numeric")
+        # Display name: prefer first synonym
+        flat_syns = meta.get("synonyms")
+        if isinstance(flat_syns, list) and flat_syns:
+            meta["display_name"] = str(flat_syns[0])
+
+        # Numeric-specific: accept both "Numeric" (new) and "numeric" (old) via _ci_get
+        numeric = _ci_get(item, "numeric")
         if isinstance(numeric, dict):
             numeric = cast(Dict[str, Any], numeric)
             # Preserve nested block
             meta["numeric"] = numeric
             # Promote known keys for compatibility
-            for k in ("unit", "range_min", "range_max", "distribution_default_buckets"):
+            for k in ("unit", "range_min", "range_max", "distribution_default_buckets", "default_buckets"):
                 if k in numeric and k not in meta:
                     meta[k] = numeric[k]
+            # Alias default_buckets -> distribution_default_buckets
+            if "default_buckets" in numeric and "distribution_default_buckets" not in meta:
+                meta["distribution_default_buckets"] = numeric["default_buckets"]
             # If a specific field is provided, synthesize properties if absent
             field = numeric.get("field")
             if isinstance(field, str) and field and "properties" not in meta:
@@ -256,8 +276,8 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
                         meta["properties"] = option_keys
                     if "labels" not in meta:
                         meta["labels"] = derived_labels
-        # Simplified Enum list form (uppercase key) for multi-flag-like enums
-        enum_list = item.get("Enum")
+        # Simplified Enum list form: accept both "Enum" (new) and "enum" (old) via _ci_get
+        enum_list = _ci_get(item, "Enum")
         if isinstance(enum_list, list) and enum_list:
             entries = cast(List[Any], enum_list)
             option_map: Dict[str, Any] = {}
@@ -271,13 +291,16 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
                 syns = entry.get("synonyms")
                 if not (isinstance(key, str) and key):
                     continue
+                # New SSOT: synonyms is locale map {en: [...]}; old: flat list
+                if isinstance(syns, dict):
+                    en_list = syns.get("en") or []
+                    syns = [str(s) for s in (en_list if isinstance(en_list, list) else [en_list]) if s]
                 if not (isinstance(syns, list) and syns and isinstance(syns[0], str)):
                     # fabricate human label from key
-                    fabricated = key.replace("_", " ").title()
-                    syns = [fabricated]
-                    entry["synonyms"] = syns
+                    syns = [key.replace("_", " ").title()]
                 option_map[key] = {
-                    k: v for k, v in entry.items() if k in ("synonyms", "value")
+                    "synonyms": syns,
+                    **{k: v for k, v in entry.items() if k == "value"},
                 }
                 option_keys.append(key)
                 labels.append(cast(str, syns[0]))
@@ -386,6 +409,12 @@ def get_metric_text_lookup() -> Dict[str, Dict[str, Any]]:
                     s_val = s_any.strip()
                     if s_val:
                         synonyms.append(s_val)
+        elif isinstance(syn_any, dict):
+            # New locale map format – collect en synonyms as primary
+            en_syns = syn_any.get("en") or []
+            for s_any in (en_syns if isinstance(en_syns, list) else [en_syns]):
+                if isinstance(s_any, str) and s_any.strip():
+                    synonyms.append(s_any.strip())
 
         desc_any: Any = item.get("descriptions")
         descriptions: Dict[str, str] = {}

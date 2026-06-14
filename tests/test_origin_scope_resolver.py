@@ -74,7 +74,7 @@ def _single_metric_plan(origin_scope: resolver.S.OriginScopeSpec) -> resolver.S.
 
 
 class OriginScopeResolverTests(unittest.TestCase):
-    def test_mine_falls_back_to_single_accessible_provider(self) -> None:
+    def test_mine_uses_explicit_default_scope_without_accessible_provider_fallback(self) -> None:
         plan = _single_metric_plan(resolver.S.OriginScopeSpec(scopeType="mine"))
         fake_client = _FakeAnalyticsClient()
 
@@ -83,8 +83,34 @@ class OriginScopeResolverTests(unittest.TestCase):
 
         series = resolved.charts[0].series[0]
         self.assertIsNotNone(series.data_origin)
-        self.assertEqual(series.data_origin.provider_id, [279])
+        self.assertEqual(series.data_origin.provider_id, [999])
         self.assertIsNone(series.data_origin.provider_group_id)
+
+    def test_provider_name_scope_resolves_via_accessible_provider_listing(self) -> None:
+        plan = _single_metric_plan(
+            resolver.S.OriginScopeSpec(scopeType="provider_name", value="Aalborg University Hospital")
+        )
+        fake_client = _FakeAnalyticsClient()
+
+        with patch.object(resolver, "get_analytics_center_client", return_value=fake_client):
+            resolved = resolver.resolve_plan_metric_origins(plan, user_sub="user-1", trace_id="trace-name")
+
+        series = resolved.charts[0].series[0]
+        self.assertIsNotNone(series.data_origin)
+        self.assertEqual(series.data_origin.provider_id, [279])
+
+    def test_provider_group_name_scope_resolves_via_accessible_group_listing(self) -> None:
+        plan = _single_metric_plan(
+            resolver.S.OriginScopeSpec(scopeType="provider_group_name", value="Aalborg Group")
+        )
+        fake_client = _FakeAnalyticsClient()
+
+        with patch.object(resolver, "get_analytics_center_client", return_value=fake_client):
+            resolved = resolver.resolve_plan_metric_origins(plan, user_sub="user-1", trace_id="trace-group")
+
+        series = resolved.charts[0].series[0]
+        self.assertIsNotNone(series.data_origin)
+        self.assertEqual(series.data_origin.provider_group_id, [7])
 
     def test_inaccessible_provider_group_id_is_rejected_without_fallback(self) -> None:
         plan = _single_metric_plan(resolver.S.OriginScopeSpec(scopeType="provider_group_id", value=1))
@@ -96,8 +122,8 @@ class OriginScopeResolverTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.reason, "unauthorized_origin")
         self.assertEqual(ctx.exception.clarification_type, "provider_group_id")
-        self.assertIn("did not automatically switch", str(ctx.exception).lower())
-        self.assertTrue(any("group 7" in option for option in ctx.exception.clarification_options))
+        self.assertIn("do not have access", str(ctx.exception).lower())
+        self.assertEqual(ctx.exception.clarification_options, [])
 
     def test_inaccessible_provider_id_is_rejected_without_fallback(self) -> None:
         plan = _single_metric_plan(resolver.S.OriginScopeSpec(scopeType="provider_id", value=1))
@@ -109,8 +135,8 @@ class OriginScopeResolverTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.reason, "unauthorized_origin")
         self.assertEqual(ctx.exception.clarification_type, "provider_id")
-        self.assertIn("did not automatically switch", str(ctx.exception).lower())
-        self.assertTrue(any("provider 279" in option for option in ctx.exception.clarification_options))
+        self.assertIn("do not have access", str(ctx.exception).lower())
+        self.assertEqual(ctx.exception.clarification_options, [])
 
 
 if __name__ == "__main__":

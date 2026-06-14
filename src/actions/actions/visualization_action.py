@@ -927,26 +927,14 @@ class ActionOneShotGenerateVisualization(LongAction):
                 ctx.tracker_snapshot[_INTERNAL_PLANNER_DIAGNOSTICS_KEY] = (
                     lang_pipeline.get_plan_cache_diagnostics()
                 )
-
-                ctx.say(
-                    json_message={
-                        "type": "visualization_query_decision",
-                        "trace_id": trace_id,
-                        "decision": outcome.decision,
-                        "reason": outcome.reason,
-                        "clarification_type": outcome.clarification_type,
-                        "clarification_options": outcome.clarification_options,
-                        "message": outcome.message,
-                    }
-                )
                 return PreworkResult(
                     events=[SlotSet("awaiting_visualization_clarification", False)],
                     proceed=True,
                 )
             except Exception as e:
                 if isinstance(e, lang_pipeline.PlannerIntentAmbiguityError):
-                    clarification_options = cast(List[str], getattr(e, "clarification_options", None) or ["TIME_SERIES", "DISTRIBUTION", "SUMMARY", "COMPARISON"])
-                    message = str(e).strip() or translate("action.visualization.clarify_default", language=language)
+                    clarification_options = cast(List[str], getattr(e, "clarification_options", None) or ["DISTRIBUTION", "SUMMARY", "COMPARISON"])
+                    message = translate("action.visualization.clarify_default", language=language)
                     ctx.say(
                         json_message={
                             "type": "visualization_query_decision",
@@ -1146,8 +1134,8 @@ class ActionOneShotGenerateVisualization(LongAction):
                 completed_successfully = True
             except Exception as e:
                 if isinstance(e, lang_pipeline.PlannerIntentAmbiguityError):
-                    clarification_options = cast(List[str], getattr(e, "clarification_options", None) or ["TIME_SERIES", "DISTRIBUTION", "SUMMARY", "COMPARISON"])
-                    message = str(e).strip() or translate("action.visualization.clarify_default", language=language)
+                    clarification_options = cast(List[str], getattr(e, "clarification_options", None) or ["DISTRIBUTION", "SUMMARY", "COMPARISON"])
+                    message = translate("action.visualization.clarify_default", language=language)
                     ctx.say(
                         json_message={
                             "type": "visualization_query_decision",

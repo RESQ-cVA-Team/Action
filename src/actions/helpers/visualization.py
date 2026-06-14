@@ -1,38 +1,21 @@
 from __future__ import annotations
 
-import json
 import logging
-import re
-from threading import Lock
 from typing import (
     Any,
     Dict,
     List,
-    Literal,
     Mapping,
     Optional,
     Protocol,
-    TypedDict,
     cast,
     runtime_checkable,
 )
 
 from src.actions.i18n import translate
 from src.shared.ssot_loader import resolve_chart_type, resolve_sex, resolve_stroke_type
-from src.util import env as env_util
 
 logger = logging.getLogger(__name__)
-
-
-class QueryDecisionBase(TypedDict):
-    decision: Literal["proceed", "clarify", "reject"]
-    reason: str
-    message: Optional[str]
-
-
-class QueryDecision(QueryDecisionBase, total=False):
-    clarification_type: str
-    clarification_options: List[str]
 
 
 @runtime_checkable
@@ -77,365 +60,6 @@ def normalize_entities(entities: Dict[str, Any]) -> Dict[str, Any]:
         else:
             normalized[key] = value
     return normalized
-
-
-# _ENABLE_QUERY_GUARD = env_util.env_flag("ACTIONS_ENABLE_QUERY_GUARD", default=True)
-_QUERY_GUARD_TIMEOUT_SECONDS_RAW = (
-    env_util.get_env("ACTIONS_QUERY_GUARD_TIMEOUT_SECONDS", default="8") or "8"
-)
-try:
-    _query_guard_timeout_seconds = max(1.0, float(_QUERY_GUARD_TIMEOUT_SECONDS_RAW))
-except Exception:
-    logger.debug(
-        "Invalid ACTIONS_QUERY_GUARD_TIMEOUT_SECONDS; using fallback",
-        exc_info=True,
-        extra={
-            "log_context": {
-                "event": "actions.query_guard.config.timeout_fallback",
-                "operation": "module_init",
-                "outcome": "degraded",
-                "raw_value": _QUERY_GUARD_TIMEOUT_SECONDS_RAW,
-                "fallback_value": 8.0,
-            }
-        },
-    )
-    _query_guard_timeout_seconds = 8.0
-
-_QUERY_GUARD_TIMEOUT_SECONDS = _query_guard_timeout_seconds
-
-_QUERY_GUARD_TEMPERATURE_RAW = (
-    env_util.get_env("ACTIONS_QUERY_GUARD_TEMPERATURE", default="0") or "0"
-)
-try:
-    _query_guard_temperature = float(_QUERY_GUARD_TEMPERATURE_RAW)
-except Exception:
-    logger.debug(
-        "Invalid ACTIONS_QUERY_GUARD_TEMPERATURE; using fallback",
-        exc_info=True,
-        extra={
-            "log_context": {
-                "event": "actions.query_guard.config.temperature_fallback",
-                "operation": "module_init",
-                "outcome": "degraded",
-                "raw_value": _QUERY_GUARD_TEMPERATURE_RAW,
-                "fallback_value": 0.0,
-            }
-        },
-    )
-    _query_guard_temperature = 0.0
-
-_QUERY_GUARD_TEMPERATURE = _query_guard_temperature
-
-_QUERY_GUARD_FAIL_OPEN = env_util.env_flag(
-    "ACTIONS_QUERY_GUARD_FAIL_OPEN", default=False
-)
-
-# _QUERY_GUARD_PROMPT = ChatPromptTemplate.from_messages(  # type: ignore
-#     [
-#         (
-#             "system",
-#             """
-# You are a triage assistant for a clinical analytics visualization system.
-# Decide whether the user's request can proceed, requires clarification, or should be rejected.
-
-# Return strict JSON only with this schema:
-# {{
-#   "decision": "proceed" | "clarify" | "reject",
-#   "reason": "short_snake_case_reason",
-#   "message": string | null,
-#   "clarification_type": string | null,
-#   "clarification_options": string[] | null
-# }}
-
-# Rules:
-# - The ONLY required fields are metric and chart_type. All other fields (time_scope, time_range, grouping_dimension, sex, stroke_type) are optional — never ask for them unless the user explicitly mentioned wanting them.
-# - If metric and chart_type are both known (from entities or conversation history), return decision="proceed" immediately.
-# - If only one of metric or chart_type is missing, return decision="clarify" and ask for only that one thing.
-# - If request is out of scope for visualization flow, return decision="reject" with short actionable message.
-# - clarification_type should name only what is actually missing: metric or chart_type.
-# - clarification_options should contain concrete options only when natural; otherwise null.
-# - Prefer using supplied entities and conversation history to resolve ambiguity before asking.
-# - Do not include markdown, prose, or code fences.
-#             """.strip(),
-#         ),
-#         (
-#             "user",
-#             "USER_LANGUAGE: {language}\nUSER_QUESTION: {question}\nENTITIES_JSON: {entities_json}\nVALID_METRIC_CANDIDATES_JSON: {metric_candidates_json}",
-#         ),
-#     ]
-# )
-
-_query_guard_llm: Optional[Any] = None
-_query_guard_llm_lock = Lock()
-
-
-# def _get_query_guard_llm() -> Optional[Any]:
-#     global _query_guard_llm
-#     if _query_guard_llm is not None:
-#         return _query_guard_llm
-#     with _query_guard_llm_lock:
-#         if _query_guard_llm is not None:
-#             return _query_guard_llm
-#         try:
-#             _query_guard_llm = create_chat_llm(temperature=_QUERY_GUARD_TEMPERATURE)
-#         except Exception:
-#             logger.exception(
-#                 "Failed to initialize query-guard LLM",
-#                 extra={
-#                     "log_context": {
-#                         "event": "actions.query_guard.llm_init.failed",
-#                         "operation": "_get_query_guard_llm",
-#                         "outcome": "failure",
-#                         "fail_open_enabled": _QUERY_GUARD_FAIL_OPEN,
-#                         "timeout_seconds": _QUERY_GUARD_TIMEOUT_SECONDS,
-#                         "temperature": _QUERY_GUARD_TEMPERATURE,
-#                     }
-#                 },
-#             )
-#             _query_guard_llm = None
-#     return _query_guard_llm
-
-
-def _extract_text(response: Any) -> str:
-    if isinstance(response, str):
-        return response
-
-    content = getattr(response, "content", None)
-    if isinstance(content, str):
-        return content
-
-    if isinstance(content, list):
-        chunks: List[str] = []
-        content_items = cast(List[Any], content)
-        for item in content_items:
-            if isinstance(item, str):
-                chunks.append(item)
-            elif isinstance(item, dict):
-                dict_item = cast(Dict[str, Any], item)
-                text_any = dict_item.get("text")
-                if text_any is not None:
-                    chunks.append(str(text_any))
-        if chunks:
-            return "\n".join(chunks)
-
-    return str(response)
-
-
-# def _metric_candidates(question: str, limit: int = 8) -> List[str]:
-#     normalized = ssot_loader.normalize_metric_text_key(question)
-#     if not normalized:
-#         return []
-
-#     lookup = ssot_loader.get_metric_text_lookup()
-#     if normalized in lookup:
-#         match = str(lookup[normalized]).strip()
-#         return [match] if match else []
-
-#     matches: List[str] = []
-#     for key, value in lookup.items():
-#         if normalized in key or key in normalized:
-#             match = str(value).strip()
-#             if match and match not in matches:
-#                 matches.append(match)
-#         if len(matches) >= limit:
-#             break
-#     return matches
-
-
-def _extract_json_object(text: str) -> Dict[str, Any]:
-    candidate = text.strip()
-    fenced = re.match(
-        r"^```(?:json)?\s*(.*?)\s*```$", candidate, flags=re.DOTALL | re.IGNORECASE
-    )
-    if fenced:
-        candidate = fenced.group(1).strip()
-
-    if not (candidate.startswith("{") and candidate.endswith("}")):
-        start = candidate.find("{")
-        end = candidate.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            raise ValueError("Model output does not contain JSON object")
-        candidate = candidate[start : end + 1]
-
-    parsed = json.loads(candidate)
-    if not isinstance(parsed, dict):
-        raise ValueError("Model output JSON must be object")
-    return cast(Dict[str, Any], parsed)
-
-
-def _coerce_decision(raw: Dict[str, Any]) -> QueryDecision:
-    decision_any = raw.get("decision")
-    decision = str(decision_any).strip().lower() if decision_any is not None else ""
-    if decision not in {"proceed", "clarify", "reject"}:
-        raise ValueError("Invalid decision from model")
-
-    reason_any = raw.get("reason")
-    reason = str(reason_any).strip() if reason_any is not None else ""
-    if not reason:
-        reason = "llm_query_guard"
-
-    message_any = raw.get("message")
-    message: Optional[str]
-    if isinstance(message_any, str):
-        message = message_any.strip() or None
-    else:
-        message = None
-
-    result: QueryDecision = {
-        "decision": cast(Literal["proceed", "clarify", "reject"], decision),
-        "reason": reason,
-        "message": message,
-    }
-
-    clarification_type_any = raw.get("clarification_type")
-    if isinstance(clarification_type_any, str) and clarification_type_any.strip():
-        result["clarification_type"] = clarification_type_any.strip()
-
-    options_any = raw.get("clarification_options")
-    if isinstance(options_any, list):
-        options: List[str] = []
-        for item in cast(List[Any], options_any):
-            if isinstance(item, str) and item.strip():
-                options.append(item.strip())
-        if options:
-            result["clarification_options"] = options
-
-    if result["decision"] in {"clarify", "reject"} and not result["message"]:
-        result["message"] = "I need a bit more detail before I can continue."
-    if result["decision"] == "proceed":
-        result["message"] = None
-
-    return result
-
-
-# def _invoke_query_guard(chain: Any, payload: Dict[str, Any]) -> QueryDecision:
-#     with ThreadPoolExecutor(max_workers=1) as executor:
-#         future = executor.submit(bind_current_context(chain.invoke), payload)
-#         try:
-#             response = future.result(timeout=_QUERY_GUARD_TIMEOUT_SECONDS)
-#         except FuturesTimeoutError as exc:
-#             future.cancel()
-#             raise TimeoutError(
-#                 f"Query guard timed out after {_QUERY_GUARD_TIMEOUT_SECONDS:.1f}s"
-#             ) from exc
-
-#     text = _extract_text(response)
-#     parsed = _extract_json_object(text)
-#     return _coerce_decision(parsed)
-
-
-# def evaluate_visualization_query(
-#     question: str,
-#     entities: Dict[str, Any],
-#     language: Optional[str] = None,
-# ) -> QueryDecision:
-#     if not _ENABLE_QUERY_GUARD:
-#         logger.debug(
-#             "Query guard disabled; proceeding without guard",
-#             extra={
-#                 "log_context": {
-#                     "event": "actions.query_guard.disabled",
-#                     "operation": "evaluate_visualization_query",
-#                     "outcome": "degraded",
-#                 }
-#             },
-#         )
-#         return {"decision": "proceed", "reason": "guard_disabled", "message": None}
-
-# guard_llm = _get_query_guard_llm()
-# if guard_llm is None:
-#     if _QUERY_GUARD_FAIL_OPEN:
-#         logger.warning(
-#             "Query-guard LLM unavailable; proceeding via fail-open",
-#             extra={
-#                 "log_context": {
-#                     "event": "actions.query_guard.llm_unavailable_fail_open",
-#                     "operation": "evaluate_visualization_query",
-#                     "outcome": "degraded",
-#                     "fail_open_enabled": True,
-#                 }
-#             },
-#         )
-#         return {
-#             "decision": "proceed",
-#             "reason": "guard_llm_unavailable",
-#             "message": None,
-#         }
-#     logger.warning(
-#         "Query-guard LLM unavailable; returning clarification fallback",
-#         extra={
-#             "log_context": {
-#                 "event": "actions.query_guard.llm_unavailable_clarify",
-#                 "operation": "evaluate_visualization_query",
-#                 "outcome": "degraded",
-#                 "fail_open_enabled": False,
-#             }
-#         },
-#     )
-#     return {
-#         "decision": "clarify",
-#         "reason": "guard_llm_unavailable",
-#         "message": "I need a bit more detail before I can continue.",
-#     }
-
-# chain = _QUERY_GUARD_PROMPT | guard_llm
-# metric_candidates = _metric_candidates(question or "")
-# payload = {
-#     "language": (language or "en").strip() or "en",
-#     "question": question or "",
-#     "entities_json": json.dumps(entities or {}, ensure_ascii=False),
-#     "metric_candidates_json": json.dumps(metric_candidates, ensure_ascii=False),
-# }
-
-# try:
-#     return _invoke_query_guard(chain, payload)
-# except Exception:
-#     logger.exception(
-#         "LLM query guard failed",
-#         extra={
-#             "log_context": {
-#                 "event": "actions.query_guard.failed",
-#                 "operation": "evaluate_visualization_query",
-#                 "outcome": "failure",
-#                 "fail_open_enabled": _QUERY_GUARD_FAIL_OPEN,
-#                 "language": payload["language"],
-#                 "metric_candidate_count": len(metric_candidates),
-#             }
-#         },
-#     )
-#     if _QUERY_GUARD_FAIL_OPEN:
-#         logger.warning(
-#             "Query guard failed; proceeding via fail-open",
-#             extra={
-#                 "log_context": {
-#                     "event": "actions.query_guard.failed_fail_open",
-#                     "operation": "evaluate_visualization_query",
-#                     "outcome": "degraded",
-#                     "fail_open_enabled": True,
-#                 }
-#             },
-#         )
-#         return {
-#             "decision": "proceed",
-#             "reason": "guard_llm_failed",
-#             "message": None,
-#         }
-#     logger.warning(
-#         "Query guard failed; returning clarification fallback",
-#         extra={
-#             "log_context": {
-#                 "event": "actions.query_guard.failed_clarify",
-#                 "operation": "evaluate_visualization_query",
-#                 "outcome": "degraded",
-#                 "fail_open_enabled": False,
-#             }
-#         },
-#     )
-#     return {
-#         "decision": "clarify",
-#         "reason": "guard_llm_failed",
-#         "message": "I need a bit more detail before I can continue.",
-#     }
 
 
 def extract_entities_from_latest_message(
@@ -653,13 +277,11 @@ def format_execution_summary(
         metrics_out = normalization.get("metrics_out")
         dropped_metrics = normalization.get("dropped_empty_metrics")
         metric_code_norm = normalization.get("normalized_metric_codes")
-        chart_type_norm = normalization.get("normalized_chart_types")
         deduped_groupby = normalization.get("deduped_groupby_entries")
         normalized_groupby_fields = normalization.get(
             "normalized_canonical_groupby_fields"
         )
         dropped_groupby_fields = normalization.get("dropped_invalid_groupby_fields")
-        chart_type_fallback = normalization.get("fallback_chart_type_count")
         normalized_text = normalization.get("normalized_text_fields")
 
         if isinstance(charts_in, int) and isinstance(charts_out, int):
@@ -708,22 +330,6 @@ def format_execution_summary(
                         "action.summary.detail_normalized_metric_codes",
                         "normalized {metric_code_norm} metric code(s)",
                         {"metric_code_norm": metric_code_norm},
-                    )
-                )
-            if isinstance(chart_type_norm, int) and chart_type_norm > 0:
-                details.append(
-                    t(
-                        "action.summary.detail_normalized_chart_types",
-                        "normalized {chart_type_norm} chart type(s)",
-                        {"chart_type_norm": chart_type_norm},
-                    )
-                )
-            if isinstance(chart_type_fallback, int) and chart_type_fallback > 0:
-                details.append(
-                    t(
-                        "action.summary.detail_applied_chart_fallback",
-                        "applied {chart_type_fallback} chart type fallback(s)",
-                        {"chart_type_fallback": chart_type_fallback},
                     )
                 )
             if isinstance(deduped_groupby, int) and deduped_groupby > 0:

@@ -677,18 +677,16 @@ def _get_metric_meta(metric_code: str) -> Dict[str, Any]:
 
 
 def _derive_distribution_defaults(metric_code: str) -> tuple[int, int, int]:
-    """Return (bins, min_value, max_value) using SSOT metadata with sensible fallbacks.
+    """Return (bins, min_value, max_value) from SSOT metadata.
 
-    Priority:
-    - Use top-level promoted keys when present: range_min/range_max and distribution_default_buckets
-    - Else use nested numeric block fields if present: numeric.default_buckets (and optional range_min/range_max if provided)
-    - Else fallback to known safe ranges per metric; else general default (20, 0, 200)
+    This is intentionally strict: distribution defaults must be fully defined in SSOT.
     """
     meta = _get_metric_meta(metric_code)
+    metric_key = (metric_code or "").upper()
 
     bins_any: Any = meta.get("distribution_default_buckets")
     numeric_block: Dict[str, Any] = cast(Dict[str, Any], meta.get("numeric") or {})
-    bins = bins_any or numeric_block.get("default_buckets") or 20
+    bins = bins_any if bins_any is not None else numeric_block.get("default_buckets")
 
     rmin: Any = meta.get("range_min")
     rmax: Any = meta.get("range_max")
@@ -697,59 +695,29 @@ def _derive_distribution_defaults(metric_code: str) -> tuple[int, int, int]:
         rmin = rmin if rmin is not None else n.get("range_min")
         rmax = rmax if rmax is not None else n.get("range_max")
 
-    if rmin is None or rmax is None:
-        defaults: dict[str, tuple[int, int]] = {
-            "AGE": (18, 95),
-            "ADMISSION_NIHSS": (0, 42),
-            "DTN": (0, 120),
-        }
-        if metric_code.upper() in defaults:
-            rmin, rmax = defaults[metric_code.upper()]
-        else:
-            rmin = rmin if rmin is not None else 0
-            rmax = rmax if rmax is not None else 200
+    if bins is None or rmin is None or rmax is None:
+        raise ValueError(
+            "Missing SSOT distribution defaults for metric "
+            f"{metric_key}: expected distribution_default_buckets/default_buckets and range_min/range_max"
+        )
 
     try:
         bins = int(bins)
     except Exception:
-        logger.debug(
-            "[plan_executor] Failed to parse distribution bucket count; using fallback",
-            exc_info=True,
-            extra={
-                "log_context": {
-                    "event": "plan_executor.distribution_defaults.bins_fallback",
-                    "operation": "_derive_distribution_defaults",
-                    "outcome": "degraded",
-                    "metric_code": metric_code,
-                    "raw_bins": bins,
-                    "fallback_bins": 20,
-                }
-            },
+        raise ValueError(
+            f"Invalid SSOT distribution bucket count for metric {metric_key}: {bins!r}"
         )
-        bins = 20
     try:
         rmin = int(rmin)
         rmax = int(rmax)
     except Exception:
-        logger.debug(
-            "[plan_executor] Failed to parse distribution range; using fallback range",
-            exc_info=True,
-            extra={
-                "log_context": {
-                    "event": "plan_executor.distribution_defaults.range_fallback",
-                    "operation": "_derive_distribution_defaults",
-                    "outcome": "degraded",
-                    "metric_code": metric_code,
-                    "raw_range_min": rmin,
-                    "raw_range_max": rmax,
-                    "fallback_range_min": 0,
-                    "fallback_range_max": 200,
-                }
-            },
+        raise ValueError(
+            f"Invalid SSOT distribution range for metric {metric_key}: min={rmin!r}, max={rmax!r}"
         )
-        rmin, rmax = 0, 200
     if rmin > rmax:
-        rmin, rmax = rmax, rmin
+        raise ValueError(
+            f"Invalid SSOT distribution range for metric {metric_key}: min ({rmin}) > max ({rmax})"
+        )
     return bins, rmin, rmax
 
 
@@ -1049,7 +1017,7 @@ async def execute_plan_async(
     except OriginScopeResolutionError as exc:
         raise VisualizationExecutionError(
             user_message=str(exc),
-            reason="origin_scope_resolution",
+            reason=exc.reason,
             code="EXEC_ORIGIN_SCOPE",
             trace_id=trace_id_resolved,
             clarification_type=exc.clarification_type,

@@ -26,7 +26,7 @@ class PlannerExamplesTests(unittest.TestCase):
         self.assertTrue(any("monthly trend of dtn" in user.lower() for user in users))
         self.assertTrue(any("distribution of dtn by month" in user.lower() for user in users))
         self.assertTrue(any("box plot of dtn by sex" in user.lower() for user in users))
-        self.assertTrue(any("dtn over time" in user.lower() for user in users), "Missing 'dtn over time' TIME_SERIES example")
+        self.assertTrue(any("dtn over time" in user.lower() for user in users), "Missing 'dtn over time' example")
 
     def test_monthly_examples_have_expected_xaxis_shapes(self) -> None:
         few_shots = examples.get_few_shot_examples()
@@ -41,21 +41,26 @@ class PlannerExamplesTests(unittest.TestCase):
         distribution_plan = parse_plan("distribution of dtn by month")
         box_plan = parse_plan("box plot of dtn by sex")
         over_time_plan = parse_plan("dtn over time")
+        line_chart_plan = parse_plan("line chart of dtn")
 
         trend_chart = trend_plan.charts[0]
         distribution_chart = distribution_plan.charts[0]
         box_chart = box_plan.charts[0]
         over_time_chart = over_time_plan.charts[0]
+        line_chart = line_chart_plan.charts[0]
 
-        self.assertEqual(type(trend_chart).__name__, "LineChartSpec")
+        self.assertEqual(type(trend_chart).__name__, "HistogramChartSpec")
         self.assertEqual(type(distribution_chart).__name__, "HistogramChartSpec")
         self.assertEqual(type(box_chart).__name__, "LineChartSpec")
-        self.assertEqual(type(over_time_chart).__name__, "LineChartSpec")
+        self.assertEqual(type(over_time_chart).__name__, "HistogramChartSpec")
+        self.assertEqual(type(line_chart).__name__, "LineChartSpec")
 
-        self.assertEqual(type(trend_chart.x_axes["x1"]).__name__, "TimeXAxis")
+        self.assertEqual(type(trend_chart.x_axis).__name__, "NumericMetricXAxis")
         self.assertEqual(type(distribution_chart.x_axis).__name__, "NumericMetricXAxis")
         self.assertEqual(type(box_chart.x_axes["x1"]).__name__, "CategoryXAxis")
-        self.assertEqual(type(over_time_chart.x_axes["x1"]).__name__, "TimeXAxis")
+        self.assertEqual(type(over_time_chart.x_axis).__name__, "NumericMetricXAxis")
+        self.assertEqual(type(line_chart.x_axes["x1"]).__name__, "NumericMetricXAxis")
+        self.assertEqual(type(line_chart.y_axes["y1"]).__name__, "CountAxis")
 
     def test_distribution_examples_use_numeric_metric_xaxis(self) -> None:
         """Histogram examples must use explicit NumericMetricXAxis in the plan domain."""

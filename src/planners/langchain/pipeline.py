@@ -29,11 +29,7 @@ _FEWSHOT_ENTITY_VALUE_WEIGHT = 10.0
 _FEWSHOT_INTENT_WEIGHT = 8.0
 
 _INTENT_KEYWORDS: Dict[str, List[str]] = {
-    "chart_line": ["line", "trend"],
-    "chart_bar": ["bar", "column"],
-    "chart_area": ["area"],
     "distribution": ["distribution", "histogram", "violin", "box"],
-    "time": ["over time", "last ", "monthly", "weekly", "yearly", "time series"],
     "group_by": [" by ", "grouped by", "split by"],
     "stat_test": ["compare", "mann-whitney", "statistical test", "significant", "difference between"],
 }
@@ -61,7 +57,7 @@ class PlannerIntentAmbiguityError(ValueError):
 
     def __init__(self, message: str, clarification_options: Optional[List[str]] = None):
         super().__init__(message)
-        self.clarification_options = clarification_options or ["TIME_SERIES", "DISTRIBUTION", "SUMMARY", "COMPARISON"]
+        self.clarification_options = clarification_options or ["DISTRIBUTION", "SUMMARY", "COMPARISON"]
 
 
 def _is_semantic_ambiguity_error(exc: Exception) -> bool:
@@ -470,11 +466,12 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
             "Put human references in originScope.value and ISO country in originScope.countryCode when available. "
             "Only use dataOrigin when explicit numeric provider/group IDs are directly provided by the user. "
             "When comparing multiple scopes in one chart, use separate series entries with per-series metric-level originScope/dataOrigin. "
-            "Use explicit chart semantics with the new contract: LINE charts require chartType=LINE, xAxes map, yAxes map, and series list with xAxis/yAxis keys; HISTOGRAM requires chartType=HISTOGRAM, xAxis numeric metric, yAxis count. "
+            "Use explicit chart semantics with the new contract: LINE charts require chartType=LINE, xAxes map, yAxes map, and series list with xAxis/yAxis keys; LINE may use a time/category x-axis with metric_value y-axis or a numeric_metric x-axis with count y-axis for a distribution line; HISTOGRAM requires chartType=HISTOGRAM, xAxis numeric metric, yAxis count. "
             "Always emit schemaVersion=2. Do not emit deprecated fields (xAxis object for LINE, yAxes list, seriesBy, summaries). "
             "Sex semantics guidance: phrases like 'males only' or 'females only' should usually be chart filters (SexFilter), while 'split/group by sex' should use GroupBySex. "
-            "Prefer LINE/BAR for trends or comparisons; BOX/VIOLIN/HISTOGRAM for distributions. "
-            "Monthly trend language means LINE with a time x-axis entry in xAxes and series referencing it. Monthly distribution language means HISTOGRAM with xAxis numeric_metric. "
+            "Chart intent precedence: if the user explicitly asks for a supported chart type (for example LINE or HISTOGRAM), honor it when semantically valid. "
+            "Default behavior for KPI metrics: when chart type is not explicitly requested, use HISTOGRAM with numeric_metric xAxis. "
+            "For explicit LINE requests for a numeric KPI without categorical grouping, prefer a distribution line: numeric_metric x-axis for the KPI and count y-axis. Use time x-axis with metric_value MEAN only when the user explicitly asks for a trend over time. "
             "Chart intent guidance: If user asks for one graph/one chart/single visual with multiple splits, prefer one LINE chart with multiple series. If user asks for separate charts/multiple visuals, produce multiple chart specs. "
             "Statistical test guidance: Only use test types listed in SUPPORTED_STAT_TESTS_JSON; otherwise omit statistical_tests and return charts.",
         ),
@@ -645,8 +642,7 @@ def generate_analysis_plan(
 
         if result is None:
             if last_error is not None and _is_semantic_ambiguity_error(last_error):
-                detail = str(last_error).strip()
-                message = detail or "I need one clarification: should this be a time series, distribution, summary, or comparison view?"
+                message = "I need one clarification: which KPI metric should I visualize?"
                 raise PlannerIntentAmbiguityError(
                     message
                 ) from last_error

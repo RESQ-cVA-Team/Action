@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, cast
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.domain.langchain.schema import AnalysisPlan, ChartType
+from src.domain.langchain.schema import AnalysisPlan
 from src.planners.langchain.llm_factory import create_chat_llm
 from src.planners.langchain.pipeline import generate_analysis_plan
 from src.shared import ssot_loader
@@ -64,26 +64,6 @@ _ORCHESTRATOR_TEMPERATURE = _orchestrator_temperature_value
 _ORCHESTRATOR_FAIL_OPEN = env_util.env_flag(
     "ACTIONS_LLM_REQUEST_ORCHESTRATOR_FAIL_OPEN", default=False
 )
-_ASSUME_DEFAULT_TIME_SCOPE = env_util.env_flag(
-    "ACTIONS_ASSUME_DEFAULT_TIME_SCOPE", default=True
-)
-
-_TEMPORAL_MISSING_FIELDS = {
-    "time",
-    "time_scope",
-    "time_range",
-    "time_window",
-    "time_period",
-    "date",
-    "date_range",
-    "date_window",
-    "date_period",
-    "period",
-    "timeframe",
-    "time_frame",
-    "window",
-    "range",
-}
 
 _DECISION_PROMPT = ChatPromptTemplate.from_messages(
     [
@@ -102,9 +82,9 @@ Return strict JSON only:
 }}
 
 Rules:
-- The ONLY required fields are metric and chart_type. Everything else is optional.
-- If both metric and chart_type are known, return decision="proceed" and message=null.
-- If only one is missing, return decision="clarify", put the missing field in missing_fields, and write one concise question in message (under 25 words).
+- The ONLY required field is metric. Chart type is optional.
+- If metric is known, return decision="proceed" and message=null.
+- If metric is missing, return decision="clarify", put "metric" in missing_fields, and write one concise question in message (under 25 words).
 - If out of scope, return decision="reject" with a short message.
 - Never ask for time_scope, time_range, grouping_dimension, sex, or stroke_type.
 - Prefer resolving metrics from VALID_METRIC_CANDIDATES_JSON before asking.
@@ -114,39 +94,10 @@ Rules:
         ),
         (
             "user",
-            "USER_LANGUAGE: {language}\nUSER_QUESTION: {question}\nCONVERSATION_HISTORY_JSON: {conversation_history_json}\nENTITIES_JSON: {entities_json}\nVALID_METRIC_CANDIDATES_JSON: {metric_candidates_json}\nVALID_CHART_TYPES_JSON: {chart_types_json}",
+            "USER_LANGUAGE: {language}\nUSER_QUESTION: {question}\nCONVERSATION_HISTORY_JSON: {conversation_history_json}\nENTITIES_JSON: {entities_json}\nVALID_METRIC_CANDIDATES_JSON: {metric_candidates_json}",
         ),
     ]
 )
-
-# _CLARIFICATION_PROMPT = ChatPromptTemplate.from_messages(  # type: ignore
-#     [
-#         (
-#             "system",
-#             """
-# You are the clarification message generator for a clinical analytics visualization assistant.
-# Given missing or ambiguous fields, ask exactly one concise clarification question.
-
-# Return strict JSON only:
-# {{
-#   "message": string,
-#   "clarification_type": string | null,
-#   "clarification_options": string[] | null
-# }}
-
-# Rules:
-# - Ask one direct question.
-# - If possible, provide a short list of options.
-# - Keep the question under 25 words.
-# - Do not include markdown or prose outside JSON.
-#             """.strip(),
-#         ),
-#         (
-#             "user",
-#             "USER_LANGUAGE: {language}\nUSER_QUESTION: {question}\nCONVERSATION_HISTORY_JSON: {conversation_history_json}\nMISSING_FIELDS_JSON: {missing_fields_json}\nENTITIES_JSON: {entities_json}\nVALID_METRIC_CANDIDATES_JSON: {metric_candidates_json}\nVALID_CHART_TYPES_JSON: {chart_types_json}",
-#         ),
-#     ]
-# )
 
 _llm: Optional[Any] = None
 _llm_lock = Lock()
@@ -261,13 +212,6 @@ def _metric_candidates(question: str, limit: int = 8) -> List[str]:
     return out
 
 
-def _chart_types() -> List[str]:
-    try:
-        return [str(member) for member in ChartType]
-    except Exception:
-        return ["LINE", "BAR", "AREA", "SCATTER", "HISTOGRAM", "BOX", "VIOLIN"]
-
-
 def _coerce_missing_fields(raw: Any) -> List[str]:
     if not isinstance(raw, list):
         return []
@@ -288,40 +232,26 @@ def _coerce_options(raw: Any) -> List[str]:
     return out
 
 
-def _normalize_missing_field(value: str) -> str:
-    token = (value or "").strip().lower().replace("-", "_").replace(" ", "_")
-    while "__" in token:
-        token = token.replace("__", "_")
-    return token.strip("_")
-
-
-def _is_temporal_missing_field(value: str) -> bool:
-    token = _normalize_missing_field(value)
-    if not token:
-        return False
-    if token in _TEMPORAL_MISSING_FIELDS:
+def _has_metric_signal(question: str, entities: Dict[str, Any]) -> bool:
+    metric_candidates = _metric_candidates(question or "")
+    if metric_candidates:
         return True
-    return token.startswith("time_") or token.startswith("date_")
 
+    entity_value = entities.get("metric")
+    if isinstance(entity_value, str) and entity_value.strip():
+        return True
+    if isinstance(entity_value, list) and any(
+        isinstance(item, str) and item.strip() for item in entity_value
+    ):
+        return True
 
-# def _should_assume_default_time_scope(stage1: VisualizationRequestOutcome) -> bool:
-#     if stage1.decision != "clarify":
-#         return False
+    metrics_value = entities.get("metrics")
+    if isinstance(metrics_value, list) and any(
+        isinstance(item, str) and item.strip() for item in metrics_value
+    ):
+        return True
 
-#     fields: List[str] = []
-#     fields.extend(stage1.missing_fields)
-#     if stage1.clarification_type:
-#         fields.append(stage1.clarification_type)
-
-#     normalized = [
-#         _normalize_missing_field(field)
-#         for field in fields
-#         if _normalize_missing_field(field)
-#     ]
-#     if not normalized:
-#         return False
-
-#     return all(_is_temporal_missing_field(field) for field in normalized)
+    return False
 
 
 def _decision_stage(
@@ -342,7 +272,6 @@ def _decision_stage(
         "metric_candidates_json": json.dumps(
             _metric_candidates(question or ""), ensure_ascii=False
         ),
-        "chart_types_json": json.dumps(_chart_types(), ensure_ascii=False),
         "conversation_history_json": json.dumps(
             conversation_history or [], ensure_ascii=False
         ),
@@ -382,59 +311,6 @@ def _decision_stage(
         clarification_options=clarification_options,
         missing_fields=missing_fields,
     )
-
-
-# def _clarification_stage(
-#     question: str,
-#     entities: Dict[str, Any],
-#     missing_fields: List[str],
-#     language: Optional[str],
-#     conversation_history: Optional[List[str]] = None,
-# ) -> VisualizationRequestOutcome:
-#     llm = _get_llm()
-#     if llm is None:
-#         raise RuntimeError("LLM unavailable")
-
-#     chain = _CLARIFICATION_PROMPT | llm
-#     payload = {
-#         "language": (language or "en").strip() or "en",
-#         "question": question or "",
-#         "entities_json": json.dumps(entities or {}, ensure_ascii=False),
-#         "missing_fields_json": json.dumps(missing_fields, ensure_ascii=False),
-#         "metric_candidates_json": json.dumps(
-#             _metric_candidates(question or ""), ensure_ascii=False
-#         ),
-#         "chart_types_json": json.dumps(_chart_types(), ensure_ascii=False),
-#         "conversation_history_json": json.dumps(
-#             conversation_history or [], ensure_ascii=False
-#         ),
-#     }
-#     parsed = _invoke_chain(chain, payload)
-
-#     message_raw = parsed.get("message")
-#     message = (
-#         message_raw.strip()
-#         if isinstance(message_raw, str) and message_raw.strip()
-#         else "I need a bit more detail before I can continue."
-#     )
-
-#     clarification_type_raw = parsed.get("clarification_type")
-#     clarification_type = (
-#         clarification_type_raw.strip()
-#         if isinstance(clarification_type_raw, str) and clarification_type_raw.strip()
-#         else (missing_fields[0] if missing_fields else None)
-#     )
-
-#     clarification_options = _coerce_options(parsed.get("clarification_options"))
-
-#     return VisualizationRequestOutcome(
-#         decision="clarify",
-#         reason="llm_clarification_required",
-#         message=message,
-#         clarification_type=clarification_type,
-#         clarification_options=clarification_options,
-#         missing_fields=missing_fields,
-#     )
 
 
 def orchestrate_visualization_request(
@@ -478,6 +354,13 @@ def orchestrate_visualization_request(
             stage1 = _decision_stage(
                 question, entities, language, conversation_history=conversation_history
             )
+
+            if stage1.decision == "clarify" and _has_metric_signal(question, entities):
+                stage1 = VisualizationRequestOutcome(
+                    decision="proceed",
+                    reason="metric_present_chart_type_defaulted",
+                )
+
             logger.info(
                 "Orchestrator decision: %s, message: %s, missing: %s",
                 stage1.decision,
@@ -492,32 +375,6 @@ def orchestrate_visualization_request(
 
             if stage1.decision == "clarify":
                 return stage1
-            #                 if _ASSUME_DEFAULT_TIME_SCOPE and _should_assume_default_time_scope(
-            #                     stage1
-            #                 ):
-            #                     logger.debug(
-            #                         "Assuming default time scope; skipping clarification",
-            #                         extra={
-            #                             "log_context": {
-            #                                 "event": "orchestrator.default_time_scope_assumed",
-            #                                 "operation": "orchestrate_visualization_request",
-            #                                 "outcome": "degraded",
-            #                             }
-            #                         },
-            #                     ) """
-            # """                     return VisualizationRequestOutcome(
-            #                         decision="proceed",
-            #                         reason="default_time_scope_assumed",
-            #                     ) """
-            # """
-            #                 report("Generating clarification question")
-            #                 return _clarification_stage(
-            #                     question=question,
-            #                     entities=entities,
-            #                     missing_fields=stage1.missing_fields,
-            #                     language=language,
-            #                     conversation_history=conversation_history,
-            #                 )
 
             if not include_plan:
                 return VisualizationRequestOutcome(

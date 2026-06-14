@@ -43,6 +43,24 @@ def friendly_visualization_error(exc: Exception, language: str | None = None) ->
         return exc.user_message
     if isinstance(exc, TimeoutError):
         return translate("action.errors.visualization_timeout", language=language)
+    if isinstance(exc, ValueError):
+        text = str(exc).strip()
+        lowered = text.lower()
+        if "missing ssot distribution defaults for metric" in lowered:
+            return (
+                "Visualization failed because metric distribution defaults are missing in SSOT metadata. "
+                "Please add default buckets and numeric range for the requested metric."
+            )
+        if "invalid ssot distribution" in lowered:
+            return (
+                "Visualization failed because SSOT distribution metadata is invalid for this metric. "
+                "Please fix bucket/range values in SSOT."
+            )
+        if "distribution-first kpi policy" in lowered:
+            return (
+                "This request produced an invalid plan under the current distribution-first policy. "
+                "Please try again with a KPI distribution request or an explicit categorical comparison."
+            )
     return translate("action.errors.visualization_generic", language=language)
 
 

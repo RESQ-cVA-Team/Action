@@ -238,30 +238,14 @@ def _list_accessible_provider_groups(user_sub: str, trace_id: str, country_code:
 def _resolve_mine_scope(user_sub: str, trace_id: str) -> Optional[S.DataOriginSpec]:
     client = get_analytics_center_client()
     scope = client.resolve_my_default_scope(user_sub=user_sub, trace_id=trace_id, raise_on_error=False)
-    providers = _list_accessible_providers(user_sub=user_sub, trace_id=trace_id)
-    provider_ids = {_provider_id(provider) for provider in providers}
-    provider_ids.discard(None)
-
-    groups = _list_accessible_provider_groups(user_sub=user_sub, trace_id=trace_id)
-    group_ids = {_provider_group_id(group) for group in groups}
-    group_ids.discard(None)
-
     if isinstance(scope, dict):
         provider_id_any = scope.get("provider_id")
-        if isinstance(provider_id_any, int) and provider_id_any in provider_ids:
+        if isinstance(provider_id_any, int):
             return S.DataOriginSpec(providerId=[provider_id_any])
 
         provider_group_id_any = scope.get("provider_group_id")
-        if isinstance(provider_group_id_any, int) and provider_group_id_any in group_ids:
+        if isinstance(provider_group_id_any, int):
             return S.DataOriginSpec(providerGroupId=[provider_group_id_any])
-
-    if len(provider_ids) == 1:
-        only_provider_id = next(iter(cast(set[int], provider_ids)))
-        return S.DataOriginSpec(providerId=[only_provider_id])
-
-    if len(group_ids) == 1:
-        only_group_id = next(iter(cast(set[int], group_ids)))
-        return S.DataOriginSpec(providerGroupId=[only_group_id])
 
     return None
 
@@ -296,7 +280,7 @@ def _resolve_provider_name(value: Any, user_sub: str, trace_id: str) -> S.DataOr
     matches = exact or fuzzy
     if not matches:
         raise OriginScopeResolutionError(
-            "I could not match that hospital to an accessible provider.",
+            "I could not match that hospital to an accessible provider. Please try another hospital or provide a provider ID.",
             clarification_type="provider_name",
         )
 
@@ -348,7 +332,7 @@ def _resolve_provider_group_name(value: Any, user_sub: str, trace_id: str) -> S.
     matches = exact or fuzzy
     if not matches:
         raise OriginScopeResolutionError(
-            "I could not match that provider group.",
+            "I could not match that provider group. Please try another group or provide a provider-group ID.",
             clarification_type="provider_group_name",
         )
 
@@ -528,25 +512,19 @@ def _resolve_scope(
 
         providers = _list_accessible_providers(user_sub=user_sub, trace_id=trace_id)
         accessible_provider_ids: List[int] = []
-        clarification_options: List[str] = []
         for provider in providers:
             pid = _provider_id(provider)
             if pid is not None and pid not in accessible_provider_ids:
                 accessible_provider_ids.append(pid)
-            if len(clarification_options) < 5:
-                option = _provider_option_label(provider)
-                if option and option not in clarification_options:
-                    clarification_options.append(option)
 
         if provider_id not in accessible_provider_ids:
             raise OriginScopeResolutionError(
                 (
-                    f"Provider ID {provider_id} is not authorized for KPI queries with your current access. "
-                    "I did not automatically switch to another provider."
+                    f"You do not have access to provider ID {provider_id} for KPI queries. "
+                    "Please try another provider or scope."
                 ),
                 reason="unauthorized_origin",
                 clarification_type="provider_id",
-                clarification_options=clarification_options,
             )
 
         return S.DataOriginSpec(providerId=[provider_id])
@@ -565,25 +543,19 @@ def _resolve_scope(
 
         groups = _list_accessible_provider_groups(user_sub=user_sub, trace_id=trace_id)
         accessible_group_ids: List[int] = []
-        clarification_options: List[str] = []
         for group in groups:
             gid = _provider_group_id(group)
             if gid is not None and gid not in accessible_group_ids:
                 accessible_group_ids.append(gid)
-            if len(clarification_options) < 5:
-                option = _provider_group_option_label(group)
-                if option and option not in clarification_options:
-                    clarification_options.append(option)
 
         if provider_group_id not in accessible_group_ids:
             raise OriginScopeResolutionError(
                 (
-                    f"Provider-group ID {provider_group_id} is not authorized for KPI queries with your current access. "
-                    "I did not automatically switch to another group."
+                    f"You do not have access to provider-group ID {provider_group_id} for KPI queries. "
+                    "Please try another provider group or scope."
                 ),
                 reason="unauthorized_origin",
                 clarification_type="provider_group_id",
-                clarification_options=clarification_options,
             )
 
         return S.DataOriginSpec(providerGroupId=[provider_group_id])

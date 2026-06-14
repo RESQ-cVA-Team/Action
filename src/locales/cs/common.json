@@ -79,8 +79,6 @@
       "detail_metrics_transition": "metriky {metrics_in} -> {metrics_out}",
       "detail_dropped_metrics": "odebráno {dropped_metrics} prázdných metrik",
       "detail_normalized_metric_codes": "normalizováno {metric_code_norm} kódů metrik",
-      "detail_normalized_chart_types": "normalizováno {chart_type_norm} typů grafů",
-      "detail_applied_chart_fallback": "aplikováno {chart_type_fallback} fallback typů grafu",
       "detail_removed_groupby_duplicates": "odebráno {deduped_groupby} duplicitních položek group-by",
       "detail_normalized_groupby_fields": "normalizováno {normalized_groupby_fields} kanonických polí group-by",
       "detail_dropped_groupby_fields": "odebráno {dropped_groupby_fields} neplatných polí group-by",
