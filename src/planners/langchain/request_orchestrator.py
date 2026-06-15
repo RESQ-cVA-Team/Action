@@ -86,7 +86,7 @@ Rules:
 - If metric is known, return decision="proceed" and message=null.
 - If metric is missing, return decision="clarify", put "metric" in missing_fields, and write one concise question in message (under 25 words).
 - If out of scope, return decision="reject" with a short message.
-- Never ask for time_scope, time_range, grouping_dimension, sex, or stroke_type.
+- Never ask the user to clarify or provide time_scope, time_range, grouping_dimension, sex, or stroke_type — these are optional and should be accepted if present, not rejected.
 - Prefer resolving metrics from VALID_METRIC_CANDIDATES_JSON before asking.
 - When a date entity contains only a year (e.g. "2026"), expand it to a full-year range: two DateFilters — operator GE with value "{{year}}-01-01" AND operator LE with value "{{year}}-12-31".
 - Do not include markdown or prose outside JSON.
