@@ -176,6 +176,67 @@ class VisualizationSemanticsTests(unittest.TestCase):
         self.assertEqual(metric_requests[0].distribution_options.upper_bound, 1440)
         self.assertIsNotNone(derived_axes)
 
+    def test_line_category_sex_split_on_numeric_metric_compiles_one_distribution_request(self) -> None:
+        # Two series on the same CategoryXAxis(GroupBySex) for the same numeric metric
+        # must compile to exactly one distribution MetricRequest. The query compiler
+        # handles per-category expansion via combo enumeration — not the request builder.
+        chart = metric_request_factory.S.LineChartSpec.model_validate(
+            {
+                "chartType": "LINE",
+                "xAxes": {
+                    "x1": {
+                        "kind": "category",
+                        "groupBy": {"categories": ["MALE", "FEMALE"]},
+                    }
+                },
+                "yAxes": {"y1": {"kind": "metric_value", "statistic": "MEAN"}},
+                "series": [
+                    {
+                        "metric": "DTN",
+                        "xAxis": "x1",
+                        "yAxis": "y1",
+                        "filters": {
+                            "op": "predicate",
+                            "field": "SEX",
+                            "operator": "EQ",
+                            "value": "MALE",
+                        },
+                    },
+                    {
+                        "metric": "DTN",
+                        "xAxis": "x1",
+                        "yAxis": "y1",
+                        "filters": {
+                            "op": "predicate",
+                            "field": "SEX",
+                            "operator": "EQ",
+                            "value": "FEMALE",
+                        },
+                    },
+                ],
+            }
+        )
+
+        derived_axes_calls: list[tuple[str, int, int]] = []
+        metric_requests, derived_axes, _, _ = metric_request_factory.build_metric_requests(
+            plan_chart=chart,
+            derive_defaults_fn=lambda metric_code: (52, 0, 520),
+            axis_from_meta_fn=lambda metric_code, lower, upper: (
+                derived_axes_calls.append((metric_code, lower, upper)) or chart_types.ChartAxis(label="x"),
+                chart_types.ChartAxis(label="y"),
+            ),
+        )
+
+        self.assertEqual(len(metric_requests), 1)
+        self.assertTrue(metric_requests[0].include_distribution)
+        self.assertFalse(metric_requests[0].include_stats)
+        self.assertIsNotNone(metric_requests[0].distribution_options)
+        self.assertEqual(metric_requests[0].distribution_options.bin_count, 52)
+        self.assertEqual(metric_requests[0].distribution_options.lower_bound, 0)
+        self.assertEqual(metric_requests[0].distribution_options.upper_bound, 520)
+        self.assertEqual(derived_axes_calls, [("DTN", 0, 520)])
+        self.assertIsNotNone(derived_axes)
+
     def test_line_chart_rejects_orphan_axis_keys(self) -> None:
         with self.assertRaises(ValidationError):
             schema.LineChartSpec.model_validate(
