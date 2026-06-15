@@ -8,6 +8,7 @@ from uuid import uuid4
 from src.actions.guided_scope import (
     GuidedScopeIntent,
     parse_guided_scope_intent,
+    resolve_provider_name_scope_json,
     resolve_mine_scope_json,
     resolve_provider_group_mine_scope_json,
     scope_json,
@@ -202,8 +203,9 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
             2. scope_kind entity (`mine`, `provider_group`)
             3. country_code entity
             4. region entity -> unsupported clarify
-            5. Bare numeric text with no typed entity -> provider/group clarify
-            6. Missing structured scope -> clarify
+            5. Provider name text -> resolve against accessible providers
+            6. Bare numeric text with no typed entity -> provider/group clarify
+            7. Missing structured scope -> clarify
     """
     language = resolve_language_from_tracker(tracker)
     user_sub = tracker.sender_id
@@ -245,6 +247,17 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
         if intent.kind == "provider_id":
             if isinstance(intent.value, int):
                 return {"guided_hospital_scope": scope_json("provider_id", intent.value, label=str(intent.value))}
+
+        if intent.kind == "provider_name" and isinstance(intent.value, str) and intent.value.strip():
+            resolved_name_scope = resolve_provider_name_scope_json(
+                intent.value,
+                user_sub=user_sub,
+                trace_id=trace_id,
+            )
+            if resolved_name_scope.status == "match" and isinstance(resolved_name_scope.scope_json, str):
+                return {"guided_hospital_scope": resolved_name_scope.scope_json}
+            _utter_invalid(dispatcher, translate("action.guided.hospital_scope_invalid", language=language))
+            return {"guided_hospital_scope": None}
 
         if intent.kind == "provider_group_mine":
             group_scope = resolve_provider_group_mine_scope_json(user_sub=user_sub, trace_id=trace_id)

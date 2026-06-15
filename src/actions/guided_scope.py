@@ -25,6 +25,7 @@ IntentKind = Literal[
     "all_accessible",
     "mine",
     "provider_id",
+    "provider_name",
     "provider_group_mine",
     "provider_group_id",
     "country_code",
@@ -136,9 +137,8 @@ def parse_guided_scope_intent(slot_value: Any, entities: Dict[str, Any]) -> Guid
     if isinstance(country_raw, str) and country_raw.strip():
         return GuidedScopeIntent(kind="country_code", value=country_raw.strip())
 
-    # Strict post-Rasa behavior: no free-text hospital-name fallback in Action.
     if isinstance(raw_text, str) and raw_text.strip() and not raw_text.isdigit():
-        return GuidedScopeIntent(kind="missing_structured_scope")
+        return GuidedScopeIntent(kind="provider_name", value=raw_text.strip())
 
     if raw_text.isdigit():
         return GuidedScopeIntent(kind="numeric_ambiguous", value=raw_text)
@@ -217,11 +217,30 @@ def resolve_mine_scope_json(user_sub: str, trace_id: str) -> Optional[str]:
 
 def resolve_provider_name_scope_json(name: str, *, user_sub: str, trace_id: str) -> ProviderNameResolution:
     client = get_analytics_center_client()
-    page = client.list_providers(user_sub=user_sub, limit=200, offset=0, trace_id=trace_id, raise_on_error=False)
-    providers_any: Any = page.get("results", []) if isinstance(page, dict) else []
-    providers: List[Dict[str, Any]] = [
-        cast(Dict[str, Any], p) for p in (providers_any if isinstance(providers_any, list) else []) if isinstance(p, dict)
-    ]
+    limit = 200
+    max_offset = 5000
+    providers: List[Dict[str, Any]] = []
+
+    for offset in range(0, max_offset, limit):
+        page = client.list_providers(
+            user_sub=user_sub,
+            limit=limit,
+            offset=offset,
+            trace_id=trace_id,
+            raise_on_error=False,
+        )
+        providers_any: Any = page.get("results", []) if isinstance(page, dict) else []
+        page_rows = [
+            cast(Dict[str, Any], p)
+            for p in (providers_any if isinstance(providers_any, list) else [])
+            if isinstance(p, dict)
+        ]
+        if not page_rows:
+            break
+
+        providers.extend(page_rows)
+        if len(page_rows) < limit:
+            break
 
     normalized = normalize_text(name)
     exact: List[Dict[str, Any]] = []

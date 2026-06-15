@@ -71,12 +71,13 @@ class GuidedScopeParserTests(unittest.TestCase):
         )
         self.assertEqual(intent.kind, "all_accessible")
 
-    def test_free_text_without_structured_entity_requires_clarification(self) -> None:
+    def test_free_text_without_structured_entity_maps_to_provider_name(self) -> None:
         intent = guided_scope.parse_guided_scope_intent(
             slot_value="st anna",
             entities={},
         )
-        self.assertEqual(intent.kind, "missing_structured_scope")
+        self.assertEqual(intent.kind, "provider_name")
+        self.assertEqual(intent.value, "st anna")
 
 
 if __name__ == "__main__":

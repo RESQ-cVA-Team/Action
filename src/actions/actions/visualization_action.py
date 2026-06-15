@@ -494,10 +494,15 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                     events, fallback_limit=fallback_limit
                 )
 
-                planner_question = (
-                    "\n".join([m for m in conversation_history if m.strip()]).strip()
-                    or user_message
+                awaiting_clarification = bool(
+                    slots.get("awaiting_visualization_clarification")
                 )
+                planner_question = user_message
+                if awaiting_clarification and conversation_history:
+                    planner_question = (
+                        "\n".join([m for m in conversation_history if m.strip()]).strip()
+                        or user_message
+                    )
 
                 intent_name = _extract_intent_name_from_user_event(latest_msg)
                 is_update = intent_name == "update_visualization"
@@ -625,9 +630,14 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
     )
     latest_plan_summary = _collect_latest_visualization_plan_summary(events)
 
-    planner_question = (
-        "\n".join([m for m in conversation_history if m.strip()]).strip() or ctx.text
+    latest_user_text_any = latest_msg.get("text")
+    latest_user_text = (
+        latest_user_text_any.strip()
+        if isinstance(latest_user_text_any, str) and latest_user_text_any.strip()
+        else ""
     )
+
+    planner_question = latest_user_text or ctx.text
 
     latest_any = ctx.tracker_snapshot.get("latest_message")
     latest_msg_for_intent = (
@@ -635,6 +645,12 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
     )
     intent_name = _extract_intent_name_from_user_event(latest_msg_for_intent)
     is_update = intent_name == "update_visualization"
+    awaiting_clarification = bool(ctx.slots.get("awaiting_visualization_clarification"))
+
+    if awaiting_clarification and conversation_history:
+        planner_question = (
+            "\n".join([m for m in conversation_history if m.strip()]).strip() or planner_question
+        )
 
     if latest_plan_summary and is_update:
         planner_question = (
@@ -721,17 +737,50 @@ def _build_confirmation_message(
         return "Done."
 
     chart = plan_obj.charts[0]
-    metrics = [m.metric for m in (chart.metrics or [])]
+    metrics: List[str] = []
+
+    chart_metrics_any = getattr(chart, "metrics", None)
+    if isinstance(chart_metrics_any, list):
+        for metric_any in chart_metrics_any:
+            metric_name = getattr(metric_any, "metric", None)
+            if isinstance(metric_name, str) and metric_name.strip():
+                metrics.append(metric_name.strip())
+
+    if not metrics:
+        series_any = getattr(chart, "series", None)
+        if isinstance(series_any, list):
+            for series in series_any:
+                metric_name = getattr(series, "metric", None)
+                if isinstance(metric_name, str) and metric_name.strip():
+                    metrics.append(metric_name.strip())
+
+    if not metrics:
+        x_axis_any = getattr(chart, "x_axis", None)
+        if x_axis_any is None:
+            x_axis_any = getattr(chart, "xAxis", None)
+        metric_name = getattr(x_axis_any, "metric", None)
+        if isinstance(metric_name, str) and metric_name.strip():
+            metrics.append(metric_name.strip())
+
+    if metrics:
+        metrics = list(dict.fromkeys(metrics))
+
     metric_str = " & ".join(metrics) if metrics else "the metric"
-    chart_type = (chart.chart_type or "chart").lower()
+    chart_type_any = getattr(chart, "chart_type", None)
+    if chart_type_any is None:
+        chart_type_any = getattr(chart, "chartType", None)
+    chart_type = str(chart_type_any or "chart").lower()
 
     # Time grouping
-    group_by = chart.group_by or []
-    grains = [g.grain for g in group_by if hasattr(g, "grain") and g.grain]
+    group_by_any = getattr(chart, "group_by", None)
+    if group_by_any is None:
+        group_by_any = getattr(chart, "groupBy", None)
+    group_by = group_by_any if isinstance(group_by_any, list) else []
+    grains = [g.grain for g in group_by if hasattr(g, "grain") and getattr(g, "grain", None)]
     grain_str = f" per {grains[0].lower()}" if grains else ""
 
     # Filters
-    filters = chart.filters
+    filters = getattr(chart, "filters", None)
     if filters is None:
         filter_str = " with no filters" if is_update else ""
     else:
@@ -1067,6 +1116,7 @@ class ActionOneShotGenerateVisualization(LongAction):
 
     async def work(self, ctx: LongActionContext) -> Any:
         completed_successfully = False
+        visualization_generated = False
         execution_summary: Optional[Any] = None
         planner_diagnostics: Optional[Dict[str, Any]] = None
         trace_id = _ensure_context_trace_id(ctx)
@@ -1171,6 +1221,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                 )
                 visualization_payload = visualization.model_dump(mode="json")
                 ctx.say(json_message=visualization_payload)
+                visualization_generated = True
 
                 warnings_any = visualization_payload.get("warnings")
                 if isinstance(warnings_any, list):
@@ -1178,7 +1229,6 @@ class ActionOneShotGenerateVisualization(LongAction):
                         if isinstance(warning, str) and warning.strip():
                             ctx.say(text=f"Note: {warning.strip()}")
 
-                completed_successfully = True
                 planner_question_str = str(
                     request_ctx.get("planner_question")
                     or request_ctx.get("user_message")
@@ -1191,7 +1241,22 @@ class ActionOneShotGenerateVisualization(LongAction):
                     plan_obj, is_update=is_update_flow
                 )
                 ctx.say(text=confirmation)
+                completed_successfully = True
             except Exception as e:
+                if visualization_generated:
+                    logger.warning(
+                        "Visualization generated but post-processing message emission failed",
+                        extra=_action_log_context(
+                            trace_id=trace_id,
+                            action_name=self.name(),
+                            event="actions.visualization.work.postprocess_degraded",
+                            outcome="degraded",
+                        ),
+                        exc_info=True,
+                    )
+                    completed_successfully = True
+                    return None
+
                 if isinstance(e, lang_pipeline.PlannerIntentAmbiguityError):
                     clarification_options = cast(List[str], getattr(e, "clarification_options", None) or ["DISTRIBUTION", "SUMMARY", "COMPARISON"])
                     message = translate("action.visualization.clarify_default", language=language)
