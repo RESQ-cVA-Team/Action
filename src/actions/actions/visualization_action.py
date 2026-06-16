@@ -7,6 +7,7 @@ from rasa_sdk import Action  # type: ignore
 from rasa_sdk.events import FollowupAction, SlotSet
 
 from src.actions.error_messages import visualization_error_payload
+from src.actions.helpers.metric import resolve_next_metric_candidate
 from src.actions.helpers.visualization import (
     extract_entities_from_latest_message,
     format_execution_summary,
@@ -24,6 +25,7 @@ from src.planners.langchain import pipeline as lang_pipeline
 from src.planners.langchain.request_orchestrator import (
     orchestrate_visualization_request,
 )
+from src.shared import ssot_loader
 from src.util import env as env_util
 from src.util.logging_utils import log_context
 
@@ -31,10 +33,20 @@ logger = logging.getLogger(__name__)
 
 _LOG_USER_TEXT = env_util.env_flag("ACTIONS_LOG_USER_TEXT", default=False)
 _ECHO_INTERNAL_ERRORS = env_util.env_flag("ACTIONS_ECHO_INTERNAL_ERRORS", default=False)
-_SHOW_EXECUTION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_EXECUTION_SUMMARY", default=True)
-_DEFER_CALLBACK_HANDOFF = env_util.env_flag("LONG_ACTION_DEFER_CALLBACK_HANDOFF", default=False)
-_SHOW_NORMALIZATION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_NORMALIZATION_SUMMARY", default=True)
-_VISUALIZATION_CONTINUATION_INTENTS = {"generate_visualization", "update_visualization", "clarify_visualization"}
+_SHOW_EXECUTION_SUMMARY = env_util.env_flag(
+    "ACTIONS_SHOW_EXECUTION_SUMMARY", default=True
+)
+_DEFER_CALLBACK_HANDOFF = env_util.env_flag(
+    "LONG_ACTION_DEFER_CALLBACK_HANDOFF", default=False
+)
+_SHOW_NORMALIZATION_SUMMARY = env_util.env_flag(
+    "ACTIONS_SHOW_NORMALIZATION_SUMMARY", default=True
+)
+_VISUALIZATION_CONTINUATION_INTENTS = {
+    "generate_visualization",
+    "update_visualization",
+    "clarify_visualization",
+}
 _VISUALIZATION_THREAD_INTENTS = {
     "generate_visualization",
     "update_visualization",
@@ -121,6 +133,46 @@ def _extract_intent_name_from_user_event(event: Dict[str, Any]) -> str:
     return ""
 
 
+def _emit_next_metric_followup(
+    ctx: LongActionContext,
+    plan_obj: lang_schema.AnalysisPlan,
+    language: str,
+) -> None:
+    if not plan_obj.charts:
+        return
+    chart = plan_obj.charts[0]
+    if not chart.metrics:
+        return
+    current_metric = (chart.metrics[0].metric or "").strip()
+    if not current_metric:
+        return
+    next_metric = resolve_next_metric_candidate(current_metric)
+    if not next_metric:
+        return
+
+    next_label = ssot_loader.get_metric_display_name(next_metric)
+
+    payload = f'/update_visualization{{"metric":"{next_metric}","kpi":"{next_metric}"}}'
+
+    ctx.say(
+        text=translate(
+            "action.visualization.next_metric_suggestion",
+            language=language,
+            params={"metric": next_label},
+        ),
+        buttons=[
+            {
+                "title": translate(
+                    "action.visualization.next_metric_button",
+                    language=language,
+                    params={"metric": next_label},
+                ),
+                "payload": payload,
+            }
+        ],
+    )
+
+
 def _collect_recent_user_messages(
     events: List[Dict[str, Any]], fallback_limit: int
 ) -> List[str]:
@@ -205,12 +257,18 @@ def _merge_entities(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str,
 
 def _extract_entities_from_user_event(event: Dict[str, Any]) -> Dict[str, Any]:
     parse_data_any = event.get("parse_data")
-    parse_data = cast(Dict[str, Any], parse_data_any) if isinstance(parse_data_any, dict) else {}
+    parse_data = (
+        cast(Dict[str, Any], parse_data_any) if isinstance(parse_data_any, dict) else {}
+    )
 
     parse_entities_any = parse_data.get("entities")
     event_entities_any = event.get("entities")
 
-    entities_any = parse_entities_any if isinstance(parse_entities_any, list) else event_entities_any
+    entities_any = (
+        parse_entities_any
+        if isinstance(parse_entities_any, list)
+        else event_entities_any
+    )
     if not isinstance(entities_any, list):
         return {}
 
@@ -237,7 +295,9 @@ def _extract_entities_from_user_event(event: Dict[str, Any]) -> Dict[str, Any]:
     return extracted
 
 
-def _collect_visualization_thread_entities(events: List[Dict[str, Any]], fallback_limit: int = 12) -> Dict[str, Any]:
+def _collect_visualization_thread_entities(
+    events: List[Dict[str, Any]], fallback_limit: int = 12
+) -> Dict[str, Any]:
     user_events: List[Dict[str, Any]] = []
     for ev in events:
         if ev.get("event") != "user":
@@ -1185,6 +1245,9 @@ class ActionOneShotGenerateVisualization(LongAction):
                                 "action.visualization.success_complete",
                                 language=language,
                             )
+                        )
+                        _emit_next_metric_followup(
+                            ctx=ctx, plan_obj=plan_obj, language=language
                         )
                 ctx.done()
         return None
