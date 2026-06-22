@@ -765,6 +765,7 @@ def resolve_plan_metric_origins(plan: S.AnalysisPlan, user_sub: str, trace_id: s
                     xAxes=chart.x_axes,
                     yAxes=chart.y_axes,
                     series=resolved_series,
+                    seriesSplit=cast(Optional[S.GroupBySpec], getattr(chart, "series_split", None)),
                     filters=cast(Optional[S.FilterNode], getattr(chart, "filters", None)),
                     title=chart.title,
                 )
@@ -819,7 +820,6 @@ def resolve_plan_metric_origins(plan: S.AnalysisPlan, user_sub: str, trace_id: s
         resolved_tests.append(resolved_test)
 
     return S.AnalysisPlan(
-        schemaVersion=2,
         charts=resolved_charts or None,
         statisticalTests=resolved_tests or None,
     )

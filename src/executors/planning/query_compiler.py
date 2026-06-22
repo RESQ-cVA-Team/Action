@@ -288,18 +288,30 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
 
     if isinstance(chart, S.LineChartSpec):
         x_keys_used = {series.x_axis for series in chart.series}
-        for x_key in x_keys_used:
-            x_axis = chart.x_axes.get(x_key)
-            if isinstance(x_axis, S.TimeXAxis):
-                collected_groups.append(
-                    S.GroupByTime(
-                        grain=x_axis.grain,
-                        window=x_axis.window,
-                        include_partial=x_axis.include_partial,
-                    )
+        if len(x_keys_used) > 1:
+            raise ValueError("LINE chart compilation supports exactly one referenced x-axis.")
+
+        x_key = next(iter(x_keys_used))
+        x_axis = chart.x_axes.get(x_key)
+
+        if isinstance(x_axis, S.TimeXAxis):
+            collected_groups.append(
+                S.GroupByTime(
+                    grain=x_axis.grain,
+                    window=x_axis.window,
+                    include_partial=x_axis.include_partial,
                 )
-            elif isinstance(x_axis, S.CategoryXAxis):
-                collected_groups.append(x_axis.group_by)
+            )
+
+        split_spec: Optional[GroupBySpec] = chart.series_split
+        if split_spec is not None:
+            split_dim = Dimension(split_spec)
+            split_field = split_dim.canonical_field()
+            if split_field is None:
+                raise ValueError("seriesSplit must resolve to a server-supported groupBy field.")
+            collected_groups.append(split_spec)
+        elif isinstance(x_axis, S.CategoryXAxis):
+            collected_groups.append(x_axis.group_by)
 
     seen: set[GroupBySpec] = set()
     uniq_groups: List[GroupBySpec] = []
@@ -311,6 +323,9 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
 
     canonical_dims: List[Dimension] = [d for d in dims if d.is_canonical()]
     server_dim: Optional[Dimension] = canonical_dims[0] if canonical_dims else None
+
+    if len(canonical_dims) > 1:
+        raise ValueError("Only one server groupBy dimension is supported per chart.")
 
     filter_dims_all: List[Dimension] = [d for d in dims if d is not server_dim]
 

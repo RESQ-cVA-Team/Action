@@ -12,10 +12,9 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Type, TypedDict
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.domain.langchain.schema import AnalysisPlan
+from src.domain.langchain.schema import AnalysisPlan, LineChartSpec, NumericMetricXAxis
 from src.planners.langchain.examples import get_few_shot_examples
 from src.planners.langchain.llm_factory import create_chat_llm, get_llm_provider
-from src.planners.langchain.semantic_adapter import validate_analysis_plan_semantics
 from src.util import env as env_util
 from src.util.logging_utils import bind_current_context, log_context
 
@@ -53,25 +52,10 @@ class PlannerTimeoutError(TimeoutError):
 
 
 class PlannerIntentAmbiguityError(ValueError):
-    """Raised when planner output remains semantically ambiguous after retries."""
+    """Raised when the user input is missing a required metric and planner cannot proceed."""
 
-    def __init__(self, message: str, clarification_options: Optional[List[str]] = None):
+    def __init__(self, message: str):
         super().__init__(message)
-        self.clarification_options = clarification_options or ["DISTRIBUTION", "SUMMARY", "COMPARISON"]
-
-
-def _is_semantic_ambiguity_error(exc: Exception) -> bool:
-    text = str(exc or "").strip().lower()
-    if not text:
-        return False
-    return (
-        "unable to infer chart semantics" in text
-        or "xaxis" in text
-        or "xaxes" in text
-        or "yaxes" in text
-        or "seriesby" in text
-        or "series" in text
-    )
 
 
 def _extract_text(response: Any) -> str:
@@ -170,6 +154,35 @@ def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
         raise ValueError("Model output JSON must be an object")
     _assert_no_empty_chart_semantics(cast(Dict[str, Any], parsed))
     return AnalysisPlan.model_validate(parsed)
+
+
+def _has_explicit_chart_type(entities: Dict[str, Any]) -> bool:
+    if not entities:
+        return False
+    chart_types = _entity_values(entities.get("chart_type"))
+    return bool(chart_types)
+
+
+def _contains_line_distribution(plan: AnalysisPlan) -> bool:
+    for chart in plan.charts or []:
+        if not isinstance(chart, LineChartSpec):
+            continue
+        for series in chart.series:
+            x_axis = chart.x_axes.get(series.x_axis)
+            if isinstance(x_axis, NumericMetricXAxis):
+                return True
+    return False
+
+
+def _enforce_distribution_chart_type_policy(plan: AnalysisPlan, entities: Dict[str, Any]) -> None:
+    """Default to HISTOGRAM for distribution requests unless chart type is explicit."""
+    if _has_explicit_chart_type(entities):
+        return
+    if _contains_line_distribution(plan):
+        raise ValueError(
+            "Distribution requests without explicit chart type must default to HISTOGRAM. "
+            "Use LINE distribution only when the user explicitly asks for a line chart."
+        )
 
 
 def get_schema_description(model: Type[Any]) -> str:
@@ -466,9 +479,10 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
             "Put human references in originScope.value and ISO country in originScope.countryCode when available. "
             "Only use dataOrigin when explicit numeric provider/group IDs are directly provided by the user. "
             "When comparing multiple scopes in one chart, use separate series entries with per-series metric-level originScope/dataOrigin. "
-            "Use explicit chart semantics with the new contract: LINE charts require chartType=LINE, xAxes map, yAxes map, and series list with xAxis/yAxis keys; LINE may use a time/category x-axis with metric_value y-axis or a numeric_metric x-axis with count y-axis for a distribution line; HISTOGRAM requires chartType=HISTOGRAM, xAxis numeric metric, yAxis count. "
-            "Always emit schemaVersion=2. Do not emit deprecated fields (xAxis object for LINE, yAxes list, seriesBy, summaries). "
-            "Sex semantics guidance: phrases like 'males only' or 'females only' should usually be chart filters (SexFilter), while 'split/group by sex' should use GroupBySex. "
+            "Use explicit chart semantics with the new contract: LINE charts require chartType=LINE, xAxes map, yAxes map, and series list with xAxis/yAxis keys; optional seriesSplit declares multi-series split semantics; LINE may use a time/category x-axis with metric_value y-axis or a numeric_metric x-axis with count y-axis for a distribution line; HISTOGRAM requires chartType=HISTOGRAM, xAxis numeric metric, yAxis count. "
+            "Do not emit deprecated fields (xAxis object for LINE, yAxes list, seriesBy, summaries) or schemaVersion. "
+            "Produce a canonical plan directly; downstream validation rejects legacy shapes instead of repairing them. "
+            "Sex semantics guidance: phrases like 'males only' or 'females only' should usually be chart filters (SexFilter), while 'split/group by sex' should use seriesSplit with GroupBySex. "
             "Chart intent precedence: if the user explicitly asks for a supported chart type (for example LINE or HISTOGRAM), honor it when semantically valid. "
             "Default behavior for KPI metrics: when chart type is not explicitly requested, use HISTOGRAM with numeric_metric xAxis. "
             "For explicit LINE requests for a numeric KPI without categorical grouping, prefer a distribution line: numeric_metric x-axis for the KPI and count y-axis. Use time x-axis with metric_value MEAN only when the user explicitly asks for a trend over time. "
@@ -624,10 +638,12 @@ def generate_analysis_plan(
             )
 
             try:
-                result = _coerce_analysis_plan(raw_result)
-                result = validate_analysis_plan_semantics(result)
+                candidate = _coerce_analysis_plan(raw_result)
+                _enforce_distribution_chart_type_policy(candidate, entities)
+                result = candidate
                 break
             except Exception as exc:
+                result = None
                 last_error = exc
                 attempts.append(
                     {
@@ -641,11 +657,10 @@ def generate_analysis_plan(
                 plan_inputs["reasoning"] = f"Previous output failed schema validation. Return ONLY a valid AnalysisPlan JSON object. Validation error: {exc}"
 
         if result is None:
-            if last_error is not None and _is_semantic_ambiguity_error(last_error):
+            metrics = _entity_values(entities.get("metric")) if entities else set()
+            if not metrics:
                 message = "I need one clarification: which KPI metric should I visualize?"
-                raise PlannerIntentAmbiguityError(
-                    message
-                ) from last_error
+                raise PlannerIntentAmbiguityError(message) from last_error
             raise ValueError(f"Planner failed to produce a valid AnalysisPlan after {total_attempts} attempts") from last_error
 
         if debug:

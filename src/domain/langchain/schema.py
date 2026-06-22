@@ -493,6 +493,11 @@ def _metric_data_shape(metric_code: str) -> tuple[Optional[str], Optional[str]]:
     return data_type, unit
 
 
+def _metric_unit(metric_code: str) -> Optional[str]:
+    _, unit = _metric_data_shape(metric_code)
+    return unit
+
+
 class MetricSpec(BaseModel):
     """
     Specification for a metric to be analyzed or visualized.
@@ -680,6 +685,7 @@ class LineChartSpec(BaseModel):
     x_axes: Dict[str, XAxisSpec] = Field(alias="xAxes", min_length=1)
     y_axes: Dict[str, YAxisSpec] = Field(alias="yAxes", min_length=1)
     series: List[LineSeries] = Field(min_length=1)
+    series_split: Optional[GroupBySpec] = Field(default=None, alias="seriesSplit")
     filters: Optional[FilterNode] = None
     title: Optional[str] = None
 
@@ -701,6 +707,110 @@ class LineChartSpec(BaseModel):
             raise ValueError(f"Unused x-axis keys are not allowed: {orphan_x}")
         if orphan_y:
             raise ValueError(f"Unused y-axis keys are not allowed: {orphan_y}")
+
+        if self.series_split is not None:
+            if len(used_x) != 1:
+                raise ValueError("LINE charts with seriesSplit must reference exactly one x-axis.")
+            for x_key in used_x:
+                if isinstance(self.x_axes[x_key], CategoryXAxis):
+                    raise ValueError("LINE charts with seriesSplit cannot use a category x-axis.")
+        else:
+            for x_key in used_x:
+                if not isinstance(self.x_axes[x_key], CategoryXAxis):
+                    continue
+                series_on_axis = [item for item in self.series if item.x_axis == x_key]
+                if len(series_on_axis) > 1:
+                    raise ValueError(
+                        "LINE charts with multiple series on a category x-axis must declare seriesSplit explicitly."
+                    )
+        return self
+
+    @model_validator(mode="after")
+    def validate_semantics(self) -> "LineChartSpec":
+        for x_key, x_axis in self.x_axes.items():
+            if not isinstance(x_axis, NumericMetricXAxis):
+                continue
+
+            referencing_series = [s for s in self.series if s.x_axis == x_key]
+            if not referencing_series:
+                raise ValueError(
+                    f"LINE numeric_metric x-axis ('{x_key}') is not referenced by any series."
+                )
+
+            for series in referencing_series:
+                y_axis = self.y_axes.get(series.y_axis)
+                if not isinstance(y_axis, CountAxis):
+                    raise ValueError(
+                        f"LINE numeric_metric x-axis ('{x_key}') requires count y-axis. "
+                        "Use metric_value with time/category x-axis for trends or comparisons."
+                    )
+                if (series.metric or "").strip().upper() != (x_axis.metric or "").strip().upper():
+                    raise ValueError(
+                        f"LINE distribution series metric '{series.metric}' must match numeric_metric x-axis metric '{x_axis.metric}'."
+                    )
+
+        if self.series_split is None and len(self.series) >= 2:
+            x_keys = {series.x_axis for series in self.series}
+            y_keys = {series.y_axis for series in self.series}
+            if len(x_keys) == 1 and len(y_keys) == 1:
+                legacy_x_key = next(iter(x_keys))
+                legacy_y_key = next(iter(y_keys))
+                legacy_x_axis = self.x_axes.get(legacy_x_key)
+                legacy_y_axis = self.y_axes.get(legacy_y_key)
+
+                if isinstance(legacy_x_axis, NumericMetricXAxis) and isinstance(legacy_y_axis, CountAxis):
+                    first = self.series[0]
+                    metric = (first.metric or "").strip().upper()
+                    if metric:
+                        seen_categories: set[str] = set()
+                        legacy_shape = True
+                        for series in self.series:
+                            if (series.metric or "").strip().upper() != metric:
+                                legacy_shape = False
+                                break
+                            if series.x_axis != legacy_x_key or series.y_axis != legacy_y_key:
+                                legacy_shape = False
+                                break
+                            if series.data_origin != first.data_origin or series.origin_scope != first.origin_scope:
+                                legacy_shape = False
+                                break
+
+                            filt = series.filters
+                            if not isinstance(filt, PredicateFilter):
+                                legacy_shape = False
+                                break
+                            if (filt.field or "").strip().upper() != "SEX":
+                                legacy_shape = False
+                                break
+                            if (filt.operator or "").strip().upper() != "EQ":
+                                legacy_shape = False
+                                break
+                            if not isinstance(filt.value, str) or filt.values:
+                                legacy_shape = False
+                                break
+                            seen_categories.add(filt.value.strip().upper())
+
+                        if legacy_shape and len(seen_categories) >= 2:
+                            raise ValueError(
+                                "LINE charts splitting by sex must declare seriesSplit explicitly."
+                            )
+
+        units_by_y: Dict[str, List[str]] = {}
+        for series in self.series:
+            unit = _metric_unit(series.metric)
+            if unit is None:
+                continue
+            units = units_by_y.setdefault(series.y_axis, [])
+            if unit not in units:
+                units.append(unit)
+
+        for y_key, units in units_by_y.items():
+            if len(units) > 1:
+                raise ValueError(
+                    f"y-axis '{y_key}' mixes metric units {sorted(units)}. "
+                    "Use separate y-axes or separate charts for different units."
+                )
+
         return self
 
 
@@ -723,7 +833,6 @@ ChartSpec = Annotated[
 
 
 class AnalysisPlan(BaseModel):
-    schema_version: Literal[2] = Field(alias="schemaVersion")
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     charts: Optional[List[ChartSpec]] = Field(default=None, min_length=1)

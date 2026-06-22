@@ -20,7 +20,7 @@ def load_module(module_name: str, relative_path: str):
 schema = load_module("action_schema_under_test", "src/domain/langchain/schema.py")
 metric_request_factory = load_module("action_metric_request_factory_under_test", "src/executors/planning/metric_request_factory.py")
 chart_types = load_module("action_chart_types_under_test", "src/domain/dto/charts/types.py")
-semantic_adapter = load_module("action_semantic_adapter_under_test", "src/planners/langchain/semantic_adapter.py")
+examples = load_module("action_examples_under_test", "src/planners/langchain/examples.py")
 
 
 def _line_chart_payload(metric: str = "DTN") -> dict:
@@ -176,44 +176,16 @@ class VisualizationSemanticsTests(unittest.TestCase):
         self.assertEqual(metric_requests[0].distribution_options.upper_bound, 1440)
         self.assertIsNotNone(derived_axes)
 
-    def test_line_category_sex_split_on_numeric_metric_compiles_one_distribution_request(self) -> None:
-        # Two series on the same CategoryXAxis(GroupBySex) for the same numeric metric
-        # must compile to exactly one distribution MetricRequest. The query compiler
-        # handles per-category expansion via combo enumeration — not the request builder.
+    def test_line_series_split_on_numeric_metric_compiles_one_distribution_request(self) -> None:
+        # Split semantics are explicit via seriesSplit. A numeric_metric/count LINE
+        # compiles into one distribution request; grouped fan-out happens in query compilation.
         chart = metric_request_factory.S.LineChartSpec.model_validate(
             {
                 "chartType": "LINE",
-                "xAxes": {
-                    "x1": {
-                        "kind": "category",
-                        "groupBy": {"categories": ["MALE", "FEMALE"]},
-                    }
-                },
-                "yAxes": {"y1": {"kind": "metric_value", "statistic": "MEAN"}},
-                "series": [
-                    {
-                        "metric": "DTN",
-                        "xAxis": "x1",
-                        "yAxis": "y1",
-                        "filters": {
-                            "op": "predicate",
-                            "field": "SEX",
-                            "operator": "EQ",
-                            "value": "MALE",
-                        },
-                    },
-                    {
-                        "metric": "DTN",
-                        "xAxis": "x1",
-                        "yAxis": "y1",
-                        "filters": {
-                            "op": "predicate",
-                            "field": "SEX",
-                            "operator": "EQ",
-                            "value": "FEMALE",
-                        },
-                    },
-                ],
+                "xAxes": {"x1": {"kind": "numeric_metric", "metric": "DTN", "bins": 52}},
+                "yAxes": {"y1": {"kind": "count"}},
+                "series": [{"metric": "DTN", "xAxis": "x1", "yAxis": "y1"}],
+                "seriesSplit": {"categories": ["MALE", "FEMALE"]},
             }
         )
 
@@ -237,6 +209,32 @@ class VisualizationSemanticsTests(unittest.TestCase):
         self.assertEqual(derived_axes_calls, [("DTN", 0, 520)])
         self.assertIsNotNone(derived_axes)
 
+    def test_line_chart_rejects_category_multi_series_without_series_split(self) -> None:
+        with self.assertRaises(ValidationError):
+            schema.LineChartSpec.model_validate(
+                {
+                    "chartType": "LINE",
+                    "xAxes": {"x1": {"kind": "category", "groupBy": {"categories": ["MALE", "FEMALE"]}}},
+                    "yAxes": {"y1": {"kind": "metric_value", "statistic": "MEAN"}},
+                    "series": [
+                        {"metric": "DTN", "xAxis": "x1", "yAxis": "y1", "label": "A"},
+                        {"metric": "DTN", "xAxis": "x1", "yAxis": "y1", "label": "B"},
+                    ],
+                }
+            )
+
+    def test_line_chart_rejects_category_axis_with_series_split(self) -> None:
+        with self.assertRaises(ValidationError):
+            schema.LineChartSpec.model_validate(
+                {
+                    "chartType": "LINE",
+                    "xAxes": {"x1": {"kind": "category", "groupBy": {"field": "FIRST_CONTACT_PLACE"}}},
+                    "yAxes": {"y1": {"kind": "metric_value", "statistic": "MEAN"}},
+                    "series": [{"metric": "DTN", "xAxis": "x1", "yAxis": "y1"}],
+                    "seriesSplit": {"categories": ["MALE", "FEMALE"]},
+                }
+            )
+
     def test_line_chart_rejects_orphan_axis_keys(self) -> None:
         with self.assertRaises(ValidationError):
             schema.LineChartSpec.model_validate(
@@ -255,7 +253,6 @@ class VisualizationSemanticsTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             schema.AnalysisPlan.model_validate(
                 {
-                    "schemaVersion": 2,
                     "charts": [
                         {
                             "chartType": "LINE",
@@ -267,18 +264,31 @@ class VisualizationSemanticsTests(unittest.TestCase):
                 }
             )
 
-    def test_analysis_plan_requires_schema_version(self) -> None:
-        with self.assertRaises(ValidationError):
-            schema.AnalysisPlan.model_validate({"charts": [_line_chart_payload()]})
+    def test_analysis_plan_accepts_without_schema_version(self) -> None:
+        plan = schema.AnalysisPlan.model_validate({"charts": [_line_chart_payload()]})
+        self.assertIsNotNone(plan)
 
     def test_analysis_plan_requires_content(self) -> None:
         with self.assertRaises(ValidationError):
-            schema.AnalysisPlan.model_validate({"schemaVersion": 2})
+            schema.AnalysisPlan.model_validate({})
+
+    def test_few_shot_examples_include_metric_only_kpi_default(self) -> None:
+        few_shots = examples.get_few_shot_examples()
+        metric_only = next((item for item in few_shots if "USER_UTTERANCE:\nShow me DTN\n" in item["user"]), None)
+
+        self.assertIsNotNone(metric_only)
+        assert metric_only is not None
+        plan = schema.AnalysisPlan.model_validate_json(metric_only["assistant"])
+        self.assertEqual(len(plan.charts), 1)
+        chart = plan.charts[0]
+        self.assertIsInstance(chart, schema.HistogramChartSpec)
+        self.assertEqual(chart.chart_type, "HISTOGRAM")
+        self.assertEqual(chart.x_axis.metric, "DTN")
+        self.assertEqual(chart.y_axis.kind, "count")
 
     def test_semantics_allow_line_time_axis_when_explicit(self) -> None:
-        plan = semantic_adapter.S.AnalysisPlan.model_validate(
+        plan = schema.AnalysisPlan.model_validate(
             {
-                "schemaVersion": 2,
                 "charts": [
                     {
                         "chartType": "LINE",
@@ -290,13 +300,11 @@ class VisualizationSemanticsTests(unittest.TestCase):
             }
         )
 
-        validated = semantic_adapter.validate_analysis_plan_semantics(plan)
-        self.assertIsNotNone(validated)
+        self.assertIsNotNone(plan)
 
     def test_semantics_allow_line_numeric_distribution_when_explicit(self) -> None:
-        plan = semantic_adapter.S.AnalysisPlan.model_validate(
+        plan = schema.AnalysisPlan.model_validate(
             {
-                "schemaVersion": 2,
                 "charts": [
                     {
                         "chartType": "LINE",
@@ -308,26 +316,60 @@ class VisualizationSemanticsTests(unittest.TestCase):
             }
         )
 
-        validated = semantic_adapter.validate_analysis_plan_semantics(plan)
-        self.assertIsNotNone(validated)
+        self.assertIsNotNone(plan)
 
     def test_semantics_reject_line_numeric_distribution_with_metric_value_yaxis(self) -> None:
-        plan = semantic_adapter.S.AnalysisPlan.model_validate(
-            {
-                "schemaVersion": 2,
-                "charts": [
-                    {
-                        "chartType": "LINE",
-                        "xAxes": {"x1": {"kind": "numeric_metric", "metric": "DTN", "bins": 20}},
-                        "yAxes": {"y1": {"kind": "metric_value", "statistic": "MEAN"}},
-                        "series": [{"metric": "DTN", "xAxis": "x1", "yAxis": "y1"}],
-                    }
-                ],
-            }
-        )
+        with self.assertRaisesRegex(ValidationError, "requires count y-axis"):
+            schema.AnalysisPlan.model_validate(
+                {
+                    "charts": [
+                        {
+                            "chartType": "LINE",
+                            "xAxes": {"x1": {"kind": "numeric_metric", "metric": "DTN", "bins": 20}},
+                            "yAxes": {"y1": {"kind": "metric_value", "statistic": "MEAN"}},
+                            "series": [{"metric": "DTN", "xAxis": "x1", "yAxis": "y1"}],
+                        }
+                    ],
+                }
+            )
 
-        with self.assertRaisesRegex(ValueError, "requires count y-axis"):
-            semantic_adapter.validate_analysis_plan_semantics(plan)
+    def test_semantics_reject_legacy_sex_filters_without_series_split(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "must declare seriesSplit explicitly"):
+            schema.AnalysisPlan.model_validate(
+                {
+                    "charts": [
+                        {
+                            "chartType": "LINE",
+                            "xAxes": {"x1": {"kind": "numeric_metric", "metric": "DTN", "bins": 20}},
+                            "yAxes": {"y1": {"kind": "count"}},
+                            "series": [
+                                {
+                                    "metric": "DTN",
+                                    "xAxis": "x1",
+                                    "yAxis": "y1",
+                                    "filters": {
+                                        "op": "predicate",
+                                        "field": "SEX",
+                                        "operator": "EQ",
+                                        "value": "MALE",
+                                    },
+                                },
+                                {
+                                    "metric": "DTN",
+                                    "xAxis": "x1",
+                                    "yAxis": "y1",
+                                    "filters": {
+                                        "op": "predicate",
+                                        "field": "SEX",
+                                        "operator": "EQ",
+                                        "value": "FEMALE",
+                                    },
+                                },
+                            ],
+                        }
+                    ]
+                }
+            )
 
 
 if __name__ == "__main__":

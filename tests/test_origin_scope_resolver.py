@@ -61,7 +61,6 @@ class _FakeAnalyticsClient:
 
 def _single_metric_plan(origin_scope: resolver.S.OriginScopeSpec) -> resolver.S.AnalysisPlan:
     return resolver.S.AnalysisPlan(
-        schemaVersion=2,
         charts=[
             resolver.S.LineChartSpec(
                 chartType="LINE",
@@ -111,6 +110,29 @@ class OriginScopeResolverTests(unittest.TestCase):
         series = resolved.charts[0].series[0]
         self.assertIsNotNone(series.data_origin)
         self.assertEqual(series.data_origin.provider_group_id, [7])
+
+    def test_line_series_split_is_preserved_after_origin_resolution(self) -> None:
+        plan = resolver.S.AnalysisPlan(
+            charts=[
+                resolver.S.LineChartSpec(
+                    chartType="LINE",
+                    xAxes={"x1": resolver.S.NumericMetricXAxis(kind="numeric_metric", metric="DTN")},
+                    yAxes={"y1": resolver.S.CountAxis(kind="count")},
+                    series=[resolver.S.LineSeries(metric="DTN", xAxis="x1", yAxis="y1")],
+                    seriesSplit=resolver.S.GroupBySex(categories=["MALE", "FEMALE"]),
+                )
+            ]
+        )
+        fake_client = _FakeAnalyticsClient()
+
+        with patch.object(resolver, "get_analytics_center_client", return_value=fake_client):
+            resolved = resolver.resolve_plan_metric_origins(plan, user_sub="user-1", trace_id="trace-split")
+
+        resolved_chart = resolved.charts[0]
+        self.assertIsInstance(resolved_chart, resolver.S.LineChartSpec)
+        self.assertIsNotNone(resolved_chart.series_split)
+        self.assertIsInstance(resolved_chart.series_split, resolver.S.GroupBySex)
+        self.assertEqual(resolved_chart.series_split.categories, ["MALE", "FEMALE"])
 
     def test_inaccessible_provider_group_id_is_rejected_without_fallback(self) -> None:
         plan = _single_metric_plan(resolver.S.OriginScopeSpec(scopeType="provider_group_id", value=1))

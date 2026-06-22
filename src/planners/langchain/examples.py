@@ -38,7 +38,6 @@ def _line_plan(
 ) -> AnalysisPlan:
     chart_series = series or [LineSeries(metric=metric, xAxis="x1", yAxis="y1")]
     return AnalysisPlan(
-        schemaVersion=2,
         charts=[
             LineChartSpec(
                 chartType=chart_type,
@@ -53,7 +52,6 @@ def _line_plan(
 
 def _histogram_plan(metric: str) -> AnalysisPlan:
     return AnalysisPlan(
-        schemaVersion=2,
         charts=[
             HistogramChartSpec(
                 chartType="HISTOGRAM",
@@ -66,7 +64,17 @@ def _histogram_plan(metric: str) -> AnalysisPlan:
 
 def example_dtn_by_sex() -> Tuple[str, str]:
     detected = {"sex": ["MALE", "FEMALE"], "metric": ["DTN"], "chart_type": ["LINE"]}
-    plan = _line_plan(metric="DTN", x_axis=CategoryXAxis(kind="category", groupBy=GroupBySex(categories=["MALE", "FEMALE"])))
+    plan = AnalysisPlan(
+        charts=[
+            LineChartSpec(
+                chartType="LINE",
+                xAxes={"x1": NumericMetricXAxis(kind="numeric_metric", metric="DTN")},
+                yAxes={"y1": CountAxis(kind="count")},
+                series=[LineSeries(metric="DTN", xAxis="x1", yAxis="y1")],
+                seriesSplit=GroupBySex(categories=["MALE", "FEMALE"]),
+            )
+        ],
+    )
     user = f"USER_UTTERANCE:\nShow me a line graph of DTN for males and females\n\nENTITIES_DETECTED(JSON):\n{json.dumps(detected)}"
     return user, _assistant(plan)
 
@@ -88,6 +96,13 @@ def example_dtn_over_time() -> Tuple[str, str]:
     return user, _assistant(plan)
 
 
+def example_dtn_metric_only_default() -> Tuple[str, str]:
+    detected = {"metric": ["DTN"]}
+    plan = _histogram_plan("DTN")
+    user = "USER_UTTERANCE:\nShow me DTN\n\nENTITIES_DETECTED(JSON):\n" + json.dumps(detected)
+    return user, _assistant(plan)
+
+
 def example_dtn_monthly_trend() -> Tuple[str, str]:
     detected = {"metric": ["DTN"], "chart_type": ["HISTOGRAM"], "time_window": ["MONTH"]}
     plan = _histogram_plan("DTN")
@@ -99,7 +114,6 @@ def example_dtn_line_chart_no_grouping() -> Tuple[str, str]:
     """Explicit LINE entity without grouping -> LINE over metric distribution."""
     detected = {"metric": ["DTN"], "chart_type": ["LINE"]}
     plan = AnalysisPlan(
-        schemaVersion=2,
         charts=[
             LineChartSpec(
                 chartType="LINE",
@@ -130,7 +144,17 @@ def example_dtn_distribution_by_month() -> Tuple[str, str]:
 
 def example_dtn_box_by_sex() -> Tuple[str, str]:
     detected = {"sex": ["MALE", "FEMALE"], "metric": ["DTN"], "chart_type": ["BOX"]}
-    plan = _line_plan(metric="DTN", x_axis=CategoryXAxis(kind="category", groupBy=GroupBySex(categories=["MALE", "FEMALE"])))
+    plan = AnalysisPlan(
+        charts=[
+            LineChartSpec(
+                chartType="LINE",
+                xAxes={"x1": NumericMetricXAxis(kind="numeric_metric", metric="DTN")},
+                yAxes={"y1": CountAxis(kind="count")},
+                series=[LineSeries(metric="DTN", xAxis="x1", yAxis="y1")],
+                seriesSplit=GroupBySex(categories=["MALE", "FEMALE"]),
+            )
+        ],
+    )
     user = "USER_UTTERANCE:\nShow me a box plot of DTN by sex\n\nENTITIES_DETECTED(JSON):\n" + json.dumps(detected)
     return user, _assistant(plan)
 
@@ -138,7 +162,6 @@ def example_dtn_box_by_sex() -> Tuple[str, str]:
 def example_dtn_males_only_filter() -> Tuple[str, str]:
     detected = {"sex": ["MALE"], "metric": ["DTN"], "chart_type": ["HISTOGRAM"]}
     plan = AnalysisPlan(
-        schemaVersion=2,
         charts=[
             HistogramChartSpec(
                 chartType="HISTOGRAM",
@@ -155,7 +178,6 @@ def example_dtn_males_only_filter() -> Tuple[str, str]:
 def example_dtn_females_only_filter() -> Tuple[str, str]:
     detected = {"sex": ["FEMALE"], "metric": ["DTN"], "chart_type": ["HISTOGRAM"]}
     plan = AnalysisPlan(
-        schemaVersion=2,
         charts=[
             HistogramChartSpec(
                 chartType="HISTOGRAM",
@@ -177,12 +199,11 @@ def example_dtn_by_sex_and_stroke() -> Tuple[str, str]:
         "stroke_type": ["ISCHEMIC", "INTRACEREBRAL_HEMORRHAGE"],
     }
     plan = AnalysisPlan(
-        schemaVersion=2,
         charts=[
             LineChartSpec(
                 chartType="LINE",
-                xAxes={"x1": CategoryXAxis(kind="category", groupBy=GroupBySex(categories=["MALE", "FEMALE"]))},
-                yAxes={"y1": MetricValueAxis(kind="metric_value", statistic="MEAN")},
+                xAxes={"x1": NumericMetricXAxis(kind="numeric_metric", metric="DTN")},
+                yAxes={"y1": CountAxis(kind="count")},
                 series=[
                     LineSeries(
                         metric="DTN",
@@ -204,6 +225,7 @@ def example_dtn_by_sex_and_stroke() -> Tuple[str, str]:
                         ),
                     ),
                 ],
+                seriesSplit=GroupBySex(categories=["MALE", "FEMALE"]),
             )
         ],
     )
@@ -231,7 +253,6 @@ def example_two_separate_charts() -> Tuple[str, str]:
         "chart_type": ["LINE", "BAR"],
     }
     plan = AnalysisPlan(
-        schemaVersion=2,
         charts=[
             LineChartSpec(
                 chartType="LINE",
@@ -254,28 +275,13 @@ def example_two_separate_charts() -> Tuple[str, str]:
 def example_dtn_last_6_months_by_sex() -> Tuple[str, str]:
     detected = {"sex": ["MALE", "FEMALE"], "metric": ["DTN"], "chart_type": ["LINE"], "time_window": ["LAST_6_MONTHS"]}
     plan = AnalysisPlan(
-        schemaVersion=2,
         charts=[
             LineChartSpec(
                 chartType="LINE",
                 xAxes={"x1": TimeXAxis(kind="time", grain="MONTH", window=TimeWindow(last_n=6, unit="MONTH"))},
                 yAxes={"y1": MetricValueAxis(kind="metric_value", statistic="MEAN")},
-                series=[
-                    LineSeries(
-                        metric="DTN",
-                        xAxis="x1",
-                        yAxis="y1",
-                        label="MALE",
-                        filters=PredicateFilter(op="predicate", field="SEX", operator="EQ", value="MALE"),
-                    ),
-                    LineSeries(
-                        metric="DTN",
-                        xAxis="x1",
-                        yAxis="y1",
-                        label="FEMALE",
-                        filters=PredicateFilter(op="predicate", field="SEX", operator="EQ", value="FEMALE"),
-                    ),
-                ],
+                series=[LineSeries(metric="DTN", xAxis="x1", yAxis="y1")],
+                seriesSplit=GroupBySex(categories=["MALE", "FEMALE"]),
             )
         ],
     )
@@ -286,7 +292,6 @@ def example_dtn_last_6_months_by_sex() -> Tuple[str, str]:
 def example_statistical_test_dtn_by_sex() -> Tuple[str, str]:
     detected = {"sex": ["MALE", "FEMALE"], "metric": ["DTN"], "statistical_test_type": ["MANN_WHITNEY_U_TEST"]}
     plan = AnalysisPlan(
-        schemaVersion=2,
         statisticalTests=[
             StatisticalTestSpec(
                 test_type="MANN_WHITNEY_U_TEST",
@@ -304,7 +309,6 @@ def example_dtn_my_hospital_vs_country_average() -> Tuple[str, str]:
     mine = OriginScopeSpec(scopeType="mine", label="My hospital")
     country = OriginScopeSpec(scopeType="country_average", countryCode="IT", label="Italy national average")
     plan = AnalysisPlan(
-        schemaVersion=2,
         charts=[
             HistogramChartSpec(
                 chartType="HISTOGRAM",
@@ -334,7 +338,6 @@ def example_dtn_my_hospital_vs_provider_group_name() -> Tuple[str, str]:
     mine = OriginScopeSpec(scopeType="mine", label="My hospital")
     group = OriginScopeSpec(scopeType="provider_group_name", value="Nordic Stroke Network", label="Nordic Stroke Network")
     plan = AnalysisPlan(
-        schemaVersion=2,
         charts=[
             HistogramChartSpec(
                 chartType="HISTOGRAM",
@@ -357,7 +360,6 @@ def example_dtn_my_hospital_vs_provider_group_name() -> Tuple[str, str]:
 def example_mw_my_hospital_vs_national() -> Tuple[str, str]:
     detected = {"metric": ["DTN"], "scope": ["mine", "country_average"], "statistical_test_type": ["MANN_WHITNEY_U_TEST"]}
     plan = AnalysisPlan(
-        schemaVersion=2,
         statisticalTests=[
             StatisticalTestSpec(
                 test_type="MANN_WHITNEY_U_TEST",
@@ -375,7 +377,6 @@ def example_mw_my_hospital_vs_national() -> Tuple[str, str]:
 def example_dtn_year_filter() -> Tuple[str, str]:
     detected = {"metric": ["DTN"], "chart_type": ["HISTOGRAM"], "date": ["2026"]}
     plan = AnalysisPlan(
-        schemaVersion=2,
         charts=[
             HistogramChartSpec(
                 chartType="HISTOGRAM",
@@ -403,7 +404,6 @@ def example_mw_hospital_vs_hospital() -> Tuple[str, str]:
         "statistical_test_type": ["MANN_WHITNEY_U_TEST"],
     }
     plan = AnalysisPlan(
-        schemaVersion=2,
         statisticalTests=[
             StatisticalTestSpec(
                 test_type="MANN_WHITNEY_U_TEST",
@@ -430,6 +430,7 @@ def get_few_shot_examples() -> List[Dict[str, str]]:
         example_dtn_last_6_months_by_sex(),
         example_dtn_line_chart_no_grouping(),
         example_dtn_bar_chart_no_grouping(),
+        example_dtn_metric_only_default(),
         example_dtn_over_time(),
         example_dtn_monthly_trend(),
         example_dtn_distribution_by_month(),

@@ -366,7 +366,6 @@ def build_guided_plan(slots: Dict[str, Any], user_sub: str, trace_id: Optional[s
             metric_origin_scope = None
 
     return S.AnalysisPlan(
-        schemaVersion=2,
         charts=[
             S.HistogramChartSpec(
                 chartType="HISTOGRAM",

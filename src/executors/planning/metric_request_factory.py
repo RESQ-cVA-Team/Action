@@ -72,21 +72,6 @@ def _build_line_series_request(
             upper=int(max_value),
         )
 
-    if (
-        isinstance(x_axis, S.CategoryXAxis)
-        and isinstance(x_axis.group_by, (S.GroupBySex, S.GroupByStrokeType))
-        and isinstance(y_axis, S.MetricValueAxis)
-        and _metric_is_numeric(metric_code)
-    ):
-        bins, min_value, max_value = derive_defaults_fn(metric_code)
-        if derived_axes_slot[0] is None:
-            derived_axes_slot[0] = axis_from_meta_fn(metric_code, int(min_value), int(max_value))
-        return MetricRequest(metricType=MetricType(metric_code)).with_distribution(
-            bin_count=int(bins),
-            lower=int(min_value),
-            upper=int(max_value),
-        )
-
     return MetricRequest(metricType=MetricType(metric_code)).with_stats()
 
 
