@@ -42,6 +42,9 @@ _DEFER_CALLBACK_HANDOFF = env_util.env_flag(
 _SHOW_NORMALIZATION_SUMMARY = env_util.env_flag(
     "ACTIONS_SHOW_NORMALIZATION_SUMMARY", default=True
 )
+_SHOW_NEXT_METRIC_FOLLOWUP_ON_FAILURE = env_util.env_flag(
+    "ACTIONS_SHOW_NEXT_METRIC_FOLLOWUP_ON_FAILURE", default=False
+)
 _VISUALIZATION_CONTINUATION_INTENTS = {
     "generate_visualization",
     "update_visualization",
@@ -152,8 +155,13 @@ def _emit_next_metric_followup(
 
     next_label = ssot_loader.get_metric_display_name(next_metric)
 
-    payload = f'/update_visualization{{"metric":"{next_metric}","kpi":"{next_metric}"}}'
-
+    # payload = f'/update_visualization{{"metric":"{next_metric}","kpi":"{next_metric}"}}'
+    # payload = f"Update visualization with to use {next_metric} as the KPI"
+    payload = translate(
+        "action.visualization.next_metric_payload",
+        language=language,
+        params={"metric": next_metric},
+    )
     ctx.say(
         text=translate(
             "action.visualization.next_metric_suggestion",
@@ -161,14 +169,23 @@ def _emit_next_metric_followup(
             params={"metric": next_label},
         ),
         buttons=[
-            {
+            {  # New KPI, Same Filters
                 "title": translate(
                     "action.visualization.next_metric_button",
                     language=language,
                     params={"metric": next_label},
                 ),
                 "payload": payload,
-            }
+            },
+            {  # New KPI, Clear Filters
+                "title": translate(
+                    "action.visualization.next_metric_button",
+                    language=language,
+                    params={"metric": next_label},
+                )
+                + " (clear filters)",
+                "payload": payload + " with no filters",
+            },
         ],
     )
 
@@ -1052,6 +1069,7 @@ class ActionOneShotGenerateVisualization(LongAction):
         completed_successfully = False
         execution_summary: Optional[Any] = None
         planner_diagnostics: Optional[Dict[str, Any]] = None
+        plan_obj: Optional[lang_schema.AnalysisPlan] = None
         trace_id = _ensure_context_trace_id(ctx)
         language = resolve_language(metadata=ctx.metadata, slots=ctx.slots)
         with log_context(trace_id=trace_id, action=self.name()):
@@ -1082,7 +1100,6 @@ class ActionOneShotGenerateVisualization(LongAction):
                 if _DEFER_CALLBACK_HANDOFF and not ctx.callback_mode_enabled:
                     ctx.enable_callback_mode()
 
-                plan_obj: lang_schema.AnalysisPlan
                 prepared_any = ctx.tracker_snapshot.pop(
                     _INTERNAL_PREPARED_PLAN_KEY, None
                 )
@@ -1228,6 +1245,10 @@ class ActionOneShotGenerateVisualization(LongAction):
                             params={"error": str(e)},
                         )
                     )
+                if _SHOW_NEXT_METRIC_FOLLOWUP_ON_FAILURE and plan_obj is not None:
+                    _emit_next_metric_followup(
+                        ctx=ctx, plan_obj=plan_obj, language=language
+                    )
             finally:
                 if completed_successfully:
                     if _SHOW_EXECUTION_SUMMARY and execution_summary is not None:
@@ -1246,6 +1267,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                                 language=language,
                             )
                         )
+                    if plan_obj is not None:
                         _emit_next_metric_followup(
                             ctx=ctx, plan_obj=plan_obj, language=language
                         )
