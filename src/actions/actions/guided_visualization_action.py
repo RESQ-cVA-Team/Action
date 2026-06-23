@@ -20,7 +20,11 @@ from src.actions.guided_visualization_validation import (
     validate_optional_catalog_slot,
     validate_required_metric,
 )
-from src.actions.helpers.visualization import format_execution_summary, serialize_plan_for_frontend
+from src.actions.helpers.visualization import (
+    format_execution_summary,
+    pretty_print_graphql_query,
+    serialize_plan_for_frontend,
+)
 from src.actions.i18n import resolve_language_from_tracker, translate
 from src.executors import execute_plan_async
 from src.util import env as env_util
@@ -118,6 +122,24 @@ class ActionGuidedGenerateVisualization(Action):  # pyright: ignore
                     nonlocal execution_summary
                     execution_summary = summary
 
+                def on_graphql_query(payload: Dict[str, Any]) -> None:
+                    query_text_any = payload.get("query")
+                    if not isinstance(query_text_any, str) or not query_text_any.strip():
+                        return
+                    query_pretty = pretty_print_graphql_query(query_text_any)
+
+                    dispatcher.utter_message(
+                        json_message={
+                            "type": "visualization_graphql_query",
+                            "trace_id": trace_id,
+                            "request_label": payload.get("request_label"),
+                            "group_by_field": payload.get("group_by_field"),
+                            "query_hash": payload.get("query_hash"),
+                            "query": query_pretty,
+                        }
+                    )
+                    dispatcher.utter_message(text=(f"[dev] GraphQL query\nhash={payload.get('query_hash') or '-'}\n{query_pretty}"))
+
                 plan_obj = build_guided_plan(slots=slots, user_sub=user_sub, trace_id=trace_id)
                 dispatcher.utter_message(
                     json_message={
@@ -134,6 +156,7 @@ class ActionGuidedGenerateVisualization(Action):  # pyright: ignore
                     progress_cb=None,
                     summary_cb=on_summary,
                     trace_id=trace_id,
+                    query_cb=on_graphql_query,
                 )
                 visualization_payload = visualization.model_dump(mode="json")
                 dispatcher.utter_message(json_message=visualization_payload)
