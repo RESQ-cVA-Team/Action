@@ -79,10 +79,64 @@ def normalize_entities(entities: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def pretty_print_graphql_query(query: str) -> str:
+    """Format a compact GraphQL query into a readable, indented multiline string."""
+    compact = " ".join((query or "").split())
+    if not compact:
+        return ""
+
+    lines: List[str] = []
+    token: List[str] = []
+    indent = 0
+    in_string = False
+    escaped = False
+
+    def _flush_current() -> None:
+        text = "".join(token).strip()
+        token.clear()
+        if text:
+            lines.append(f"{'  ' * indent}{text}")
+
+    for ch in compact:
+        if ch == '"' and not escaped:
+            in_string = not in_string
+
+        if in_string:
+            token.append(ch)
+            escaped = ch == "\\" and not escaped
+            continue
+
+        escaped = False
+
+        if ch == "{":
+            head = "".join(token).strip()
+            token.clear()
+            if head:
+                lines.append(f"{'  ' * indent}{head} {{")
+            else:
+                lines.append(f"{'  ' * indent}{{")
+            indent += 1
+            continue
+
+        if ch == "}":
+            _flush_current()
+            indent = max(0, indent - 1)
+            lines.append(f"{'  ' * indent}}}")
+            continue
+
+        if ch.isspace():
+            if token and token[-1] != " ":
+                token.append(" ")
+            continue
+
+        token.append(ch)
+
+    _flush_current()
+    return "\n".join(lines)
+
+
 # _ENABLE_QUERY_GUARD = env_util.env_flag("ACTIONS_ENABLE_QUERY_GUARD", default=True)
-_QUERY_GUARD_TIMEOUT_SECONDS_RAW = (
-    env_util.get_env("ACTIONS_QUERY_GUARD_TIMEOUT_SECONDS", default="8") or "8"
-)
+_QUERY_GUARD_TIMEOUT_SECONDS_RAW = env_util.get_env("ACTIONS_QUERY_GUARD_TIMEOUT_SECONDS", default="8") or "8"
 try:
     _query_guard_timeout_seconds = max(1.0, float(_QUERY_GUARD_TIMEOUT_SECONDS_RAW))
 except Exception:
@@ -103,9 +157,7 @@ except Exception:
 
 _QUERY_GUARD_TIMEOUT_SECONDS = _query_guard_timeout_seconds
 
-_QUERY_GUARD_TEMPERATURE_RAW = (
-    env_util.get_env("ACTIONS_QUERY_GUARD_TEMPERATURE", default="0") or "0"
-)
+_QUERY_GUARD_TEMPERATURE_RAW = env_util.get_env("ACTIONS_QUERY_GUARD_TEMPERATURE", default="0") or "0"
 try:
     _query_guard_temperature = float(_QUERY_GUARD_TEMPERATURE_RAW)
 except Exception:
@@ -126,9 +178,7 @@ except Exception:
 
 _QUERY_GUARD_TEMPERATURE = _query_guard_temperature
 
-_QUERY_GUARD_FAIL_OPEN = env_util.env_flag(
-    "ACTIONS_QUERY_GUARD_FAIL_OPEN", default=False
-)
+_QUERY_GUARD_FAIL_OPEN = env_util.env_flag("ACTIONS_QUERY_GUARD_FAIL_OPEN", default=False)
 
 # _QUERY_GUARD_PROMPT = ChatPromptTemplate.from_messages(  # type: ignore
 #     [
@@ -244,9 +294,7 @@ def _extract_text(response: Any) -> str:
 
 def _extract_json_object(text: str) -> Dict[str, Any]:
     candidate = text.strip()
-    fenced = re.match(
-        r"^```(?:json)?\s*(.*?)\s*```$", candidate, flags=re.DOTALL | re.IGNORECASE
-    )
+    fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", candidate, flags=re.DOTALL | re.IGNORECASE)
     if fenced:
         candidate = fenced.group(1).strip()
 
@@ -470,9 +518,7 @@ def extract_entities_from_latest_message(
     return extracted
 
 
-def resolve_override_language(
-    metadata: Dict[str, Any], slots: Dict[str, Any]
-) -> Optional[str]:
+def resolve_override_language(metadata: Dict[str, Any], slots: Dict[str, Any]) -> Optional[str]:
     override_language: Any = None
     lang_meta = metadata.get("language")
     if isinstance(lang_meta, str) and lang_meta.strip():
@@ -507,9 +553,7 @@ def _strip_text_fields(value: Any) -> Any:
 def serialize_plan_for_frontend(plan: Any) -> Dict[str, Any]:
     """Serialize planner output for frontend consumption without mutating it."""
 
-    payload = _maybe_model_dump_dict(
-        plan, mode="json", by_alias=True, exclude_none=True
-    )
+    payload = _maybe_model_dump_dict(plan, mode="json", by_alias=True, exclude_none=True)
     if payload is not None:
         payload_any: object = payload
     elif isinstance(plan, dict):
@@ -522,9 +566,7 @@ def serialize_plan_for_frontend(plan: Any) -> Dict[str, Any]:
         return {}
 
     sanitized_any = _strip_text_fields(payload_dict)
-    return (
-        cast(Dict[str, Any], sanitized_any) if isinstance(sanitized_any, dict) else {}
-    )
+    return cast(Dict[str, Any], sanitized_any) if isinstance(sanitized_any, dict) else {}
 
 
 def format_execution_summary(
@@ -548,13 +590,9 @@ def format_execution_summary(
     trace_id = summary_dict.get("trace_id")
     normalization = _mapping_to_dict(summary_dict.get("normalization")) or None
     batches_any = summary_dict.get("batches")
-    batches: List[Any] = (
-        cast(List[Any], batches_any) if isinstance(batches_any, list) else []
-    )
+    batches: List[Any] = cast(List[Any], batches_any) if isinstance(batches_any, list) else []
 
-    lines: List[str] = [
-        t("action.summary.complete", "✅ Visualization generation complete.")
-    ]
+    lines: List[str] = [t("action.summary.complete", "✅ Visualization generation complete.")]
 
     if isinstance(trace_id, str) and trace_id.strip():
         lines.append(
@@ -567,9 +605,7 @@ def format_execution_summary(
 
     if isinstance(chart_count, int):
         if chart_count == 1:
-            lines.append(
-                t("action.summary.plan_produced_one_chart", "Plan produced 1 chart.")
-            )
+            lines.append(t("action.summary.plan_produced_one_chart", "Plan produced 1 chart."))
         else:
             lines.append(
                 t(
@@ -655,9 +691,7 @@ def format_execution_summary(
         metric_code_norm = normalization.get("normalized_metric_codes")
         chart_type_norm = normalization.get("normalized_chart_types")
         deduped_groupby = normalization.get("deduped_groupby_entries")
-        normalized_groupby_fields = normalization.get(
-            "normalized_canonical_groupby_fields"
-        )
+        normalized_groupby_fields = normalization.get("normalized_canonical_groupby_fields")
         dropped_groupby_fields = normalization.get("dropped_invalid_groupby_fields")
         chart_type_fallback = normalization.get("fallback_chart_type_count")
         normalized_text = normalization.get("normalized_text_fields")
@@ -682,11 +716,7 @@ def format_execution_summary(
                         {"dropped_charts": dropped_charts},
                     )
                 )
-            if (
-                isinstance(metrics_in, int)
-                and isinstance(metrics_out, int)
-                and metrics_in != metrics_out
-            ):
+            if isinstance(metrics_in, int) and isinstance(metrics_out, int) and metrics_in != metrics_out:
                 details.append(
                     t(
                         "action.summary.detail_metrics_transition",
@@ -734,10 +764,7 @@ def format_execution_summary(
                         {"deduped_groupby": deduped_groupby},
                     )
                 )
-            if (
-                isinstance(normalized_groupby_fields, int)
-                and normalized_groupby_fields > 0
-            ):
+            if isinstance(normalized_groupby_fields, int) and normalized_groupby_fields > 0:
                 details.append(
                     t(
                         "action.summary.detail_normalized_groupby_fields",
@@ -785,9 +812,7 @@ def format_execution_summary(
             groupby = batch.get("server_groupby")
             periods = batch.get("batched_time_period_count")
             filters_any = batch.get("filter_dimensions")
-            filters_list: List[Any] = (
-                cast(List[Any], filters_any) if isinstance(filters_any, list) else []
-            )
+            filters_list: List[Any] = cast(List[Any], filters_any) if isinstance(filters_any, list) else []
             filter_names = [str(x).replace("GroupBy", "").strip() for x in filters_list]
 
             parts: List[str] = [f"{idx})"]

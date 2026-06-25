@@ -12,6 +12,7 @@ from src.actions.helpers.visualization import (
     extract_entities_from_latest_message,
     format_execution_summary,
     normalize_entities,
+    pretty_print_graphql_query,
     resolve_override_language,
     serialize_plan_for_frontend,
 )
@@ -56,6 +57,7 @@ _VISUALIZATION_THREAD_INTENTS = {
     "clarify_visualization",
 }
 _VISUALIZATION_PLAN_TYPE = "visualization_plan"
+_VISUALIZATION_GRAPHQL_QUERY_TYPE = "visualization_graphql_query"
 _VISUALIZATION_RESPONSE_SCHEMA_VERSION = 1
 
 _PLANNER_MAX_RETRIES = 2
@@ -134,6 +136,60 @@ def _extract_intent_name_from_user_event(event: Dict[str, Any]) -> str:
         return metadata_intent_any.strip()
 
     return ""
+
+
+def _emit_next_metric_followup(
+    ctx: LongActionContext,
+    plan_obj: lang_schema.AnalysisPlan,
+    language: str,
+) -> None:
+    if not plan_obj.charts:
+        return
+    chart = plan_obj.charts[0]
+    if not chart.metrics:
+        return
+    current_metric = (chart.metrics[0].metric or "").strip()
+    if not current_metric:
+        return
+    next_metric = resolve_next_metric_candidate(current_metric)
+    if not next_metric:
+        return
+
+    next_label = ssot_loader.get_metric_display_name(next_metric)
+
+    # payload = f'/update_visualization{{"metric":"{next_metric}","kpi":"{next_metric}"}}'
+    # payload = f"Update visualization with to use {next_metric} as the KPI"
+    payload = translate(
+        "action.visualization.next_metric_payload",
+        language=language,
+        params={"metric": next_metric},
+    )
+    ctx.say(
+        text=translate(
+            "action.visualization.next_metric_suggestion",
+            language=language,
+            params={"metric": next_label},
+        ),
+        buttons=[
+            {  # New KPI, Same Filters
+                "title": translate(
+                    "action.visualization.next_metric_button",
+                    language=language,
+                    params={"metric": next_label},
+                ),
+                "payload": payload,
+            },
+            {  # New KPI, Clear Filters
+                "title": translate(
+                    "action.visualization.next_metric_button",
+                    language=language,
+                    params={"metric": next_label},
+                )
+                + " (clear filters)",
+                "payload": payload + " with no filters",
+            },
+        ],
+    )
 
 
 def _emit_next_metric_followup(
@@ -1094,12 +1150,38 @@ class ActionOneShotGenerateVisualization(LongAction):
                     nonlocal execution_summary
                     execution_summary = summary
 
+                def on_graphql_query(payload: Dict[str, Any]) -> None:
+                    query_text_any = payload.get("query")
+                    if (
+                        not isinstance(query_text_any, str)
+                        or not query_text_any.strip()
+                    ):
+                        return
+                    query_pretty = pretty_print_graphql_query(query_text_any)
+
+                    ctx.say(
+                        json_message={
+                            "type": _VISUALIZATION_GRAPHQL_QUERY_TYPE,
+                            "trace_id": trace_id,
+                            "request_label": payload.get("request_label"),
+                            "group_by_field": payload.get("group_by_field"),
+                            "query_hash": payload.get("query_hash"),
+                            "query": query_pretty,
+                        }
+                    )
+                    ctx.say(
+                        text=(
+                            f"[dev] GraphQL query\nhash={payload.get('query_hash') or '-'}\n{query_pretty}"
+                        )
+                    )
+
                 # In deferred-handoff mode, initial routing/clarification can use
                 # normal dispatcher delivery and heavy generation streams via
                 # callback after this explicit handoff.
                 if _DEFER_CALLBACK_HANDOFF and not ctx.callback_mode_enabled:
                     ctx.enable_callback_mode()
 
+                plan_obj: lang_schema.AnalysisPlan
                 prepared_any = ctx.tracker_snapshot.pop(
                     _INTERNAL_PREPARED_PLAN_KEY, None
                 )
@@ -1162,6 +1244,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                     progress_cb=progress,
                     summary_cb=on_summary,
                     trace_id=trace_id,
+                    query_cb=on_graphql_query,
                 )
                 visualization_payload = visualization.model_dump(mode="json")
                 ctx.say(json_message=visualization_payload)
@@ -1186,9 +1269,8 @@ class ActionOneShotGenerateVisualization(LongAction):
                 )
                 ctx.say(text=confirmation)
             except Exception as e:
-                if (
-                    isinstance(e, VisualizationExecutionError)
-                    and e.reason == "origin_scope_resolution"
+                if isinstance(e, VisualizationExecutionError) and (
+                    e.reason == "origin_scope_resolution" or e.clarification_type
                 ):
                     ctx.say(
                         json_message={

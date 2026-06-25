@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Callable, Dict, List, Optional, cast
 
 from src.domain.dto.charts.types import ChartSeries
 from src.domain.graphql.request import GraphQLQueryRequest
@@ -12,6 +12,8 @@ from src.executors.mapping.series_mapper import map_metrics_payload_to_series
 from src.util.logging_utils import log_context
 
 logger = logging.getLogger(__name__)
+
+GraphQLQueryCallback = Callable[[Dict[str, Any]], None]
 
 
 def _runner_log_context(
@@ -53,11 +55,10 @@ async def run_graphql_request(
     request_warnings: Optional[List[str]] = None,
     log_graphql_query: bool = False,
     batched_time_periods: Optional[List[Any]] = None,
+    query_cb: Optional[GraphQLQueryCallback] = None,
 ) -> List[ChartSeries]:
     trace_label = trace_id
-    request_label = (
-        scope_label or " | ".join([part for part in label_parts if part]) or "(none)"
-    )
+    request_label = scope_label or " | ".join([part for part in label_parts if part]) or "(none)"
     async with semaphore:
         query_str = req.to_graphql_string()
         q_hash = hashlib.sha256(query_str.encode("utf-8")).hexdigest()[:12]
@@ -67,6 +68,30 @@ async def run_graphql_request(
             graphql_hash=q_hash,
             request_label=request_label,
         ):
+            if query_cb is not None:
+                try:
+                    query_cb(
+                        {
+                            "trace_id": trace_id,
+                            "request_label": request_label,
+                            "group_by_field": group_by_field,
+                            "query_hash": q_hash,
+                            "query": query_str,
+                        }
+                    )
+                except Exception:
+                    logger.debug(
+                        "[plan_executor] Failed to emit GraphQL query callback",
+                        exc_info=True,
+                        extra=_runner_log_context(
+                            event="request_runner.graphql_query_callback_failed",
+                            outcome="degraded",
+                            request_label=request_label,
+                            query_hash=q_hash,
+                            group_by_field=group_by_field,
+                        ),
+                    )
+
             if log_graphql_query:
                 logger.info("[plan_executor] GraphQL query for chart:\n%s", query_str)
             else:
@@ -254,18 +279,12 @@ async def run_graphql_request(
             if skipped_rows > 0 or getattr(resp, "errors", None):
                 detail_bits: List[str] = []
                 if skipped_rows > 0:
-                    detail_bits.append(
-                        f"{skipped_rows}/{total_rows} row(s) were omitted"
-                    )
+                    detail_bits.append(f"{skipped_rows}/{total_rows} row(s) were omitted")
                 if getattr(resp, "errors", None):
                     detail_bits.append("the backend returned validation errors")
-                _append_warning(
-                    f"Partial data returned for {request_label}; {' and '.join(detail_bits)}."
-                )
+                _append_warning(f"Partial data returned for {request_label}; {' and '.join(detail_bits)}.")
             else:
-                _append_warning(
-                    f"No usable data was returned for {request_label}; 0/{total_rows} row(s) had valid data."
-                )
+                _append_warning(f"No usable data was returned for {request_label}; 0/{total_rows} row(s) had valid data.")
 
         logger.warning(
             "[plan_executor] Metrics payload mapped to zero series (groupBy=%s, labels=%s, hash=%s, metrics=%s, kpi_groups=%s)",
@@ -296,9 +315,7 @@ async def run_graphql_request(
         if has_graphql_errors:
             warning_bits.append("the backend returned validation errors")
 
-        warning_text = (
-            f"Partial data returned for {request_label}; {' and '.join(warning_bits)}."
-        )
+        warning_text = f"Partial data returned for {request_label}; {' and '.join(warning_bits)}."
         _append_warning(warning_text)
 
     return series

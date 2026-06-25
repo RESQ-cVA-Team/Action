@@ -57,7 +57,7 @@ def build_metric_requests(
     metric_data_origins: List[Optional[DataOrigin]] = []
     metric_scope_labels: List[Optional[str]] = []
     derived_axes: Optional[tuple[ChartAxis, ChartAxis]] = None
-    has_grouping = bool(plan_chart.group_by)
+    chart_type_upper = (plan_chart.chart_type or "").upper()
 
     for metric in plan_chart.metrics:
         metric_data_origin: Optional[DataOrigin] = None
@@ -65,23 +65,29 @@ def build_metric_requests(
             metric_data_origin = DataOrigin.model_validate(metric.data_origin.model_dump(by_alias=True, exclude_none=True))
         metric_scope_label = _metric_scope_label(metric)
 
-        if has_grouping:
-            metric_requests.append(MetricRequest(metricType=MetricType(metric.metric)).with_stats())
-            metric_data_origins.append(metric_data_origin)
-            metric_scope_labels.append(metric_scope_label)
-            continue
-
         distribution = metric.distribution
         if distribution is None:
-            bins, rmin, rmax = derive_defaults_fn(metric.metric)
-            distribution = DistributionSpec(num_buckets=bins, min_value=rmin, max_value=rmax)
-            if len(plan_chart.metrics) == 1:
-                derived_axes = axis_from_meta_fn(metric.metric, rmin, rmax)
+            default_bins, default_min, default_max = derive_defaults_fn(metric.metric)
+            distribution = DistributionSpec(
+                num_buckets=default_bins,
+                min_value=default_min,
+                max_value=default_max,
+            )
 
-        # For non-grouped charts, summary stats are usually enough for series mapping.
-        # Avoid requesting full distributions by default since they are significantly
-        # heavier on upstream analytics and can trigger timeouts.
-        metric_requests.append(MetricRequest(metricType=MetricType(metric.metric)).with_stats())
+        metric_request = (
+            MetricRequest(metricType=MetricType(metric.metric))
+            .with_stats()
+            .with_distribution(
+                bin_count=distribution.num_buckets,
+                lower=distribution.min_value,
+                upper=distribution.max_value,
+            )
+        )
+
+        if chart_type_upper == "HISTOGRAM" and len(plan_chart.metrics) == 1:
+            derived_axes = axis_from_meta_fn(metric.metric, distribution.min_value, distribution.max_value)
+
+        metric_requests.append(metric_request)
         metric_data_origins.append(metric_data_origin)
         metric_scope_labels.append(metric_scope_label)
 
