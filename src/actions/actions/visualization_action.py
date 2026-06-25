@@ -34,15 +34,9 @@ logger = logging.getLogger(__name__)
 
 _LOG_USER_TEXT = env_util.env_flag("ACTIONS_LOG_USER_TEXT", default=False)
 _ECHO_INTERNAL_ERRORS = env_util.env_flag("ACTIONS_ECHO_INTERNAL_ERRORS", default=False)
-_SHOW_EXECUTION_SUMMARY = env_util.env_flag(
-    "ACTIONS_SHOW_EXECUTION_SUMMARY", default=True
-)
-_DEFER_CALLBACK_HANDOFF = env_util.env_flag(
-    "LONG_ACTION_DEFER_CALLBACK_HANDOFF", default=False
-)
-_SHOW_NORMALIZATION_SUMMARY = env_util.env_flag(
-    "ACTIONS_SHOW_NORMALIZATION_SUMMARY", default=True
-)
+_SHOW_EXECUTION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_EXECUTION_SUMMARY", default=True)
+_DEFER_CALLBACK_HANDOFF = env_util.env_flag("LONG_ACTION_DEFER_CALLBACK_HANDOFF", default=False)
+_SHOW_NORMALIZATION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_NORMALIZATION_SUMMARY", default=True)
 _VISUALIZATION_CONTINUATION_INTENTS = {
     "generate_visualization",
     "update_visualization",
@@ -104,9 +98,7 @@ class TrackerLike(Protocol):
 
 def _extract_intent_name_from_user_event(event: Dict[str, Any]) -> str:
     parse_data_any = event.get("parse_data")
-    parse_data = (
-        cast(Dict[str, Any], parse_data_any) if isinstance(parse_data_any, dict) else {}
-    )
+    parse_data = cast(Dict[str, Any], parse_data_any) if isinstance(parse_data_any, dict) else {}
 
     intent_any = parse_data.get("intent")
     intent = cast(Dict[str, Any], intent_any) if isinstance(intent_any, dict) else {}
@@ -115,19 +107,13 @@ def _extract_intent_name_from_user_event(event: Dict[str, Any]) -> str:
         return name_any.strip()
 
     fallback_intent_any = event.get("intent")
-    fallback_intent = (
-        cast(Dict[str, Any], fallback_intent_any)
-        if isinstance(fallback_intent_any, dict)
-        else {}
-    )
+    fallback_intent = cast(Dict[str, Any], fallback_intent_any) if isinstance(fallback_intent_any, dict) else {}
     fallback_name_any = fallback_intent.get("name")
     if isinstance(fallback_name_any, str) and fallback_name_any.strip():
         return fallback_name_any.strip()
 
     metadata_any = event.get("metadata")
-    metadata = (
-        cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
-    )
+    metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
     metadata_intent_any = metadata.get("intentName")
     if isinstance(metadata_intent_any, str) and metadata_intent_any.strip():
         return metadata_intent_any.strip()
@@ -189,9 +175,7 @@ def _emit_next_metric_followup(
     )
 
 
-def _collect_visualization_thread_messages(
-    events: List[Dict[str, Any]], fallback_limit: int = 12
-) -> List[str]:
+def _collect_visualization_thread_messages(events: List[Dict[str, Any]], fallback_limit: int = 12) -> List[str]:
     user_messages: List[str] = []
     rejected_indices: set[int] = set()
     thread_start = 0
@@ -208,12 +192,7 @@ def _collect_visualization_thread_messages(
 
         elif ev.get("event") == "bot":
             payload = _extract_bot_custom_payload(ev)
-            if (
-                payload
-                and payload.get("type") == "visualization_query_decision"
-                and payload.get("decision") == "reject"
-                and last_user_index is not None
-            ):
+            if payload and payload.get("type") == "visualization_query_decision" and payload.get("decision") == "reject" and last_user_index is not None:
                 rejected_indices.add(last_user_index)
 
         elif ev.get("event") == "action":
@@ -225,11 +204,7 @@ def _collect_visualization_thread_messages(
 
     sliced = user_messages[thread_start:][-fallback_limit:]
     sliced_global_start = max(thread_start, user_count - fallback_limit)
-    return [
-        msg
-        for i, msg in enumerate(sliced)
-        if (sliced_global_start + i) not in rejected_indices
-    ]
+    return [msg for i, msg in enumerate(sliced) if (sliced_global_start + i) not in rejected_indices]
 
 
 def _merge_entities(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
@@ -257,9 +232,7 @@ def _merge_entities(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str,
 
 def _extract_entities_from_user_event(event: Dict[str, Any]) -> Dict[str, Any]:
     parse_data_any = event.get("parse_data")
-    parse_data = (
-        cast(Dict[str, Any], parse_data_any) if isinstance(parse_data_any, dict) else {}
-    )
+    parse_data = cast(Dict[str, Any], parse_data_any) if isinstance(parse_data_any, dict) else {}
 
     parse_entities_any = parse_data.get("entities")
     event_entities_any = event.get("entities")
@@ -295,9 +268,7 @@ def _extract_entities_from_user_event(event: Dict[str, Any]) -> Dict[str, Any]:
     return extracted
 
 
-def _collect_visualization_thread_entities(
-    events: List[Dict[str, Any]], fallback_limit: int = 12
-) -> Dict[str, Any]:
+def _collect_visualization_thread_entities(events: List[Dict[str, Any]], fallback_limit: int = 12) -> Dict[str, Any]:
     user_events: List[Dict[str, Any]] = []
     for ev in events:
         if ev.get("event") != "user":
@@ -368,26 +339,19 @@ def _extract_bot_custom_payload(event: Dict[str, Any]) -> Optional[Dict[str, Any
 
 def _is_visualization_payload(payload: Dict[str, Any]) -> bool:
     payload_type_any = payload.get("type")
-    if (
-        isinstance(payload_type_any, str)
-        and payload_type_any.strip() == _VISUALIZATION_PLAN_TYPE
-    ):
+    if isinstance(payload_type_any, str) and payload_type_any.strip() == _VISUALIZATION_PLAN_TYPE:
         return True
 
     schema_version_any = payload.get("schema_version")
     charts_any = payload.get("charts")
-    return schema_version_any == _VISUALIZATION_RESPONSE_SCHEMA_VERSION and isinstance(
-        charts_any, list
-    )
+    return schema_version_any == _VISUALIZATION_RESPONSE_SCHEMA_VERSION and isinstance(charts_any, list)
 
 
 def _event_has_visualization_signal(event: Dict[str, Any]) -> bool:
     event_name_any = event.get("event")
     event_name = event_name_any.strip() if isinstance(event_name_any, str) else ""
     if event_name == "user":
-        return (
-            _extract_intent_name_from_user_event(event) in _VISUALIZATION_THREAD_INTENTS
-        )
+        return _extract_intent_name_from_user_event(event) in _VISUALIZATION_THREAD_INTENTS
 
     if event_name == "bot":
         payload = _extract_bot_custom_payload(event)
@@ -445,9 +409,7 @@ def _collect_latest_visualization_plan_summary(
             continue
 
         payload_type_any = payload.get("type")
-        payload_type = (
-            payload_type_any.strip() if isinstance(payload_type_any, str) else ""
-        )
+        payload_type = payload_type_any.strip() if isinstance(payload_type_any, str) else ""
         if payload_type != _VISUALIZATION_PLAN_TYPE:
             continue
 
@@ -481,22 +443,16 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
         user_message = user_message_any if isinstance(user_message_any, str) else ""
 
         metadata_any = latest_msg.get("metadata")
-        metadata = (
-            cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
-        )
+        metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
         trace_id = _trace_id_from_metadata(metadata) or trace_id
         slots_any = tracker.current_state().get("slots", {})
         slots = cast(Dict[str, Any], slots_any) if isinstance(slots_any, dict) else {}
 
-        with log_context(
-            trace_id=trace_id, sender_id=str(tracker.sender_id), action=self.name()
-        ):
+        with log_context(trace_id=trace_id, sender_id=str(tracker.sender_id), action=self.name()):
             try:
                 logger.info("Starting visualization clarification routing")
                 override_language = resolve_override_language(metadata, slots)
-                language = resolve_language(
-                    metadata=metadata, slots=slots, tracker=tracker
-                )
+                language = resolve_language(metadata=metadata, slots=slots, tracker=tracker)
 
                 events = tracker.events
                 extracted_entities = normalize_entities(
@@ -508,21 +464,14 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                 )
                 conversation_history = _collect_visualization_thread_messages(events, fallback_limit=fallback_limit)
 
-                planner_question = (
-                    "\n".join([m for m in conversation_history if m.strip()]).strip()
-                    or user_message
-                )
+                planner_question = "\n".join([m for m in conversation_history if m.strip()]).strip() or user_message
 
                 intent_name = _extract_intent_name_from_user_event(latest_msg)
                 is_update = intent_name == "update_visualization"
                 if is_update:
-                    latest_plan_summary = _collect_latest_visualization_plan_summary(
-                        events
-                    )
+                    latest_plan_summary = _collect_latest_visualization_plan_summary(events)
                     if latest_plan_summary:
-                        planner_question = (
-                            f"{latest_plan_summary}\n\nConversation context (oldest to newest user turns):\n{planner_question}"
-                        ).strip()
+                        planner_question = (f"{latest_plan_summary}\n\nConversation context (oldest to newest user turns):\n{planner_question}").strip()
 
                 outcome = orchestrate_visualization_request(
                     question=planner_question,
@@ -549,24 +498,14 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                 )
 
                 if outcome.decision == "clarify":
-                    dispatcher.utter_message(
-                        text=outcome.message
-                        or translate(
-                            "action.visualization.clarify_default", language=language
-                        )
-                    )
+                    dispatcher.utter_message(text=outcome.message or translate("action.visualization.clarify_default", language=language))
                     return [
                         SlotSet("awaiting_visualization_clarification", True),
                         SlotSet("guided_offer_shown", True),
                     ]
 
                 if outcome.decision == "reject":
-                    dispatcher.utter_message(
-                        text=outcome.message
-                        or translate(
-                            "action.visualization.reject_default", language=language
-                        )
-                    )
+                    dispatcher.utter_message(text=outcome.message or translate("action.visualization.reject_default", language=language))
                     return [SlotSet("awaiting_visualization_clarification", False)]
 
                 return [
@@ -584,12 +523,8 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                         outcome="failure",
                     ),
                 )
-                language = resolve_language(
-                    metadata=metadata, slots=slots, tracker=tracker
-                )
-                payload = visualization_error_payload(
-                    e, trace_id=trace_id, language=language
-                )
+                language = resolve_language(metadata=metadata, slots=slots, tracker=tracker)
+                payload = visualization_error_payload(e, trace_id=trace_id, language=language)
                 dispatcher.utter_message(
                     json_message={
                         "type": "visualization_error",
@@ -625,12 +560,8 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
 def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
     latest_meta = ctx.metadata
     latest_any = ctx.tracker_snapshot.get("latest_message")
-    latest_msg = (
-        cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
-    )
-    extracted_entities = normalize_entities(
-        extract_entities_from_latest_message(latest_msg)
-    )
+    latest_msg = cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
+    extracted_entities = normalize_entities(extract_entities_from_latest_message(latest_msg))
     override_language = resolve_override_language(latest_meta, ctx.slots)
     language = resolve_language(metadata=latest_meta, slots=ctx.slots)
     events = ctx.events
@@ -638,21 +569,15 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
     conversation_history = _collect_visualization_thread_messages(events, fallback_limit=12)
     latest_plan_summary = _collect_latest_visualization_plan_summary(events)
 
-    planner_question = (
-        "\n".join([m for m in conversation_history if m.strip()]).strip() or ctx.text
-    )
+    planner_question = "\n".join([m for m in conversation_history if m.strip()]).strip() or ctx.text
 
     latest_any = ctx.tracker_snapshot.get("latest_message")
-    latest_msg_for_intent = (
-        cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
-    )
+    latest_msg_for_intent = cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
     intent_name = _extract_intent_name_from_user_event(latest_msg_for_intent)
     is_update = intent_name == "update_visualization"
 
     if latest_plan_summary and is_update:
-        planner_question = (
-            f"{latest_plan_summary}\n\nConversation context (oldest to newest user turns):\n{planner_question}"
-        ).strip()
+        planner_question = (f"{latest_plan_summary}\n\nConversation context (oldest to newest user turns):\n{planner_question}").strip()
 
     return {
         "user_message": ctx.text,
@@ -718,9 +643,7 @@ def _is_guided_visualization_request(slots: Dict[str, Any]) -> bool:
     return slots.get("guided_hospital_scope") is not None
 
 
-def _build_confirmation_message(
-    plan_obj: lang_schema.AnalysisPlan, is_update: bool
-) -> str:
+def _build_confirmation_message(plan_obj: lang_schema.AnalysisPlan, is_update: bool) -> str:
     """Build a short confirmation message describing what was just visualized."""
     if not plan_obj.charts:
         return "Done."
@@ -772,32 +695,16 @@ class ActionOneShotGenerateVisualization(LongAction):
                     )
 
                 latest_message_any = ctx.tracker_snapshot.get("latest_message")
-                latest_message = (
-                    cast(Dict[str, Any], latest_message_any)
-                    if isinstance(latest_message_any, dict)
-                    else {}
-                )
+                latest_message = cast(Dict[str, Any], latest_message_any) if isinstance(latest_message_any, dict) else {}
                 metadata_any: Any = latest_message.get("metadata") or {}
-                metadata = (
-                    cast(Dict[str, Any], metadata_any)
-                    if isinstance(metadata_any, dict)
-                    else {}
-                )
+                metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
                 is_retry = bool(metadata.get("is_retry"))
                 if is_retry:
                     # Skip clarification entirely, go straight to plan generation
                     request_ctx = _extract_request_context(ctx)
-                    planner_question = str(
-                        request_ctx.get("planner_question")
-                        or request_ctx.get("user_message")
-                        or ""
-                    )
-                    extracted_entities = cast(
-                        Dict[str, Any], request_ctx.get("extracted_entities") or {}
-                    )
-                    override_language = cast(
-                        Optional[str], request_ctx.get("override_language")
-                    )
+                    planner_question = str(request_ctx.get("planner_question") or request_ctx.get("user_message") or "")
+                    extracted_entities = cast(Dict[str, Any], request_ctx.get("extracted_entities") or {})
+                    override_language = cast(Optional[str], request_ctx.get("override_language"))
                     prepared_plan = lang_pipeline.generate_analysis_plan(
                         question=planner_question,
                         entities=extracted_entities,
@@ -808,61 +715,34 @@ class ActionOneShotGenerateVisualization(LongAction):
                         progress_cb=None,
                     )
                     ctx.tracker_snapshot[_INTERNAL_PREPARED_PLAN_KEY] = prepared_plan
-                    ctx.tracker_snapshot[_INTERNAL_PLANNER_DIAGNOSTICS_KEY] = (
-                        lang_pipeline.get_plan_cache_diagnostics()
-                    )
+                    ctx.tracker_snapshot[_INTERNAL_PLANNER_DIAGNOSTICS_KEY] = lang_pipeline.get_plan_cache_diagnostics()
                     return PreworkResult(
                         events=[SlotSet("awaiting_visualization_clarification", False)],
                         proceed=True,
                     )
 
                 latest_any = ctx.tracker_snapshot.get("latest_message")
-                latest_msg = (
-                    cast(Dict[str, Any], latest_any)
-                    if isinstance(latest_any, dict)
-                    else {}
-                )
+                latest_msg = cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
                 parse_data_any = latest_msg.get("parse_data")
-                parse_data = (
-                    cast(Dict[str, Any], parse_data_any)
-                    if isinstance(parse_data_any, dict)
-                    else {}
-                )
+                parse_data = cast(Dict[str, Any], parse_data_any) if isinstance(parse_data_any, dict) else {}
                 intent_any = parse_data.get("intent")
-                intent_obj = (
-                    cast(Dict[str, Any], intent_any)
-                    if isinstance(intent_any, dict)
-                    else {}
-                )
+                intent_obj = cast(Dict[str, Any], intent_any) if isinstance(intent_any, dict) else {}
                 intent_name_any = intent_obj.get("name")
 
                 if not isinstance(intent_name_any, str) or not intent_name_any.strip():
                     metadata_any = latest_msg.get("metadata")
-                    metadata = (
-                        cast(Dict[str, Any], metadata_any)
-                        if isinstance(metadata_any, dict)
-                        else {}
-                    )
+                    metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
                     metadata_intent_any = metadata.get("intentName")
-                    if (
-                        isinstance(metadata_intent_any, str)
-                        and metadata_intent_any.strip()
-                    ):
+                    if isinstance(metadata_intent_any, str) and metadata_intent_any.strip():
                         intent_name_any = metadata_intent_any
 
-                intent_name = (
-                    intent_name_any.strip() if isinstance(intent_name_any, str) else ""
-                )
-                awaiting_clarification = bool(
-                    ctx.slots.get("awaiting_visualization_clarification")
-                )
+                intent_name = intent_name_any.strip() if isinstance(intent_name_any, str) else ""
+                awaiting_clarification = bool(ctx.slots.get("awaiting_visualization_clarification"))
 
                 if awaiting_clarification:
                     if intent_name in _VISUALIZATION_CONTINUATION_INTENTS:
                         return PreworkResult(
-                            events=[
-                                SlotSet("awaiting_visualization_clarification", False)
-                            ],
+                            events=[SlotSet("awaiting_visualization_clarification", False)],
                             proceed=True,
                         )
 
@@ -874,11 +754,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                 # Defensive fallback: if routing reaches this action for an unrelated
                 # intent, always send a user-facing response instead of returning
                 # nothing and leaving the conversation hanging.
-                if (
-                    intent_name
-                    and intent_name not in _VISUALIZATION_CONTINUATION_INTENTS
-                    and not _is_guided_visualization_request(ctx.slots)
-                ):
+                if intent_name and intent_name not in _VISUALIZATION_CONTINUATION_INTENTS and not _is_guided_visualization_request(ctx.slots):
                     language = resolve_language(metadata=ctx.metadata, slots=ctx.slots)
                     ctx.say(
                         text=translate(
@@ -893,21 +769,13 @@ class ActionOneShotGenerateVisualization(LongAction):
 
                 request_ctx = _extract_request_context(ctx)
                 outcome = orchestrate_visualization_request(
-                    question=str(
-                        request_ctx.get("planner_question")
-                        or request_ctx.get("user_message")
-                        or ""
-                    ),
-                    entities=cast(
-                        Dict[str, Any], request_ctx.get("extracted_entities") or {}
-                    ),
+                    question=str(request_ctx.get("planner_question") or request_ctx.get("user_message") or ""),
+                    entities=cast(Dict[str, Any], request_ctx.get("extracted_entities") or {}),
                     language=cast(Optional[str], request_ctx.get("override_language")),
                     trace_id=trace_id,
                     max_retries=_PLANNER_MAX_RETRIES,
                     include_plan=False,
-                    conversation_history=cast(
-                        List[str], request_ctx.get("conversation_history") or []
-                    ),
+                    conversation_history=cast(List[str], request_ctx.get("conversation_history") or []),
                     progress_cb=None,
                 )
                 decision_name = str(outcome.decision or "").strip().lower()
@@ -924,12 +792,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             "message": outcome.message,
                         }
                     )
-                    ctx.say(
-                        text=outcome.message
-                        or translate(
-                            "action.visualization.clarify_default", language=language
-                        )
-                    )
+                    ctx.say(text=outcome.message or translate("action.visualization.clarify_default", language=language))
                     return PreworkResult(
                         events=[SlotSet("awaiting_visualization_clarification", True)],
                         proceed=False,
@@ -946,28 +809,15 @@ class ActionOneShotGenerateVisualization(LongAction):
                             "message": outcome.message,
                         }
                     )
-                    ctx.say(
-                        text=outcome.message
-                        or translate(
-                            "action.visualization.reject_default", language=language
-                        )
-                    )
+                    ctx.say(text=outcome.message or translate("action.visualization.reject_default", language=language))
                     return PreworkResult(
                         events=[SlotSet("awaiting_visualization_clarification", False)],
                         proceed=False,
                     )
 
-                planner_question = str(
-                    request_ctx.get("planner_question")
-                    or request_ctx.get("user_message")
-                    or ""
-                )
-                extracted_entities = cast(
-                    Dict[str, Any], request_ctx.get("extracted_entities") or {}
-                )
-                override_language = cast(
-                    Optional[str], request_ctx.get("override_language")
-                )
+                planner_question = str(request_ctx.get("planner_question") or request_ctx.get("user_message") or "")
+                extracted_entities = cast(Dict[str, Any], request_ctx.get("extracted_entities") or {})
+                override_language = cast(Optional[str], request_ctx.get("override_language"))
 
                 prepared_plan = lang_pipeline.generate_analysis_plan(
                     question=planner_question,
@@ -980,9 +830,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                 )
 
                 ctx.tracker_snapshot[_INTERNAL_PREPARED_PLAN_KEY] = prepared_plan
-                ctx.tracker_snapshot[_INTERNAL_PLANNER_DIAGNOSTICS_KEY] = (
-                    lang_pipeline.get_plan_cache_diagnostics()
-                )
+                ctx.tracker_snapshot[_INTERNAL_PLANNER_DIAGNOSTICS_KEY] = lang_pipeline.get_plan_cache_diagnostics()
 
                 ctx.say(
                     json_message={
@@ -1010,9 +858,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                     ),
                 )
                 language = resolve_language(metadata=ctx.metadata, slots=ctx.slots)
-                payload = visualization_error_payload(
-                    e, trace_id=trace_id, language=language
-                )
+                payload = visualization_error_payload(e, trace_id=trace_id, language=language)
                 ctx.say(
                     json_message={
                         "type": "visualization_error",
@@ -1075,10 +921,7 @@ class ActionOneShotGenerateVisualization(LongAction):
 
                 def on_graphql_query(payload: Dict[str, Any]) -> None:
                     query_text_any = payload.get("query")
-                    if (
-                        not isinstance(query_text_any, str)
-                        or not query_text_any.strip()
-                    ):
+                    if not isinstance(query_text_any, str) or not query_text_any.strip():
                         return
                     query_pretty = pretty_print_graphql_query(query_text_any)
 
@@ -1092,11 +935,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             "query": query_pretty,
                         }
                     )
-                    ctx.say(
-                        text=(
-                            f"[dev] GraphQL query\nhash={payload.get('query_hash') or '-'}\n{query_pretty}"
-                        )
-                    )
+                    ctx.say(text=(f"[dev] GraphQL query\nhash={payload.get('query_hash') or '-'}\n{query_pretty}"))
 
                 # In deferred-handoff mode, initial routing/clarification can use
                 # normal dispatcher delivery and heavy generation streams via
@@ -1104,20 +943,12 @@ class ActionOneShotGenerateVisualization(LongAction):
                 if _DEFER_CALLBACK_HANDOFF and not ctx.callback_mode_enabled:
                     ctx.enable_callback_mode()
 
-                prepared_any = ctx.tracker_snapshot.pop(
-                    _INTERNAL_PREPARED_PLAN_KEY, None
-                )
-                diagnostics_any = ctx.tracker_snapshot.pop(
-                    _INTERNAL_PLANNER_DIAGNOSTICS_KEY, None
-                )
+                prepared_any = ctx.tracker_snapshot.pop(_INTERNAL_PREPARED_PLAN_KEY, None)
+                diagnostics_any = ctx.tracker_snapshot.pop(_INTERNAL_PLANNER_DIAGNOSTICS_KEY, None)
 
                 if isinstance(prepared_any, lang_schema.AnalysisPlan):
                     plan_obj = prepared_any
-                    planner_diagnostics = (
-                        cast(Optional[Dict[str, Any]], diagnostics_any)
-                        if isinstance(diagnostics_any, dict)
-                        else None
-                    )
+                    planner_diagnostics = cast(Optional[Dict[str, Any]], diagnostics_any) if isinstance(diagnostics_any, dict) else None
                     progress("Using prepared plan from prework")
                 else:
                     logger.warning(
@@ -1129,15 +960,9 @@ class ActionOneShotGenerateVisualization(LongAction):
                             outcome="degraded",
                         ),
                     )
-                    planner_question = cast(
-                        str, request_ctx.get("planner_question") or user_message
-                    )
-                    extracted_entities = cast(
-                        Dict[str, Any], request_ctx["extracted_entities"]
-                    )
-                    override_language = cast(
-                        Optional[str], request_ctx["override_language"]
-                    )
+                    planner_question = cast(str, request_ctx.get("planner_question") or user_message)
+                    extracted_entities = cast(Dict[str, Any], request_ctx["extracted_entities"])
+                    override_language = cast(Optional[str], request_ctx["override_language"])
 
                     progress("Calling planner LLM to build a plan")
                     plan_obj = lang_pipeline.generate_analysis_plan(
@@ -1178,22 +1003,12 @@ class ActionOneShotGenerateVisualization(LongAction):
                             ctx.say(text=f"Note: {warning.strip()}")
 
                 completed_successfully = True
-                planner_question_str = str(
-                    request_ctx.get("planner_question")
-                    or request_ctx.get("user_message")
-                    or ""
-                )
-                is_update_flow: bool = planner_question_str.startswith(
-                    "Previous chart plan"
-                )
-                confirmation = _build_confirmation_message(
-                    plan_obj, is_update=is_update_flow
-                )
+                planner_question_str = str(request_ctx.get("planner_question") or request_ctx.get("user_message") or "")
+                is_update_flow: bool = planner_question_str.startswith("Previous chart plan")
+                confirmation = _build_confirmation_message(plan_obj, is_update=is_update_flow)
                 ctx.say(text=confirmation)
             except Exception as e:
-                if isinstance(e, VisualizationExecutionError) and (
-                    e.reason == "origin_scope_resolution" or e.clarification_type
-                ):
+                if isinstance(e, VisualizationExecutionError) and (e.reason == "origin_scope_resolution" or e.clarification_type):
                     ctx.say(
                         json_message={
                             "type": "visualization_query_decision",
@@ -1217,9 +1032,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         outcome="failure",
                     ),
                 )
-                payload = visualization_error_payload(
-                    e, trace_id=trace_id, language=language
-                )
+                payload = visualization_error_payload(e, trace_id=trace_id, language=language)
                 ctx.say(
                     json_message={
                         "type": "visualization_error",
@@ -1268,8 +1081,6 @@ class ActionOneShotGenerateVisualization(LongAction):
                             )
                         )
                     if plan_obj is not None:
-                        _emit_next_metric_followup(
-                            ctx=ctx, plan_obj=plan_obj, language=language
-                        )
+                        _emit_next_metric_followup(ctx=ctx, plan_obj=plan_obj, language=language)
                 ctx.done()
         return None
