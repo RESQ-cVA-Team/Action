@@ -66,7 +66,7 @@ python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
 pytz==2025.2
 PyYAML==6.0.2
-rasa-sdk==3.6.2
+rasa-sdk==3.14.2
 regex==2024.11.6
 requests==2.33.0
 requests-toolbelt==1.0.0
@@ -74,9 +74,9 @@ rich==14.0.0
 ruamel.yaml==0.17.21
 ruamel.yaml.clib==0.2.7
 ruff==0.11.2
-sanic==21.12.2
+sanic==22.12.0
 Sanic-Cors==2.0.1
-sanic-routing==0.7.2
+sanic-routing==22.8.0
 scikit-learn==1.6.1
 scipy==1.15.1
 scipy-stubs==1.15.3.0
@@ -97,7 +97,7 @@ typing-inspect==0.9.0
 typing-inspection==0.4.1
 typing_extensions==4.14.1
 tzdata==2025.2
-ujson==5.12.1
+ujson==5.13.0
 urllib3==2.7.0
 uvloop==0.17.0
 wcwidth==0.2.6
