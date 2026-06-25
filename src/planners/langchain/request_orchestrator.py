@@ -30,20 +30,13 @@ class VisualizationRequestOutcome:
     reason: str
     message: Optional[str] = None
     clarification_type: Optional[str] = None
-    clarification_options: List[str] = field(
-        default_factory=lambda: cast(List[str], [])
-    )
+    clarification_options: List[str] = field(default_factory=lambda: cast(List[str], []))
     missing_fields: List[str] = field(default_factory=lambda: cast(List[str], []))
     plan: Optional[AnalysisPlan] = None
 
 
-_ORCHESTRATOR_ENABLED = env_util.env_flag(
-    "ACTIONS_LLM_REQUEST_ORCHESTRATOR_ENABLED", default=True
-)
-_ORCHESTRATOR_TIMEOUT_RAW = (
-    env_util.get_env("ACTIONS_LLM_REQUEST_ORCHESTRATOR_TIMEOUT_SECONDS", default="10")
-    or "10"
-)
+_ORCHESTRATOR_ENABLED = env_util.env_flag("ACTIONS_LLM_REQUEST_ORCHESTRATOR_ENABLED", default=True)
+_ORCHESTRATOR_TIMEOUT_RAW = env_util.get_env("ACTIONS_LLM_REQUEST_ORCHESTRATOR_TIMEOUT_SECONDS", default="10") or "10"
 _orchestrator_timeout_value = 10.0
 try:
     _orchestrator_timeout_value = max(1.0, float(_ORCHESTRATOR_TIMEOUT_RAW))
@@ -51,9 +44,7 @@ except Exception:
     _orchestrator_timeout_value = 10.0
 _ORCHESTRATOR_TIMEOUT_SECONDS = _orchestrator_timeout_value
 
-_ORCHESTRATOR_TEMPERATURE_RAW = (
-    env_util.get_env("ACTIONS_LLM_REQUEST_ORCHESTRATOR_TEMPERATURE", default="0") or "0"
-)
+_ORCHESTRATOR_TEMPERATURE_RAW = env_util.get_env("ACTIONS_LLM_REQUEST_ORCHESTRATOR_TEMPERATURE", default="0") or "0"
 _orchestrator_temperature_value = 0.0
 try:
     _orchestrator_temperature_value = float(_ORCHESTRATOR_TEMPERATURE_RAW)
@@ -61,12 +52,7 @@ except Exception:
     _orchestrator_temperature_value = 0.0
 _ORCHESTRATOR_TEMPERATURE = _orchestrator_temperature_value
 
-_ORCHESTRATOR_FAIL_OPEN = env_util.env_flag(
-    "ACTIONS_LLM_REQUEST_ORCHESTRATOR_FAIL_OPEN", default=False
-)
-_ASSUME_DEFAULT_TIME_SCOPE = env_util.env_flag(
-    "ACTIONS_ASSUME_DEFAULT_TIME_SCOPE", default=True
-)
+_ORCHESTRATOR_FAIL_OPEN = env_util.env_flag("ACTIONS_LLM_REQUEST_ORCHESTRATOR_FAIL_OPEN", default=False)
 
 _TEMPORAL_MISSING_FIELDS = {
     "time",
@@ -85,7 +71,7 @@ _TEMPORAL_MISSING_FIELDS = {
     "range",
 }
 
-_DECISION_PROMPT = ChatPromptTemplate.from_messages(
+_DECISION_PROMPT = ChatPromptTemplate.from_messages(  # type: ignore[attr-defined]
     [
         (
             "system",
@@ -118,35 +104,6 @@ Rules:
         ),
     ]
 )
-
-# _CLARIFICATION_PROMPT = ChatPromptTemplate.from_messages(  # type: ignore
-#     [
-#         (
-#             "system",
-#             """
-# You are the clarification message generator for a clinical analytics visualization assistant.
-# Given missing or ambiguous fields, ask exactly one concise clarification question.
-
-# Return strict JSON only:
-# {{
-#   "message": string,
-#   "clarification_type": string | null,
-#   "clarification_options": string[] | null
-# }}
-
-# Rules:
-# - Ask one direct question.
-# - If possible, provide a short list of options.
-# - Keep the question under 25 words.
-# - Do not include markdown or prose outside JSON.
-#             """.strip(),
-#         ),
-#         (
-#             "user",
-#             "USER_LANGUAGE: {language}\nUSER_QUESTION: {question}\nCONVERSATION_HISTORY_JSON: {conversation_history_json}\nMISSING_FIELDS_JSON: {missing_fields_json}\nENTITIES_JSON: {entities_json}\nVALID_METRIC_CANDIDATES_JSON: {metric_candidates_json}\nVALID_CHART_TYPES_JSON: {chart_types_json}",
-#         ),
-#     ]
-# )
 
 _llm: Optional[Any] = None
 _llm_lock = Lock()
@@ -201,9 +158,7 @@ def _extract_text(response: Any) -> str:
 
 def _extract_json_object(text: str) -> Dict[str, Any]:
     candidate = text.strip()
-    fenced = re.match(
-        r"^```(?:json)?\s*(.*?)\s*```$", candidate, flags=re.DOTALL | re.IGNORECASE
-    )
+    fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", candidate, flags=re.DOTALL | re.IGNORECASE)
     if fenced:
         candidate = fenced.group(1).strip()
 
@@ -227,9 +182,7 @@ def _invoke_chain(chain: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
             response = future.result(timeout=_ORCHESTRATOR_TIMEOUT_SECONDS)
         except FuturesTimeoutError as exc:
             future.cancel()
-            raise TimeoutError(
-                f"Orchestrator timed out after {_ORCHESTRATOR_TIMEOUT_SECONDS:.1f}s"
-            ) from exc
+            raise TimeoutError(f"Orchestrator timed out after {_ORCHESTRATOR_TIMEOUT_SECONDS:.1f}s") from exc
 
     return _extract_json_object(_extract_text(response))
 
@@ -288,42 +241,6 @@ def _coerce_options(raw: Any) -> List[str]:
     return out
 
 
-def _normalize_missing_field(value: str) -> str:
-    token = (value or "").strip().lower().replace("-", "_").replace(" ", "_")
-    while "__" in token:
-        token = token.replace("__", "_")
-    return token.strip("_")
-
-
-def _is_temporal_missing_field(value: str) -> bool:
-    token = _normalize_missing_field(value)
-    if not token:
-        return False
-    if token in _TEMPORAL_MISSING_FIELDS:
-        return True
-    return token.startswith("time_") or token.startswith("date_")
-
-
-# def _should_assume_default_time_scope(stage1: VisualizationRequestOutcome) -> bool:
-#     if stage1.decision != "clarify":
-#         return False
-
-#     fields: List[str] = []
-#     fields.extend(stage1.missing_fields)
-#     if stage1.clarification_type:
-#         fields.append(stage1.clarification_type)
-
-#     normalized = [
-#         _normalize_missing_field(field)
-#         for field in fields
-#         if _normalize_missing_field(field)
-#     ]
-#     if not normalized:
-#         return False
-
-#     return all(_is_temporal_missing_field(field) for field in normalized)
-
-
 def _decision_stage(
     question: str,
     entities: Dict[str, Any],
@@ -339,13 +256,9 @@ def _decision_stage(
         "language": (language or "en").strip() or "en",
         "question": question or "",
         "entities_json": json.dumps(entities or {}, ensure_ascii=False),
-        "metric_candidates_json": json.dumps(
-            _metric_candidates(question or ""), ensure_ascii=False
-        ),
+        "metric_candidates_json": json.dumps(_metric_candidates(question or ""), ensure_ascii=False),
         "chart_types_json": json.dumps(_chart_types(), ensure_ascii=False),
-        "conversation_history_json": json.dumps(
-            conversation_history or [], ensure_ascii=False
-        ),
+        "conversation_history_json": json.dumps(conversation_history or [], ensure_ascii=False),
     }
     parsed = _invoke_chain(chain, payload)
     logger.info("Decision stage raw response: %s", parsed)
@@ -358,83 +271,17 @@ def _decision_stage(
     missing_fields = _coerce_missing_fields(parsed.get("missing_fields"))
     clarification_type = parsed.get("clarification_type")
     clarification_options = _coerce_options(parsed.get("clarification_options"))
-    reject_message_raw = parsed.get("reject_message")
-    reject_message = (
-        reject_message_raw.strip()
-        if isinstance(reject_message_raw, str) and reject_message_raw.strip()
-        else None
-    )
-
     llm_message_raw = parsed.get("message")
-    llm_message = (
-        llm_message_raw.strip()
-        if isinstance(llm_message_raw, str) and llm_message_raw.strip()
-        else None
-    )
+    llm_message = llm_message_raw.strip() if isinstance(llm_message_raw, str) and llm_message_raw.strip() else None
 
     return VisualizationRequestOutcome(
         decision=cast(OutcomeDecision, decision_raw),
         reason=reason,
         message=llm_message,
-        clarification_type=clarification_type.strip()
-        if isinstance(clarification_type, str) and clarification_type.strip()
-        else None,
+        clarification_type=clarification_type.strip() if isinstance(clarification_type, str) and clarification_type.strip() else None,
         clarification_options=clarification_options,
         missing_fields=missing_fields,
     )
-
-
-# def _clarification_stage(
-#     question: str,
-#     entities: Dict[str, Any],
-#     missing_fields: List[str],
-#     language: Optional[str],
-#     conversation_history: Optional[List[str]] = None,
-# ) -> VisualizationRequestOutcome:
-#     llm = _get_llm()
-#     if llm is None:
-#         raise RuntimeError("LLM unavailable")
-
-#     chain = _CLARIFICATION_PROMPT | llm
-#     payload = {
-#         "language": (language or "en").strip() or "en",
-#         "question": question or "",
-#         "entities_json": json.dumps(entities or {}, ensure_ascii=False),
-#         "missing_fields_json": json.dumps(missing_fields, ensure_ascii=False),
-#         "metric_candidates_json": json.dumps(
-#             _metric_candidates(question or ""), ensure_ascii=False
-#         ),
-#         "chart_types_json": json.dumps(_chart_types(), ensure_ascii=False),
-#         "conversation_history_json": json.dumps(
-#             conversation_history or [], ensure_ascii=False
-#         ),
-#     }
-#     parsed = _invoke_chain(chain, payload)
-
-#     message_raw = parsed.get("message")
-#     message = (
-#         message_raw.strip()
-#         if isinstance(message_raw, str) and message_raw.strip()
-#         else "I need a bit more detail before I can continue."
-#     )
-
-#     clarification_type_raw = parsed.get("clarification_type")
-#     clarification_type = (
-#         clarification_type_raw.strip()
-#         if isinstance(clarification_type_raw, str) and clarification_type_raw.strip()
-#         else (missing_fields[0] if missing_fields else None)
-#     )
-
-#     clarification_options = _coerce_options(parsed.get("clarification_options"))
-
-#     return VisualizationRequestOutcome(
-#         decision="clarify",
-#         reason="llm_clarification_required",
-#         message=message,
-#         clarification_type=clarification_type,
-#         clarification_options=clarification_options,
-#         missing_fields=missing_fields,
-#     )
 
 
 def orchestrate_visualization_request(
@@ -450,9 +297,7 @@ def orchestrate_visualization_request(
     with log_context(trace_id=trace_id or "", orchestrator_include_plan=include_plan):
         if not _ORCHESTRATOR_ENABLED:
             if not include_plan:
-                return VisualizationRequestOutcome(
-                    decision="proceed", reason="orchestrator_disabled"
-                )
+                return VisualizationRequestOutcome(decision="proceed", reason="orchestrator_disabled")
             plan = generate_analysis_plan(
                 question=question,
                 entities=entities,
@@ -462,9 +307,7 @@ def orchestrate_visualization_request(
                 trace_id=trace_id,
                 progress_cb=progress_cb,
             )
-            return VisualizationRequestOutcome(
-                decision="proceed", reason="orchestrator_disabled", plan=plan
-            )
+            return VisualizationRequestOutcome(decision="proceed", reason="orchestrator_disabled", plan=plan)
 
         def report(message: str) -> None:
             if progress_cb is not None:
@@ -472,12 +315,8 @@ def orchestrate_visualization_request(
 
         try:
             report("Analyzing request intent and feasibility")
-            logger.info(
-                "Orchestrator input - question: %s, entities: %s", question, entities
-            )
-            stage1 = _decision_stage(
-                question, entities, language, conversation_history=conversation_history
-            )
+            logger.info("Orchestrator input - question: %s, entities: %s", question, entities)
+            stage1 = _decision_stage(question, entities, language, conversation_history=conversation_history)
             logger.info(
                 "Orchestrator decision: %s, message: %s, missing: %s",
                 stage1.decision,
@@ -492,32 +331,6 @@ def orchestrate_visualization_request(
 
             if stage1.decision == "clarify":
                 return stage1
-            #                 if _ASSUME_DEFAULT_TIME_SCOPE and _should_assume_default_time_scope(
-            #                     stage1
-            #                 ):
-            #                     logger.debug(
-            #                         "Assuming default time scope; skipping clarification",
-            #                         extra={
-            #                             "log_context": {
-            #                                 "event": "orchestrator.default_time_scope_assumed",
-            #                                 "operation": "orchestrate_visualization_request",
-            #                                 "outcome": "degraded",
-            #                             }
-            #                         },
-            #                     ) """
-            # """                     return VisualizationRequestOutcome(
-            #                         decision="proceed",
-            #                         reason="default_time_scope_assumed",
-            #                     ) """
-            # """
-            #                 report("Generating clarification question")
-            #                 return _clarification_stage(
-            #                     question=question,
-            #                     entities=entities,
-            #                     missing_fields=stage1.missing_fields,
-            #                     language=language,
-            #                     conversation_history=conversation_history,
-            #                 )
 
             if not include_plan:
                 return VisualizationRequestOutcome(
@@ -528,9 +341,7 @@ def orchestrate_visualization_request(
             report("Generating visualization plan")
             planner_question = question
             if conversation_history:
-                cleaned_history = [
-                    item.strip() for item in conversation_history if item.strip()
-                ]
+                cleaned_history = [item.strip() for item in conversation_history if item.strip()]
                 if cleaned_history:
                     joined = "\n".join(f"- {item}" for item in cleaned_history)
                     planner_question = f"Conversation context (oldest to newest user turns):\n{joined}\n\nCurrent request to fulfill:\n{question}"

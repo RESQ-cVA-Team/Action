@@ -83,7 +83,6 @@ def to_semantic_plan_with_diagnostics(plan: S.AnalysisPlan) -> tuple[SemanticPla
             normalized_metrics.append(
                 SemanticMetric(
                     metric=code,
-                    distribution=metric.distribution,
                     data_origin=metric.data_origin,
                     origin_scope=metric.origin_scope,
                 )
@@ -113,6 +112,7 @@ def to_semantic_plan_with_diagnostics(plan: S.AnalysisPlan) -> tuple[SemanticPla
                 metrics=normalized_metrics,
                 filters=chart.filters,
                 group_by=group_by,
+                numeric_resolution=chart.numeric_resolution,
             )
         )
 
@@ -130,7 +130,6 @@ def to_analysis_plan(plan: SemanticPlan) -> S.AnalysisPlan:
             metrics.append(
                 S.MetricSpec(
                     metric=m.metric,
-                    distribution=m.distribution,
                     dataOrigin=m.data_origin,
                     originScope=m.origin_scope,
                 )
@@ -145,6 +144,7 @@ def to_analysis_plan(plan: SemanticPlan) -> S.AnalysisPlan:
                 filters=chart.filters,
                 group_by=chart.group_by or None,
                 metrics=metrics,
+                numericResolution=chart.numeric_resolution,
             )
         )
 

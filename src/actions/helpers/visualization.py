@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 import logging
-import re
 from threading import Lock
 from typing import (
     Any,
@@ -66,12 +64,12 @@ _ENTITY_SSOT_RESOLVERS = {
 
 
 def normalize_entities(entities: Dict[str, Any]) -> Dict[str, Any]:
-    normalized = {}
+    normalized: Dict[str, Any] = {}
     for key, value in entities.items():
         resolver = _ENTITY_SSOT_RESOLVERS.get(key)
         if resolver:
             if isinstance(value, list):
-                normalized[key] = [resolver(v) or v for v in value]
+                normalized[key] = [resolver(v) or v for v in cast(List[Any], value)]
             elif isinstance(value, str):
                 normalized[key] = resolver(value) or value
         else:
@@ -246,31 +244,6 @@ _query_guard_llm_lock = Lock()
 #     return _query_guard_llm
 
 
-def _extract_text(response: Any) -> str:
-    if isinstance(response, str):
-        return response
-
-    content = getattr(response, "content", None)
-    if isinstance(content, str):
-        return content
-
-    if isinstance(content, list):
-        chunks: List[str] = []
-        content_items = cast(List[Any], content)
-        for item in content_items:
-            if isinstance(item, str):
-                chunks.append(item)
-            elif isinstance(item, dict):
-                dict_item = cast(Dict[str, Any], item)
-                text_any = dict_item.get("text")
-                if text_any is not None:
-                    chunks.append(str(text_any))
-        if chunks:
-            return "\n".join(chunks)
-
-    return str(response)
-
-
 # def _metric_candidates(question: str, limit: int = 8) -> List[str]:
 #     normalized = ssot_loader.normalize_metric_text_key(question)
 #     if not normalized:
@@ -290,70 +263,6 @@ def _extract_text(response: Any) -> str:
 #         if len(matches) >= limit:
 #             break
 #     return matches
-
-
-def _extract_json_object(text: str) -> Dict[str, Any]:
-    candidate = text.strip()
-    fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", candidate, flags=re.DOTALL | re.IGNORECASE)
-    if fenced:
-        candidate = fenced.group(1).strip()
-
-    if not (candidate.startswith("{") and candidate.endswith("}")):
-        start = candidate.find("{")
-        end = candidate.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            raise ValueError("Model output does not contain JSON object")
-        candidate = candidate[start : end + 1]
-
-    parsed = json.loads(candidate)
-    if not isinstance(parsed, dict):
-        raise ValueError("Model output JSON must be object")
-    return cast(Dict[str, Any], parsed)
-
-
-def _coerce_decision(raw: Dict[str, Any]) -> QueryDecision:
-    decision_any = raw.get("decision")
-    decision = str(decision_any).strip().lower() if decision_any is not None else ""
-    if decision not in {"proceed", "clarify", "reject"}:
-        raise ValueError("Invalid decision from model")
-
-    reason_any = raw.get("reason")
-    reason = str(reason_any).strip() if reason_any is not None else ""
-    if not reason:
-        reason = "llm_query_guard"
-
-    message_any = raw.get("message")
-    message: Optional[str]
-    if isinstance(message_any, str):
-        message = message_any.strip() or None
-    else:
-        message = None
-
-    result: QueryDecision = {
-        "decision": cast(Literal["proceed", "clarify", "reject"], decision),
-        "reason": reason,
-        "message": message,
-    }
-
-    clarification_type_any = raw.get("clarification_type")
-    if isinstance(clarification_type_any, str) and clarification_type_any.strip():
-        result["clarification_type"] = clarification_type_any.strip()
-
-    options_any = raw.get("clarification_options")
-    if isinstance(options_any, list):
-        options: List[str] = []
-        for item in cast(List[Any], options_any):
-            if isinstance(item, str) and item.strip():
-                options.append(item.strip())
-        if options:
-            result["clarification_options"] = options
-
-    if result["decision"] in {"clarify", "reject"} and not result["message"]:
-        result["message"] = "I need a bit more detail before I can continue."
-    if result["decision"] == "proceed":
-        result["message"] = None
-
-    return result
 
 
 # def _invoke_query_guard(chain: Any, payload: Dict[str, Any]) -> QueryDecision:

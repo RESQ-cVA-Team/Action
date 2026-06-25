@@ -40,9 +40,7 @@ def merge_series_by_name(series: List[ChartSeries]) -> List[ChartSeries]:
     for item in series:
         existing = merged.get(item.name)
         if existing is None:
-            merged[item.name] = ChartSeries(
-                name=item.name, data=list(item.data), color=item.color, style=item.style
-            )
+            merged[item.name] = ChartSeries(name=item.name, data=list(item.data), color=item.color, style=item.style)
             ordered_names.append(item.name)
         else:
             existing.data.extend(item.data)
@@ -93,23 +91,8 @@ def map_metrics_payload_to_series(
             # are compiled into multiple filtered requests, one per category.
             # In that case `group_by_field` is None, but non-empty label_parts
             # still indicate grouped-style output should be produced from stats.
-            is_grouped_or_time = (
-                bool(group_by_field) or add_time_period_labels or bool(label_parts)
-            )
+            is_grouped_or_time = bool(group_by_field) or add_time_period_labels or bool(label_parts)
             if is_grouped_or_time:
-                y_value: Optional[float] = None
-                if isinstance(kpi.kpi1.median, (int, float)):
-                    y_value = float(kpi.kpi1.median)
-                elif isinstance(kpi.kpi1.mean, (int, float)):
-                    y_value = float(kpi.kpi1.mean)
-                elif kpi.kpi1.case_count:
-                    try:
-                        y_value = float(kpi.kpi1.case_count[0])
-                    except Exception:
-                        y_value = None
-                if y_value is None:
-                    continue
-
                 x_value: str
                 tp_start: Optional[str] = None
                 tp_end: Optional[str] = None
@@ -120,31 +103,38 @@ def map_metrics_payload_to_series(
                     # kpi_index = list(metric.kpi_group).index(kpi)
                     if kpi_index < len(batched_time_periods):
                         tp = batched_time_periods[kpi_index]
-                        tp_start = getattr(tp, "startDate", None) or getattr(
-                            tp, "start_date", None
-                        )
-                        tp_end = getattr(tp, "endDate", None) or getattr(
-                            tp, "end_date", None
-                        )
+                        tp_start = getattr(tp, "startDate", None) or getattr(tp, "start_date", None)
+                        tp_end = getattr(tp, "endDate", None) or getattr(tp, "end_date", None)
 
                 if add_time_period_labels and tp_start:
                     try:
                         dt = datetime.fromisoformat(str(tp_start))
-                        quarter = (dt.month - 1) // 3 + 1
-                        x_value = f"Q{quarter} {dt.year}"
+                        x_value = dt.strftime("%Y-%m")
                     except Exception:
                         x_value = f"{tp_start} to {tp_end}" if tp_end else str(tp_start)
                 elif server_label:
-                    mapped = (
-                        get_enum_option_label(group_by_field, server_label)
-                        if group_by_field
-                        else None
-                    )
+                    mapped = get_enum_option_label(group_by_field, server_label) if group_by_field else None
                     x_value = mapped or server_label
                 elif label_parts:
                     x_value = label_parts[-1]
                 else:
                     x_value = "value"
+
+                y_value: Optional[float] = None
+                if isinstance(kpi.kpi1.median, (int, float)):
+                    y_value = float(kpi.kpi1.median)
+                elif isinstance(kpi.kpi1.mean, (int, float)):
+                    y_value = float(kpi.kpi1.mean)
+                elif kpi.kpi1.case_count:
+                    try:
+                        y_value = float(kpi.kpi1.case_count[0])
+                    except Exception:
+                        y_value = None
+
+                # Preserve explicit time buckets as missing points (y=None)
+                # so frontend can render gaps instead of implied zeros.
+                if y_value is None and not (add_time_period_labels and tp_start):
+                    continue
 
                 name_parts: List[str] = []
                 if include_metric_alias:
@@ -175,11 +165,7 @@ def map_metrics_payload_to_series(
             if origin_label:
                 parts.append(origin_label)
             if server_label:
-                mapped = (
-                    get_enum_option_label(group_by_field, server_label)
-                    if group_by_field
-                    else None
-                )
+                mapped = get_enum_option_label(group_by_field, server_label) if group_by_field else None
                 parts.append(mapped or server_label)
             if scope_label and scope_label not in parts:
                 parts.append(scope_label)
@@ -194,16 +180,11 @@ def map_metrics_payload_to_series(
                 elif isinstance(end, str):
                     parts.append(end)
 
-            series_name = (
-                " — ".join(parts) if parts else metric_label_from_alias(metric_name)
-            )
+            series_name = " — ".join(parts) if parts else metric_label_from_alias(metric_name)
             series.append(
                 ChartSeries(
                     name=series_name,
-                    data=[
-                        ChartPoint(x=x, y=y)
-                        for x, y in zip(kpi.kpi1.d1.edges, kpi.kpi1.d1.case_count)
-                    ],
+                    data=[ChartPoint(x=x, y=y) for x, y in zip(kpi.kpi1.d1.edges, kpi.kpi1.d1.case_count)],
                 )
             )
 

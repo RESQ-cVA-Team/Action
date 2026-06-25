@@ -287,15 +287,11 @@ class GraphQLProxyClient:
                         extra={"log_context": {"elapsed_ms": _elapsed_ms(started_at)}},
                     )
                 except requests.Timeout as exc:
-                    previous_retryable_http = last_error is not None and last_error.kind == "http_error" and (
-                        last_error.status_code in {502, 503, 504}
-                    )
+                    previous_retryable_http = last_error is not None and last_error.kind == "http_error" and (last_error.status_code in {502, 503, 504})
                     last_error = GraphQLProxyError(
                         kind="http_error" if previous_retryable_http else "timeout",
-                        message="GraphQL request timed out after upstream service unavailable signal"
-                        if previous_retryable_http
-                        else "GraphQL request timed out",
-                        status_code=last_error.status_code if previous_retryable_http else None,
+                        message="GraphQL request timed out after upstream service unavailable signal" if previous_retryable_http else "GraphQL request timed out",
+                        status_code=(last_error.status_code if previous_retryable_http and last_error is not None else None),
                         transient=True,
                     )
                     should_retry = False
@@ -317,15 +313,11 @@ class GraphQLProxyClient:
                         continue
                     break
                 except requests.ConnectionError as exc:
-                    previous_retryable_http = last_error is not None and last_error.kind == "http_error" and (
-                        last_error.status_code in {502, 503, 504}
-                    )
+                    previous_retryable_http = last_error is not None and last_error.kind == "http_error" and (last_error.status_code in {502, 503, 504})
                     last_error = GraphQLProxyError(
                         kind="http_error" if previous_retryable_http else "request_error",
-                        message="GraphQL request failed after upstream service unavailable signal"
-                        if previous_retryable_http
-                        else "GraphQL request failed",
-                        status_code=last_error.status_code if previous_retryable_http else None,
+                        message="GraphQL request failed after upstream service unavailable signal" if previous_retryable_http else "GraphQL request failed",
+                        status_code=(last_error.status_code if previous_retryable_http and last_error is not None else None),
                         transient=True,
                     )
                     should_retry = False
@@ -347,15 +339,11 @@ class GraphQLProxyClient:
                         continue
                     break
                 except requests.RequestException as exc:
-                    previous_retryable_http = last_error is not None and last_error.kind == "http_error" and (
-                        last_error.status_code in {502, 503, 504}
-                    )
+                    previous_retryable_http = last_error is not None and last_error.kind == "http_error" and (last_error.status_code in {502, 503, 504})
                     last_error = GraphQLProxyError(
                         kind="http_error" if previous_retryable_http else "request_error",
-                        message="GraphQL request failed after upstream service unavailable signal"
-                        if previous_retryable_http
-                        else "GraphQL request failed",
-                        status_code=last_error.status_code if previous_retryable_http else None,
+                        message="GraphQL request failed after upstream service unavailable signal" if previous_retryable_http else "GraphQL request failed",
+                        status_code=(last_error.status_code if previous_retryable_http and last_error is not None else None),
                         transient=True,
                     )
                     should_retry = False
@@ -578,15 +566,11 @@ class GraphQLProxyClient:
                         extra={"log_context": {"elapsed_ms": _elapsed_ms(started_at)}},
                     )
                 except requests.Timeout as exc:
-                    previous_retryable_http = last_error is not None and last_error.kind == "http_error" and (
-                        last_error.status_code in {502, 503, 504}
-                    )
+                    previous_retryable_http = last_error is not None and last_error.kind == "http_error" and (last_error.status_code in {502, 503, 504})
                     last_error = GraphQLProxyError(
                         kind="http_error" if previous_retryable_http else "timeout",
-                        message="GraphQL request timed out after upstream service unavailable signal"
-                        if previous_retryable_http
-                        else "GraphQL request timed out",
-                        status_code=last_error.status_code if previous_retryable_http else None,
+                        message="GraphQL request timed out after upstream service unavailable signal" if previous_retryable_http else "GraphQL request timed out",
+                        status_code=(last_error.status_code if previous_retryable_http and last_error is not None else None),
                         transient=True,
                     )
                     should_retry = False
@@ -608,15 +592,11 @@ class GraphQLProxyClient:
                         continue
                     break
                 except requests.ConnectionError as exc:
-                    previous_retryable_http = last_error is not None and last_error.kind == "http_error" and (
-                        last_error.status_code in {502, 503, 504}
-                    )
+                    previous_retryable_http = last_error is not None and last_error.kind == "http_error" and (last_error.status_code in {502, 503, 504})
                     last_error = GraphQLProxyError(
                         kind="http_error" if previous_retryable_http else "request_error",
-                        message="GraphQL request failed after upstream service unavailable signal"
-                        if previous_retryable_http
-                        else "GraphQL request failed",
-                        status_code=last_error.status_code if previous_retryable_http else None,
+                        message="GraphQL request failed after upstream service unavailable signal" if previous_retryable_http else "GraphQL request failed",
+                        status_code=(last_error.status_code if previous_retryable_http and last_error is not None else None),
                         transient=True,
                     )
                     should_retry = False
@@ -638,15 +618,11 @@ class GraphQLProxyClient:
                         continue
                     break
                 except requests.RequestException as exc:
-                    previous_retryable_http = last_error is not None and last_error.kind == "http_error" and (
-                        last_error.status_code in {502, 503, 504}
-                    )
+                    previous_retryable_http = last_error is not None and last_error.kind == "http_error" and (last_error.status_code in {502, 503, 504})
                     last_error = GraphQLProxyError(
                         kind="http_error" if previous_retryable_http else "request_error",
-                        message="GraphQL request failed after upstream service unavailable signal"
-                        if previous_retryable_http
-                        else "GraphQL request failed",
-                        status_code=last_error.status_code if previous_retryable_http else None,
+                        message="GraphQL request failed after upstream service unavailable signal" if previous_retryable_http else "GraphQL request failed",
+                        status_code=(last_error.status_code if previous_retryable_http and last_error is not None else None),
                         transient=True,
                     )
                     should_retry = False

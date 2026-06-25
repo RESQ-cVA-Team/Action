@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import date, datetime
 from itertools import product
 from typing import Any, List, Optional, Sequence, Tuple
 
@@ -30,9 +31,106 @@ from src.util.coalesce import coalesce
 logger = logging.getLogger(__name__)
 
 
-def _compiler_log_context(
-    event: str, operation: str, **fields: Any
-) -> dict[str, dict[str, Any]]:
+def _collect_lc_date_bounds(node: Any) -> tuple[Optional[str], Optional[str]]:
+    from src.domain.langchain.schema import AndFilter as LCAndFilter
+    from src.domain.langchain.schema import DateFilter as LCDateFilter
+
+    min_start: Optional[str] = None
+    max_end: Optional[str] = None
+    if node is None:
+        return None, None
+    if isinstance(node, LCAndFilter):
+        for child in node.and_ or []:
+            s, e = _collect_lc_date_bounds(child)
+            if s and (min_start is None or s < min_start):
+                min_start = s
+            if e and (max_end is None or e > max_end):
+                max_end = e
+    elif isinstance(node, LCDateFilter):
+        op = str(node.operator).upper()
+        if op in ("GE", "GT"):
+            min_start = node.value
+        elif op in ("LE", "LT"):
+            max_end = node.value
+    return min_start, max_end
+
+
+def _parse_iso_date(value: Optional[str]) -> Optional[date]:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except Exception:
+        try:
+            return datetime.fromisoformat(text).date()
+        except Exception:
+            return None
+
+
+def _build_month_periods_from_bounds(start_iso: Optional[str], end_iso: Optional[str]) -> List[TimePeriod]:
+    from calendar import monthrange
+
+    start = _parse_iso_date(start_iso)
+    end = _parse_iso_date(end_iso)
+    if start is None or end is None:
+        return []
+    if start > end:
+        start, end = end, start
+
+    y, m = start.year, start.month
+    end_key = (end.year, end.month)
+    periods: List[TimePeriod] = []
+    while (y, m) <= end_key:
+        month_start = date(y, m, 1)
+        month_end = date(y, m, monthrange(y, m)[1])
+        periods.append(
+            TimePeriod(
+                startDate=month_start.isoformat(),
+                endDate=month_end.isoformat(),
+            )
+        )
+        if m == 12:
+            y += 1
+            m = 1
+        else:
+            m += 1
+
+    return periods
+
+
+def _build_recent_month_periods(month_count: int = 12) -> List[TimePeriod]:
+    from calendar import monthrange
+
+    if month_count <= 0:
+        return []
+
+    today = date.today()
+    y, m = today.year, today.month
+    periods: List[TimePeriod] = []
+
+    for _ in range(month_count):
+        month_start = date(y, m, 1)
+        month_end = date(y, m, monthrange(y, m)[1])
+        periods.append(
+            TimePeriod(
+                startDate=month_start.isoformat(),
+                endDate=month_end.isoformat(),
+            )
+        )
+        if m == 1:
+            y -= 1
+            m = 12
+        else:
+            m -= 1
+
+    periods.reverse()
+    return periods
+
+
+def _compiler_log_context(event: str, operation: str, **fields: Any) -> dict[str, dict[str, Any]]:
     context: dict[str, Any] = {
         "event": event,
         "operation": operation,
@@ -292,12 +390,8 @@ class Dimension:
             return LogicalFilter(
                 operator="AND",
                 children=[
-                    IntegerFilter(
-                        property="AGE", operator=Operator("GE"), value=cat.min
-                    ),
-                    IntegerFilter(
-                        property="AGE", operator=Operator("LT"), value=cat.max
-                    ),
+                    IntegerFilter(property="AGE", operator=Operator("GE"), value=cat.min),
+                    IntegerFilter(property="AGE", operator=Operator("LT"), value=cat.max),
                 ],
             )
         if isinstance(self.spec, GroupByNIHSS):
@@ -389,14 +483,10 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
 
     filter_dims_all: List[Dimension] = [d for d in dims if d is not server_dim]
 
-    time_dims: List[Dimension] = [
-        d for d in filter_dims_all if isinstance(d.spec, GroupByTime)
-    ]
+    time_dims: List[Dimension] = [d for d in filter_dims_all if isinstance(d.spec, GroupByTime)]
     batched_time_periods: List[TimePeriod] = []
     batched_time_enabled = len(time_dims) == 1
-    batched_time_dim: Optional[Dimension] = (
-        time_dims[0] if batched_time_enabled else None
-    )
+    batched_time_dim: Optional[Dimension] = time_dims[0] if batched_time_enabled else None
     if batched_time_enabled and batched_time_dim is not None:
         batched_time_spec = batched_time_dim.spec
         if not isinstance(batched_time_spec, GroupByTime):
@@ -406,9 +496,7 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
             for cat in batched_time_dim.categories():
                 try:
                     start, end = cat
-                    batched_time_periods.append(
-                        TimePeriod(startDate=start.isoformat(), endDate=end.isoformat())
-                    )
+                    batched_time_periods.append(TimePeriod(startDate=start.isoformat(), endDate=end.isoformat()))
                 except Exception:
                     logger.debug(
                         "Failed to build batched time period; skipping invalid time bucket",
@@ -422,48 +510,43 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
                         ),
                     )
                     continue
+    if batched_time_enabled and not batched_time_periods and batched_time_dim is not None:
+        batched_time_spec = batched_time_dim.spec
+        if isinstance(batched_time_spec, GroupByTime):
+            grain = str(batched_time_spec.grain).upper()
+            if grain == "MONTH":
+                bound_start, bound_end = _collect_lc_date_bounds(chart.filters)
+                batched_time_periods = _build_month_periods_from_bounds(bound_start, bound_end)
+                if not batched_time_periods:
+                    # Keep monthly chart semantics stable when planner omitted
+                    # explicit time window/date filters.
+                    batched_time_periods = _build_recent_month_periods(12)
+
     if batched_time_enabled and not batched_time_periods:
         batched_time_enabled = False
         batched_time_dim = None
 
     # After batched_time_periods is built, constrain to DateFilter bounds if present
     if batched_time_enabled and batched_time_periods:
-        from src.domain.langchain.schema import AndFilter as LCAndFilter
-        from src.domain.langchain.schema import DateFilter as LCDateFilter
-
-        def _collect_lc_date_bounds(node: Any) -> tuple[Optional[str], Optional[str]]:
-            min_start: Optional[str] = None
-            max_end: Optional[str] = None
-            if node is None:
-                return None, None
-            if isinstance(node, LCAndFilter):
-                for child in node.and_ or []:
-                    s, e = _collect_lc_date_bounds(child)
-                    if s and (min_start is None or s < min_start):
-                        min_start = s
-                    if e and (max_end is None or e > max_end):
-                        max_end = e
-            elif isinstance(node, LCDateFilter):
-                op = str(node.operator).upper()
-                if op in ("GE", "GT"):
-                    min_start = node.value
-                elif op in ("LE", "LT"):
-                    max_end = node.value
-            return min_start, max_end
-
         bound_start, bound_end = _collect_lc_date_bounds(chart.filters)
         if bound_start or bound_end:
             filtered_periods: List[TimePeriod] = []
             for tp in batched_time_periods:
                 tp_start = tp.start_date
                 tp_end = tp.end_date
-                if bound_start and tp_end < bound_start:
+                if bound_start and tp_end and tp_end < bound_start:
                     continue
-                if bound_end and tp_start > bound_end:
+                if bound_end and tp_start and tp_start > bound_end:
                     continue
                 filtered_periods.append(tp)
             if filtered_periods:
                 batched_time_periods = filtered_periods
+            elif batched_time_dim is not None and isinstance(batched_time_dim.spec, GroupByTime):
+                grain = str(batched_time_dim.spec.grain).upper()
+                if grain == "MONTH":
+                    rebuilt = _build_month_periods_from_bounds(bound_start, bound_end)
+                    if rebuilt:
+                        batched_time_periods = rebuilt
 
     filter_dims: List[Dimension]
     if batched_time_enabled and batched_time_dim is not None:
@@ -490,9 +573,7 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
 
     batches: List[CompiledBatch] = [
         CompiledBatch(
-            server_groupby=server_dim.canonical_field()
-            if server_dim is not None
-            else None,
+            server_groupby=server_dim.canonical_field() if server_dim is not None else None,
             filter_dims=effective_filter_dims,
             combos_list=combos_list,
             batched_time_enabled=batched_time_enabled,

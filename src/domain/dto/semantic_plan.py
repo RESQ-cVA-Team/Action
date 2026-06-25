@@ -19,7 +19,6 @@ def _chart_list() -> List["SemanticChart"]:
 @dataclass
 class SemanticMetric:
     metric: str
-    distribution: Optional[S.DistributionSpec] = None
     data_origin: Optional[S.DataOriginSpec] = None
     origin_scope: Optional[S.OriginScopeSpec] = None
 
@@ -30,6 +29,7 @@ class SemanticChart:
     metrics: List[SemanticMetric] = field(default_factory=_metric_list)
     filters: Optional[S.FilterNode] = None
     group_by: List[S.GroupBySpec] = field(default_factory=_group_by_list)
+    numeric_resolution: Optional[S.NumericResolutionSpec] = None
 
 
 @dataclass

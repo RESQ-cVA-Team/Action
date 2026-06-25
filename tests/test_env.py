@@ -7,20 +7,20 @@ from src.util import env
 
 class EnvTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.original_loaded = env._loaded
-        env._loaded = True
+        self.original_loaded = env._loaded  # type: ignore[attr-defined]
+        env._loaded = True  # type: ignore[attr-defined]
 
     def tearDown(self) -> None:
-        env._loaded = self.original_loaded
+        env._loaded = self.original_loaded  # type: ignore[attr-defined]
 
     def test_parse_bool_accepts_truthy_and_falsy_values(self) -> None:
-        self.assertTrue(env._parse_bool("yes", default=False))
-        self.assertFalse(env._parse_bool("no", default=True))
-        self.assertTrue(env._parse_bool("maybe", default=True))
+        self.assertTrue(env._parse_bool("yes", default=False))  # type: ignore[attr-defined]
+        self.assertFalse(env._parse_bool("no", default=True))  # type: ignore[attr-defined]
+        self.assertTrue(env._parse_bool("maybe", default=True))  # type: ignore[attr-defined]
 
     def test_is_production_like_env_detects_common_keys(self) -> None:
         with mock.patch.dict(os.environ, {"NODE_ENV": "production"}, clear=False):
-            self.assertTrue(env._is_production_like_env())
+            self.assertTrue(env._is_production_like_env())  # type: ignore[attr-defined]
 
     def test_env_flag_uses_default_for_missing_values(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=False):

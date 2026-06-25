@@ -115,23 +115,9 @@ def _extract_intent_name_from_user_event(event: Dict[str, Any]) -> str:
     return ""
 
 
-def _collect_recent_user_messages(events: List[Dict[str, Any]], fallback_limit: int) -> List[str]:
-    messages: List[str] = []
-    for ev in events:
-        if ev.get("event") != "user":
-            continue
-        text_any = ev.get("text")
-        if isinstance(text_any, str) and text_any.strip():
-            messages.append(text_any.strip())
-
-    if len(messages) > fallback_limit:
-        return messages[-fallback_limit:]
-    return messages
-
-
 def _collect_visualization_thread_messages(events: List[Dict[str, Any]], fallback_limit: int = 12) -> List[str]:
     user_messages: List[str] = []
-    rejected_indices: set = set()
+    rejected_indices: set[int] = set()
     thread_start = 0
     user_count = 0
     last_user_index: Optional[int] = None
@@ -172,7 +158,7 @@ def _merge_entities(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str,
         if isinstance(existing, list):
             existing_list = cast(List[Any], existing)
             if isinstance(value, list):
-                existing_list.extend(value)
+                existing_list.extend(cast(List[Any], value))
             else:
                 existing_list.append(value)
             continue
@@ -191,12 +177,16 @@ def _extract_entities_from_user_event(event: Dict[str, Any]) -> Dict[str, Any]:
     parse_entities_any = parse_data.get("entities")
     event_entities_any = event.get("entities")
 
-    entities_any = parse_entities_any if isinstance(parse_entities_any, list) else event_entities_any
-    if not isinstance(entities_any, list):
+    entities_list: List[Any]
+    if isinstance(parse_entities_any, list):
+        entities_list = cast(List[Any], parse_entities_any)
+    elif isinstance(event_entities_any, list):
+        entities_list = cast(List[Any], event_entities_any)
+    else:
         return {}
 
     extracted: Dict[str, Any] = {}
-    for ent_any in cast(List[Any], entities_any):
+    for ent_any in entities_list:
         if not isinstance(ent_any, dict):
             continue
         ent = cast(Dict[str, Any], ent_any)
@@ -242,6 +232,34 @@ def _collect_visualization_thread_entities(events: List[Dict[str, Any]], fallbac
     for user_event in thread_slice:
         merged = _merge_entities(merged, _extract_entities_from_user_event(user_event))
 
+    return merged
+
+
+def _dedupe_list_values(values: List[Any]) -> List[Any]:
+    deduped: List[Any] = []
+    seen: set[str] = set()
+    for item in values:
+        marker = json.dumps(item, sort_keys=True, default=str)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        deduped.append(item)
+    return deduped
+
+
+def merge_latest_with_thread_entities(
+    latest_entities: Dict[str, Any],
+    events: List[Dict[str, Any]],
+    fallback_limit: int = 12,
+) -> Dict[str, Any]:
+    thread_entities = _collect_visualization_thread_entities(events, fallback_limit=fallback_limit)
+    if not thread_entities:
+        return dict(latest_entities)
+
+    merged = _merge_entities(thread_entities, latest_entities)
+    for key, value in list(merged.items()):
+        if isinstance(value, list):
+            merged[key] = _dedupe_list_values(cast(List[Any], value))
     return merged
 
 
@@ -338,25 +356,6 @@ def _collect_latest_visualization_plan_summary(
         plan_any = payload.get("plan")
         plan = cast(Dict[str, Any], plan_any) if isinstance(plan_any, dict) else {}
 
-        charts_any = plan.get("charts")
-        charts_list = cast(List[Any], charts_any) if isinstance(charts_any, list) else []
-        chart_count = len(charts_list)
-
-        statistical_tests_any = plan.get("statistical_tests")
-        statistical_tests_list = cast(List[Any], statistical_tests_any) if isinstance(statistical_tests_any, list) else []
-        stats_count = len(statistical_tests_list)
-
-        trace_id_any = payload.get("trace_id")
-        trace_id = trace_id_any.strip() if isinstance(trace_id_any, str) and trace_id_any.strip() else "unknown"
-
-        metric_names = []
-        for chart in charts_list:
-            for m in chart.get("metrics", []):
-                name = m.get("metric")
-                if name:
-                    metric_names.append(name)
-        chart_types = [c.get("chart_type") for c in charts_list if c.get("chart_type")]
-
         plan_json = json.dumps(plan, indent=2)
         summary = f"Previous chart plan (carry over everything except what the user explicitly changes):\n{plan_json}"
         return summary
@@ -382,7 +381,6 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
 
         user_message_any = latest_msg.get("text")
         user_message = user_message_any if isinstance(user_message_any, str) else ""
-        extracted_entities = normalize_entities(extract_entities_from_latest_message(latest_msg))
 
         metadata_any = latest_msg.get("metadata")
         metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
@@ -397,6 +395,13 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                 language = resolve_language(metadata=metadata, slots=slots, tracker=tracker)
 
                 events = tracker.events
+                extracted_entities = normalize_entities(
+                    merge_latest_with_thread_entities(
+                        normalize_entities(extract_entities_from_latest_message(latest_msg)),
+                        events,
+                        fallback_limit=fallback_limit,
+                    )
+                )
                 conversation_history = _collect_visualization_thread_messages(events, fallback_limit=fallback_limit)
 
                 planner_question = "\n".join([m for m in conversation_history if m.strip()]).strip() or user_message
@@ -500,6 +505,7 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
     override_language = resolve_override_language(latest_meta, ctx.slots)
     language = resolve_language(metadata=latest_meta, slots=ctx.slots)
     events = ctx.events
+    extracted_entities = normalize_entities(merge_latest_with_thread_entities(extracted_entities, events, fallback_limit=12))
     conversation_history = _collect_visualization_thread_messages(events, fallback_limit=12)
     latest_plan_summary = _collect_latest_visualization_plan_summary(events)
 
@@ -512,9 +518,6 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
 
     if latest_plan_summary and is_update:
         planner_question = (f"{latest_plan_summary}\n\nConversation context (oldest to newest user turns):\n{planner_question}").strip()
-
-    update_target_trace_id_any = latest_meta.get("update_target_trace_id")
-    update_target_trace_id = update_target_trace_id_any.strip() if isinstance(update_target_trace_id_any, str) and update_target_trace_id_any.strip() else None
 
     return {
         "user_message": ctx.text,
@@ -592,8 +595,8 @@ def _build_confirmation_message(plan_obj: lang_schema.AnalysisPlan, is_update: b
 
     # Time grouping
     group_by = chart.group_by or []
-    grains = [g.grain for g in group_by if hasattr(g, "grain") and g.grain]
-    grain_str = f" per {grains[0].lower()}" if grains else ""
+    grains = [grain for g in group_by if (grain := getattr(g, "grain", None)) is not None]
+    grain_str = f" per {str(grains[0]).lower()}" if grains else ""
 
     # Filters
     filters = chart.filters
@@ -631,7 +634,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         proceed=False,
                     )
 
-                metadata_any = ctx.tracker_snapshot.get("latest_message", {}).get("metadata") or {}
+                metadata_any: Any = ctx.tracker_snapshot.get("latest_message", {}).get("metadata") or {}
                 metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
                 is_retry = bool(metadata.get("is_retry"))
                 if is_retry:
