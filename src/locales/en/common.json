@@ -10,7 +10,10 @@
       "success_complete": "✅ Visualization generation complete.",
       "internal_error_routing": "Error routing visualization request: {error}",
       "internal_error_generating": "Error generating visualization: {error}",
-      "internal_error_guided": "Error generating guided visualization: {error}"
+      "internal_error_guided": "Error generating guided visualization: {error}",
+      "next_metric_payload": "Update visualization with to use {metric}",
+      "next_metric_button": "Show {metric}",
+      "next_metric_suggestion": "Would you like to see the same visualization for {metric}?"
     },
     "errors": {
       "visualization_timeout": "Visualization generation timed out. Please try again after a few minutes.",
