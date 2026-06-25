@@ -31,10 +31,7 @@ def _deep_freeze(value: Any) -> Any:
     """
     if isinstance(value, dict):
         mapping: Dict[str, Any] = cast(Dict[str, Any], value)
-        return tuple(
-            (k, _deep_freeze(v))
-            for k, v in sorted(mapping.items(), key=lambda kv: kv[0])
-        )
+        return tuple((k, _deep_freeze(v)) for k, v in sorted(mapping.items(), key=lambda kv: kv[0]))
     if isinstance(value, list):
         seq: List[Any] = cast(List[Any], value)
         return tuple(_deep_freeze(v) for v in seq)
@@ -119,9 +116,7 @@ class DateFilter(BaseModel):
         v_norm = v.upper()
         allowed = _enum_allowed_values(OperatorType)
         if v_norm not in allowed:
-            raise ValueError(
-                f"{v} is not a valid OperatorType. Allowed: {sorted(allowed)}"
-            )
+            raise ValueError(f"{v} is not a valid OperatorType. Allowed: {sorted(allowed)}")
         return v_norm
 
     @field_validator("value")
@@ -151,9 +146,7 @@ class AgeFilter(BaseModel):
         v_norm = v.upper()
         allowed = _enum_allowed_values(OperatorType)
         if v_norm not in allowed:
-            raise ValueError(
-                f"{v} is not a valid OperatorType. Allowed: {sorted(allowed)}"
-            )
+            raise ValueError(f"{v} is not a valid OperatorType. Allowed: {sorted(allowed)}")
         return v_norm
 
 
@@ -175,9 +168,7 @@ class NIHSSFilter(BaseModel):
         v_norm = v.upper()
         allowed = _enum_allowed_values(OperatorType)
         if v_norm not in allowed:
-            raise ValueError(
-                f"{v} is not a valid OperatorType. Allowed: {sorted(allowed)}"
-            )
+            raise ValueError(f"{v} is not a valid OperatorType. Allowed: {sorted(allowed)}")
         return v_norm
 
 
@@ -253,9 +244,7 @@ class StrokeFilter(BaseModel):
         v_norm = v.upper()
         allowed = _enum_allowed_values(StrokeType)
         if v_norm not in allowed:
-            raise ValueError(
-                f"{v} is not a valid StrokeType. Allowed: {sorted(allowed)}"
-            )
+            raise ValueError(f"{v} is not a valid StrokeType. Allowed: {sorted(allowed)}")
         return v_norm
 
 
@@ -277,9 +266,7 @@ class BooleanFilter(BaseModel):
         v_norm = v.upper()
         allowed = _enum_allowed_values(BooleanType)
         if v_norm not in allowed:
-            raise ValueError(
-                f"{v} is not a valid BooleanType. Allowed: {sorted(allowed)}"
-            )
+            raise ValueError(f"{v} is not a valid BooleanType. Allowed: {sorted(allowed)}")
         return v_norm
 
 
@@ -304,9 +291,7 @@ class GroupBySex(HashableBaseModel):
         categories: List of sex categories to group by (must be in SexType). None = all.
     """
 
-    categories: Optional[List[str]] = Field(
-        default=None, description="List of sex categories to group by. None = all."
-    )
+    categories: Optional[List[str]] = Field(default=None, description="List of sex categories to group by. None = all.")
 
     @field_validator("categories")
     def validate_categories(cls, v: Optional[List[str]]) -> Optional[List[str]]:
@@ -316,9 +301,7 @@ class GroupBySex(HashableBaseModel):
             for val in v:
                 val_norm = val.upper()
                 if val_norm not in allowed:
-                    raise ValueError(
-                        f"{val} is not a valid SexType. Allowed: {sorted(allowed)}"
-                    )
+                    raise ValueError(f"{val} is not a valid SexType. Allowed: {sorted(allowed)}")
                 out.append(val_norm)
             return out
         return v
@@ -367,9 +350,7 @@ class GroupByStrokeType(HashableBaseModel):
         categories: List of stroke types to group by (must be in StrokeType). None = all.
     """
 
-    categories: Optional[List[str]] = Field(
-        default=None, description="List of stroke types to group by. None = all."
-    )
+    categories: Optional[List[str]] = Field(default=None, description="List of stroke types to group by. None = all.")
 
     @field_validator("categories")
     def validate_categories(cls, v: Optional[List[str]]) -> Optional[List[str]]:
@@ -379,9 +360,7 @@ class GroupByStrokeType(HashableBaseModel):
             for val in v:
                 val_norm = val.upper()
                 if val_norm not in allowed:
-                    raise ValueError(
-                        f"{val} is not a valid StrokeType. Allowed: {sorted(allowed)}"
-                    )
+                    raise ValueError(f"{val} is not a valid StrokeType. Allowed: {sorted(allowed)}")
                 out.append(val_norm)
             return out
         return v
@@ -401,17 +380,13 @@ class TimeWindow(BaseModel):
     """
 
     last_n: int = Field(gt=0, description="Positive count for the relative window.")
-    unit: str = Field(
-        description="Time unit for the window. One of DAY, WEEK, BIWEEK, MONTH, QUARTER, YEAR."
-    )
+    unit: str = Field(description="Time unit for the window. One of DAY, WEEK, BIWEEK, MONTH, QUARTER, YEAR.")
 
     @field_validator("unit")
     def validate_unit(cls, v: str) -> str:
         v_norm = v.upper()
         if v_norm not in TIME_INTERVALS:
-            raise ValueError(
-                f"{v} is not a valid time unit. Allowed: {sorted(TIME_INTERVALS)}"
-            )
+            raise ValueError(f"{v} is not a valid time unit. Allowed: {sorted(TIME_INTERVALS)}")
         return v_norm
 
 
@@ -450,20 +425,14 @@ class GroupByTime(HashableBaseModel):
     """
 
     grain: str = Field(description="Time aggregation grain.")
-    window: Optional[Union[TimeWindow, TimeRange]] = Field(
-        default=None, description="Optional relative or absolute time window."
-    )
-    include_partial: Optional[bool] = Field(
-        default=None, description="Whether to include the current, incomplete bucket."
-    )
+    window: Optional[Union[TimeWindow, TimeRange]] = Field(default=None, description="Optional relative or absolute time window.")
+    include_partial: Optional[bool] = Field(default=None, description="Whether to include the current, incomplete bucket.")
 
     @field_validator("grain")
     def validate_grain(cls, v: str) -> str:
         v_norm = v.upper()
         if v_norm not in TIME_INTERVALS:
-            raise ValueError(
-                f"{v} is not a valid time grain. Allowed: {sorted(TIME_INTERVALS)}"
-            )
+            raise ValueError(f"{v} is not a valid time grain. Allowed: {sorted(TIME_INTERVALS)}")
         return v_norm
 
 
@@ -476,21 +445,15 @@ class GroupByBoolean(HashableBaseModel):
         values: List of boolean values to group by. None = all.
     """
 
-    boolean_type: str = Field(
-        description="The boolean field to group by. Should be a value from BooleanType."
-    )
-    values: Optional[List[bool]] = Field(
-        default=None, description="Boolean values to group by. None = all."
-    )
+    boolean_type: str = Field(description="The boolean field to group by. Should be a value from BooleanType.")
+    values: Optional[List[bool]] = Field(default=None, description="Boolean values to group by. None = all.")
 
     @field_validator("boolean_type")
     def validate_boolean_type(cls, v: str) -> str:
         v_norm = v.upper()
         allowed = _enum_allowed_values(BooleanType)
         if v_norm not in allowed:
-            raise ValueError(
-                f"{v} is not a valid BooleanType. Allowed: {sorted(allowed)}"
-            )
+            raise ValueError(f"{v} is not a valid BooleanType. Allowed: {sorted(allowed)}")
         return v_norm
 
 
@@ -503,21 +466,15 @@ class GroupByCanonicalField(HashableBaseModel):
         values: List of values to group by. None = all.
     """
 
-    field: str = Field(
-        description="Canonical field name, should be a value from CanonicalGroupByField."
-    )
-    values: Optional[List[str]] = Field(
-        default=None, description="Values to group by. None = all."
-    )
+    field: str = Field(description="Canonical field name, should be a value from CanonicalGroupByField.")
+    values: Optional[List[str]] = Field(default=None, description="Values to group by. None = all.")
 
     @field_validator("field")
     def validate_field(cls, v: str) -> str:
         v_norm = v.upper()
         allowed = _enum_allowed_values(CanonicalGroupByField)
         if v_norm not in allowed:
-            raise ValueError(
-                f"{v} is not a valid CanonicalGroupByField. Allowed: {sorted(allowed)}"
-            )
+            raise ValueError(f"{v} is not a valid CanonicalGroupByField. Allowed: {sorted(allowed)}")
         return v_norm
 
 
@@ -551,9 +508,7 @@ class DataOriginSpec(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    provider_id: Optional[List[int]] = Field(
-        default=None, alias="providerId", description="Provider IDs to query."
-    )
+    provider_id: Optional[List[int]] = Field(default=None, alias="providerId", description="Provider IDs to query.")
     provider_group_id: Optional[List[int]] = Field(
         default=None,
         alias="providerGroupId",
@@ -616,9 +571,7 @@ class OriginScopeSpec(BaseModel):
             "all_accessible",
         }
         if normalized not in allowed:
-            raise ValueError(
-                f"{v} is not a valid OriginScopeSpec.scopeType. Allowed: {sorted(allowed)}"
-            )
+            raise ValueError(f"{v} is not a valid OriginScopeSpec.scopeType. Allowed: {sorted(allowed)}")
         return normalized
 
     @field_validator("country_code")
@@ -633,32 +586,15 @@ class OriginScopeSpec(BaseModel):
         return token
 
 
-class DistributionSpec(BaseModel):
-    """
-    Specification for a distribution to be computed.
-
-    Attributes:
-        num_buckets: Number of buckets in the distribution.
-        min_value: Minimum value of the distribution range.
-        max_value: Maximum value of the distribution range.
-    """
-
-    num_buckets: int = Field(description="Number of buckets in the distribution.")
-    min_value: int = Field(description="Minimum value of the distribution range.")
-    max_value: int = Field(description="Maximum value of the distribution range.")
-
-
 class MetricSpec(BaseModel):
     """
     Specification for a metric to be analyzed or visualized.
 
     Attributes:
         metric: The metric type (must be in MetricType).
-        distribution: Optional distribution specification for this metric.
     """
 
     metric: str  # Should be a value from MetricType
-    distribution: Optional[DistributionSpec] = None
     data_origin: Optional[DataOriginSpec] = Field(default=None, alias="dataOrigin")
     origin_scope: Optional[OriginScopeSpec] = Field(default=None, alias="originScope")
 
@@ -669,10 +605,51 @@ class MetricSpec(BaseModel):
         v_norm = v.upper()
         allowed_values = _enum_allowed_values(MetricType)
         if v_norm not in allowed_values:
-            raise ValueError(
-                f"{v} is not a valid MetricType. Allowed: {sorted(allowed_values)}"
-            )
+            raise ValueError(f"{v} is not a valid MetricType. Allowed: {sorted(allowed_values)}")
         return v_norm
+
+
+class NumericValueDomainSpec(BaseModel):
+    """Optional numeric domain override for chart metric requests."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    lower_bound: Optional[int] = Field(default=None, alias="lowerBound")
+    upper_bound: Optional[int] = Field(default=None, alias="upperBound")
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> "NumericValueDomainSpec":
+        if self.lower_bound is not None and self.upper_bound is not None and self.lower_bound >= self.upper_bound:
+            raise ValueError("numericResolution.valueDomain requires lowerBound < upperBound.")
+        return self
+
+
+class NumericBucketingSpec(BaseModel):
+    """Optional bucketing override for chart metric requests."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    bucket_count: Optional[int] = Field(default=None, alias="bucketCount")
+    bucket_size: Optional[int] = Field(default=None, alias="bucketSize")
+
+    @model_validator(mode="after")
+    def validate_bucketing(self) -> "NumericBucketingSpec":
+        if self.bucket_count is None and self.bucket_size is None:
+            raise ValueError("numericResolution.bucketing requires bucketCount or bucketSize.")
+        if self.bucket_count is not None and self.bucket_count <= 0:
+            raise ValueError("numericResolution.bucketing.bucketCount must be > 0.")
+        if self.bucket_size is not None and self.bucket_size <= 0:
+            raise ValueError("numericResolution.bucketing.bucketSize must be > 0.")
+        return self
+
+
+class NumericResolutionSpec(BaseModel):
+    """Chart-level numeric request controls shared by all metrics in the chart."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    value_domain: Optional[NumericValueDomainSpec] = Field(default=None, alias="valueDomain")
+    bucketing: Optional[NumericBucketingSpec] = None
 
 
 class ChartSpec(BaseModel):
@@ -690,6 +667,9 @@ class ChartSpec(BaseModel):
     filters: Optional[FilterNode] = None
     group_by: Optional[List[GroupBySpec]] = None
     metrics: List[MetricSpec]
+    numeric_resolution: Optional[NumericResolutionSpec] = Field(default=None, alias="numericResolution")
+
+    model_config = ConfigDict(populate_by_name=True)
 
     @field_validator("chart_type")
     def validate_chart_type(cls, v: str) -> str:
@@ -724,9 +704,7 @@ class ChartSpec(BaseModel):
 
         for g in gb:
             if g in seen_specs:
-                raise ValueError(
-                    "Duplicate groupBy spec detected in chart.group_by; remove duplicates."
-                )
+                raise ValueError("Duplicate groupBy spec detected in chart.group_by; remove duplicates.")
             seen_specs.add(g)
 
             if isinstance(g, GroupBySex):
@@ -750,21 +728,15 @@ class ChartSpec(BaseModel):
                 if time_count > 1:
                     raise ValueError("Only one GroupByTime is allowed per chart.")
             elif isinstance(g, GroupByBoolean):
-                boolean_by_type[g.boolean_type] = (
-                    boolean_by_type.get(g.boolean_type, 0) + 1
-                )
+                boolean_by_type[g.boolean_type] = boolean_by_type.get(g.boolean_type, 0) + 1
             elif isinstance(g, GroupByCanonicalField):
                 if g.field in canonical_fields:
-                    raise ValueError(
-                        "Duplicate GroupByCanonicalField for the same field is not allowed."
-                    )
+                    raise ValueError("Duplicate GroupByCanonicalField for the same field is not allowed.")
                 canonical_fields.add(g.field)
 
         for btype, count in boolean_by_type.items():
             if count > 1:
-                raise ValueError(
-                    f"Only one GroupByBoolean per boolean_type is allowed (duplicate for '{btype}')."
-                )
+                raise ValueError(f"Only one GroupByBoolean per boolean_type is allowed (duplicate for '{btype}').")
 
         return self
 
@@ -787,9 +759,7 @@ class StatisticalTestSpec(BaseModel):
     def validate_test_type(cls, v: str) -> str:
         v_norm = v.upper()
         if v_norm not in StatisticalTestType:
-            raise ValueError(
-                f"{v} is not a valid StatisticalTestType. Allowed: {StatisticalTestType}"
-            )
+            raise ValueError(f"{v} is not a valid StatisticalTestType. Allowed: {StatisticalTestType}")
         return v_norm
 
     @model_validator(mode="after")
@@ -815,46 +785,32 @@ class StatisticalTestSpec(BaseModel):
             if isinstance(g, GroupBySex):
                 sex += 1
                 if sex > 1:
-                    raise ValueError(
-                        "Only one GroupBySex allowed in a statistical test."
-                    )
+                    raise ValueError("Only one GroupBySex allowed in a statistical test.")
             elif isinstance(g, GroupByStrokeType):
                 stroke += 1
                 if stroke > 1:
-                    raise ValueError(
-                        "Only one GroupByStrokeType allowed in a statistical test."
-                    )
+                    raise ValueError("Only one GroupByStrokeType allowed in a statistical test.")
             elif isinstance(g, GroupByAge):
                 age += 1
                 if age > 1:
-                    raise ValueError(
-                        "Only one GroupByAge allowed in a statistical test."
-                    )
+                    raise ValueError("Only one GroupByAge allowed in a statistical test.")
             elif isinstance(g, GroupByNIHSS):
                 nihss += 1
                 if nihss > 1:
-                    raise ValueError(
-                        "Only one GroupByNIHSS allowed in a statistical test."
-                    )
+                    raise ValueError("Only one GroupByNIHSS allowed in a statistical test.")
             elif isinstance(g, GroupByTime):
                 time += 1
                 if time > 1:
-                    raise ValueError(
-                        "Only one GroupByTime allowed in a statistical test."
-                    )
+                    raise ValueError("Only one GroupByTime allowed in a statistical test.")
             elif isinstance(g, GroupByBoolean):
                 boolean_types[g.boolean_type] = boolean_types.get(g.boolean_type, 0) + 1
             elif isinstance(g, GroupByCanonicalField):
                 if g.field in canonical_fields:
-                    raise ValueError(
-                        "Duplicate GroupByCanonicalField for same field in statistical test."
-                    )
+                    raise ValueError("Duplicate GroupByCanonicalField for same field in statistical test.")
                 canonical_fields.add(g.field)
         for bt, ct in boolean_types.items():
             if ct > 1:
-                raise ValueError(
-                    f"Duplicate GroupByBoolean for boolean_type '{bt}' in statistical test."
-                )
+                raise ValueError(f"Duplicate GroupByBoolean for boolean_type '{bt}' in statistical test.")
         return self
 
 
