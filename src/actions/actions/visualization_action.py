@@ -43,9 +43,6 @@ _DEFER_CALLBACK_HANDOFF = env_util.env_flag(
 _SHOW_NORMALIZATION_SUMMARY = env_util.env_flag(
     "ACTIONS_SHOW_NORMALIZATION_SUMMARY", default=True
 )
-_SHOW_NEXT_METRIC_FOLLOWUP_ON_FAILURE = env_util.env_flag(
-    "ACTIONS_SHOW_NEXT_METRIC_FOLLOWUP_ON_FAILURE", default=False
-)
 _VISUALIZATION_CONTINUATION_INTENTS = {
     "generate_visualization",
     "update_visualization",
@@ -1326,10 +1323,6 @@ class ActionOneShotGenerateVisualization(LongAction):
                             language=language,
                             params={"error": str(e)},
                         )
-                    )
-                if _SHOW_NEXT_METRIC_FOLLOWUP_ON_FAILURE and plan_obj is not None:
-                    _emit_next_metric_followup(
-                        ctx=ctx, plan_obj=plan_obj, language=language
                     )
             finally:
                 if completed_successfully:
