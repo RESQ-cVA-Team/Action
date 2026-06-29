@@ -722,7 +722,11 @@ class ChartSpec(BaseModel):
         boolean_by_type: dict[str, int] = {}
         canonical_fields: set[str] = set()
 
+        cleaned = []
+        seen_specs = set()
         for g in gb:
+            if isinstance(g, GroupBySex) and not g.categories:
+                continue
             if g in seen_specs:
                 raise ValueError(
                     "Duplicate groupBy spec detected in chart.group_by; remove duplicates."
@@ -759,13 +763,14 @@ class ChartSpec(BaseModel):
                         "Duplicate GroupByCanonicalField for the same field is not allowed."
                     )
                 canonical_fields.add(g.field)
+            cleaned.append(g)
 
         for btype, count in boolean_by_type.items():
             if count > 1:
                 raise ValueError(
                     f"Only one GroupByBoolean per boolean_type is allowed (duplicate for '{btype}')."
                 )
-
+        self.group_by = cleaned
         return self
 
 

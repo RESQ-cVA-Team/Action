@@ -9,7 +9,6 @@ from rasa_sdk.events import FollowupAction, SlotSet
 from src.actions.error_messages import visualization_error_payload
 from src.actions.helpers.metric import resolve_next_metric_candidate
 from src.actions.helpers.visualization import (
-    extract_entities_from_latest_message,
     format_execution_summary,
     normalize_entities,
     pretty_print_graphql_query,
@@ -554,7 +553,8 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
         user_message_any = latest_msg.get("text")
         user_message = user_message_any if isinstance(user_message_any, str) else ""
         extracted_entities = normalize_entities(
-            extract_entities_from_latest_message(latest_msg)
+            # extract_entities_from_latest_message(latest_msg)
+            _collect_visualization_thread_entities(tracker.events)
         )
 
         metadata_any = latest_msg.get("metadata")
@@ -701,7 +701,8 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
         cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
     )
     extracted_entities = normalize_entities(
-        extract_entities_from_latest_message(latest_msg)
+        # extract_entities_from_latest_message(latest_msg)
+        _collect_visualization_thread_entities(ctx.events)
     )
     override_language = resolve_override_language(latest_meta, ctx.slots)
     language = resolve_language(metadata=latest_meta, slots=ctx.slots)
