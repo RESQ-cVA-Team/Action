@@ -13,7 +13,6 @@ from src.actions.helpers.visualization import (
     normalize_entities,
     pretty_print_graphql_query,
     resolve_override_language,
-    serialize_plan_for_frontend,
 )
 from src.actions.i18n import resolve_language, translate
 from src.actions.long_action.long_action import LongAction, PreworkResult
@@ -991,17 +990,17 @@ class ActionOneShotGenerateVisualization(LongAction):
                 decision_name = str(outcome.decision or "").strip().lower()
                 language = cast(str, request_ctx.get("language") or "en")
                 if decision_name == "clarify":
-                    ctx.say(
-                        json_message={
-                            "type": "visualization_query_decision",
-                            "trace_id": trace_id,
-                            "decision": outcome.decision,
-                            "reason": outcome.reason,
-                            "clarification_type": outcome.clarification_type,
-                            "clarification_options": outcome.clarification_options,
-                            "message": outcome.message,
-                        }
-                    )
+                    # ctx.say(
+                    #     json_message={
+                    #         "type": "visualization_query_decision",
+                    #         "trace_id": trace_id,
+                    #         "decision": outcome.decision,
+                    #         "reason": outcome.reason,
+                    #         "clarification_type": outcome.clarification_type,
+                    #         "clarification_options": outcome.clarification_options,
+                    #         "message": outcome.message,
+                    #     }
+                    # )
                     ctx.say(
                         text=outcome.message
                         or translate(
@@ -1013,17 +1012,17 @@ class ActionOneShotGenerateVisualization(LongAction):
                         proceed=False,
                     )
                 if decision_name == "reject":
-                    ctx.say(
-                        json_message={
-                            "type": "visualization_query_decision",
-                            "trace_id": trace_id,
-                            "decision": outcome.decision,
-                            "reason": outcome.reason,
-                            "clarification_type": outcome.clarification_type,
-                            "clarification_options": outcome.clarification_options,
-                            "message": outcome.message,
-                        }
-                    )
+                    # ctx.say(
+                    #     json_message={
+                    #         "type": "visualization_query_decision",
+                    #         "trace_id": trace_id,
+                    #         "decision": outcome.decision,
+                    #         "reason": outcome.reason,
+                    #         "clarification_type": outcome.clarification_type,
+                    #         "clarification_options": outcome.clarification_options,
+                    #         "message": outcome.message,
+                    #     }
+                    # )
                     ctx.say(
                         text=outcome.message
                         or translate(
@@ -1062,17 +1061,17 @@ class ActionOneShotGenerateVisualization(LongAction):
                     lang_pipeline.get_plan_cache_diagnostics()
                 )
 
-                ctx.say(
-                    json_message={
-                        "type": "visualization_query_decision",
-                        "trace_id": trace_id,
-                        "decision": outcome.decision,
-                        "reason": outcome.reason,
-                        "clarification_type": outcome.clarification_type,
-                        "clarification_options": outcome.clarification_options,
-                        "message": outcome.message,
-                    }
-                )
+                # ctx.say(
+                #     json_message={
+                #         "type": "visualization_query_decision",
+                #         "trace_id": trace_id,
+                #         "decision": outcome.decision,
+                #         "reason": outcome.reason,
+                #         "clarification_type": outcome.clarification_type,
+                #         "clarification_options": outcome.clarification_options,
+                #         "message": outcome.message,
+                #     }
+                # )
                 return PreworkResult(
                     events=[SlotSet("awaiting_visualization_clarification", False)],
                     proceed=True,
@@ -1091,16 +1090,16 @@ class ActionOneShotGenerateVisualization(LongAction):
                 payload = visualization_error_payload(
                     e, trace_id=trace_id, language=language
                 )
-                ctx.say(
-                    json_message={
-                        "type": "visualization_error",
-                        "trace_id": payload.get("trace_id"),
-                        "error_code": payload.get("code"),
-                        "reason": payload.get("reason"),
-                        "message": payload.get("message"),
-                        "retry": True,
-                    }
-                )
+                # ctx.say(
+                #     json_message={
+                #         "type": "visualization_error",
+                #         "trace_id": payload.get("trace_id"),
+                #         "error_code": payload.get("code"),
+                #         "reason": payload.get("reason"),
+                #         "message": payload.get("message"),
+                #         "retry": True,
+                #     }
+                # )
                 ctx.say(
                     text=translate(
                         "action.common.error_with_context",
@@ -1160,21 +1159,21 @@ class ActionOneShotGenerateVisualization(LongAction):
                         return
                     query_pretty = pretty_print_graphql_query(query_text_any)
 
-                    ctx.say(
-                        json_message={
-                            "type": _VISUALIZATION_GRAPHQL_QUERY_TYPE,
-                            "trace_id": trace_id,
-                            "request_label": payload.get("request_label"),
-                            "group_by_field": payload.get("group_by_field"),
-                            "query_hash": payload.get("query_hash"),
-                            "query": query_pretty,
-                        }
-                    )
-                    ctx.say(
-                        text=(
-                            f"[dev] GraphQL query\nhash={payload.get('query_hash') or '-'}\n{query_pretty}"
-                        )
-                    )
+                    # ctx.say(
+                    #     json_message={
+                    #         "type": _VISUALIZATION_GRAPHQL_QUERY_TYPE,
+                    #         "trace_id": trace_id,
+                    #         "request_label": payload.get("request_label"),
+                    #         "group_by_field": payload.get("group_by_field"),
+                    #         "query_hash": payload.get("query_hash"),
+                    #         "query": query_pretty,
+                    #     }
+                    # )
+                    # ctx.say(
+                    #     text=(
+                    #         f"[dev] GraphQL query\nhash={payload.get('query_hash') or '-'}\n{query_pretty}"
+                    #     )
+                    # )
 
                 # In deferred-handoff mode, initial routing/clarification can use
                 # normal dispatcher delivery and heavy generation streams via
@@ -1230,13 +1229,13 @@ class ActionOneShotGenerateVisualization(LongAction):
                     )
                     planner_diagnostics = lang_pipeline.get_plan_cache_diagnostics()
 
-                ctx.say(
-                    json_message={
-                        "type": "visualization_plan",
-                        "trace_id": trace_id,
-                        "plan": serialize_plan_for_frontend(plan_obj),
-                    }
-                )
+                # ctx.say(
+                #     json_message={
+                #         "type": "visualization_plan",
+                #         "trace_id": trace_id,
+                #         "plan": serialize_plan_for_frontend(plan_obj),
+                #     }
+                # )
 
                 visualization = await execute_plan_async(
                     plan_obj,
@@ -1273,17 +1272,17 @@ class ActionOneShotGenerateVisualization(LongAction):
                 if isinstance(e, VisualizationExecutionError) and (
                     e.reason == "origin_scope_resolution" or e.clarification_type
                 ):
-                    ctx.say(
-                        json_message={
-                            "type": "visualization_query_decision",
-                            "trace_id": trace_id,
-                            "decision": "clarify",
-                            "reason": e.reason,
-                            "clarification_type": e.clarification_type,
-                            "clarification_options": e.clarification_options,
-                            "message": e.user_message,
-                        }
-                    )
+                    # ctx.say(
+                    #     json_message={
+                    #         "type": "visualization_query_decision",
+                    #         "trace_id": trace_id,
+                    #         "decision": "clarify",
+                    #         "reason": e.reason,
+                    #         "clarification_type": e.clarification_type,
+                    #         "clarification_options": e.clarification_options,
+                    #         "message": e.user_message,
+                    #     }
+                    # )
                     ctx.say(text=e.user_message)
                     return None
 
@@ -1299,16 +1298,16 @@ class ActionOneShotGenerateVisualization(LongAction):
                 payload = visualization_error_payload(
                     e, trace_id=trace_id, language=language
                 )
-                ctx.say(
-                    json_message={
-                        "type": "visualization_error",
-                        "trace_id": payload.get("trace_id"),
-                        "error_code": payload.get("code"),
-                        "reason": payload.get("reason"),
-                        "message": payload.get("message"),
-                        "retry": True,
-                    }
-                )
+                # ctx.say(
+                #     json_message={
+                #         "type": "visualization_error",
+                #         "trace_id": payload.get("trace_id"),
+                #         "error_code": payload.get("code"),
+                #         "reason": payload.get("reason"),
+                #         "message": payload.get("message"),
+                #         "retry": True,
+                #     }
+                # )
                 ctx.say(
                     text=translate(
                         "action.common.error_with_context",
@@ -1344,12 +1343,12 @@ class ActionOneShotGenerateVisualization(LongAction):
                             )
                         )
                     else:
-                        ctx.say(
-                            text=translate(
-                                "action.visualization.success_complete",
-                                language=language,
-                            )
-                        )
+                        # ctx.say(
+                        #     text=translate(
+                        #         "action.visualization.success_complete",
+                        #         language=language,
+                        #     )
+                        # )
                     if plan_obj is not None:
                         _emit_next_metric_followup(
                             ctx=ctx, plan_obj=plan_obj, language=language
