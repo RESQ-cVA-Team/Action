@@ -1,7 +1,7 @@
 {
   "action": {
     "common": {
-      "error_with_context": "❌ {message} (Error code: {code}, Trace ID: {trace_id})"
+      "error_with_context": "❌ {message}"
     },
     "visualization": {
       "clarify_default": "I need a bit more detail before I can generate a visualization.",
@@ -10,10 +10,13 @@
       "success_complete": "✅ Visualization generation complete.",
       "internal_error_routing": "Error routing visualization request: {error}",
       "internal_error_generating": "Error generating visualization: {error}",
-      "internal_error_guided": "Error generating guided visualization: {error}"
+      "internal_error_guided": "Error generating guided visualization: {error}",
+      "next_metric_payload": "Update visualization with to use {metric}",
+      "next_metric_button": "Show {metric}",
+      "next_metric_suggestion": "Would you like to see the same visualization for {metric}?"
     },
     "errors": {
-      "visualization_timeout": "Visualization generation timed out. Please try again.",
+      "visualization_timeout": "Visualization generation timed out. Please try again after a few minutes.",
       "visualization_generic": "Error generating visualization.",
       "hospital_auth_unavailable": "Your analytics session is not available to the action server right now. Please try again after signing in again, or provide a hospital manually.",
       "hospital_timeout": "The provider directory request timed out. Please try again.",

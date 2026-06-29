@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, List, Optional, Sequence
+from dataclasses import dataclass, field
+from typing import Any, List, Optional, Sequence, cast
 
 from src.domain.graphql.request import (
     DataOrigin,
@@ -13,7 +13,6 @@ from src.domain.graphql.request import (
 from src.domain.graphql.request import DateFilter as GQLDateFilter
 from src.domain.graphql.request import LogicalFilter as GQLLogicalFilter
 from src.domain.graphql.ssot_enums import GroupByType
-from src.executors.mapping.series_mapper import period_to_label
 from src.executors.planning.query_compiler import Dimension
 from src.util import env as env_util
 
@@ -71,9 +70,12 @@ class RequestSpec:
     group_by_field: Optional[str]
     add_time_period_labels: bool
     scope_label: Optional[str] = None
+    batched_time_periods: List[TimePeriod] = field(default_factory=lambda: cast(List[TimePeriod], []))
 
 
-def _collect_date_bounds(filter_obj: Optional[Any]) -> tuple[Optional[str], Optional[str]]:
+def _collect_date_bounds(
+    filter_obj: Optional[Any],
+) -> tuple[Optional[str], Optional[str]]:
     if filter_obj is None:
         return None, None
 
@@ -173,6 +175,7 @@ def build_primary_request_specs(
                         group_by_field=group_by_field,
                         add_time_period_labels=batched_time_enabled,
                         scope_label=effective_scope_label,
+                        batched_time_periods=batched_time_periods,
                     )
                 )
                 combo_contexts.append(
@@ -202,6 +205,7 @@ def build_primary_request_specs(
                     include_metric_alias=include_metric_alias,
                     group_by_field=group_by_field,
                     add_time_period_labels=batched_time_enabled,
+                    batched_time_periods=batched_time_periods,
                 )
             )
             combo_contexts.append(
@@ -226,8 +230,9 @@ def build_fallback_request_specs(
 
     for context in combo_contexts:
         for period in batched_time_periods:
-            period_label = period_to_label(period)
-            retry_label_parts = [*context.label_parts, period_label]
+            # period_label = period_to_label(period)
+            # retry_label_parts = [*context.label_parts, period_label]
+            retry_label_parts = context.label_parts
             req = GraphQLQueryRequest(
                 metrics=context.metric_requests,
                 timePeriod=period,
@@ -243,6 +248,7 @@ def build_fallback_request_specs(
                     include_metric_alias=context.include_metric_alias,
                     group_by_field=context.group_by_field,
                     add_time_period_labels=True,
+                    batched_time_periods=[period],
                 )
             )
 

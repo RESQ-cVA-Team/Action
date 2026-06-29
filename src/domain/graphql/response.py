@@ -56,17 +56,27 @@ class D1(BaseModel):
 
 class Kpi1(BaseModel):
     case_count: List[int] = Field(..., alias="caseCount")
-    percents: Optional[List[float]] = None
-    normalized_percents: Optional[List[float]] = Field(default=None, alias="normalizedPercents")
+    percents: Optional[List[Optional[float]]] = None
+    normalized_percents: Optional[List[Optional[float]]] = Field(
+        default=None, alias="normalizedPercents"
+    )
     cohort_size: Optional[int] = Field(default=None, alias="cohortSize")
-    normalized_cohort_size: Optional[List[int]] = Field(default=None, alias="normalizedCohortSize")
+    normalized_cohort_size: Optional[List[int]] = Field(
+        default=None, alias="normalizedCohortSize"
+    )
     median: Optional[float] = None
     mean: Optional[float] = None
     variance: Optional[float] = None
-    confidence_interval_mean: Optional[List[Optional[float]]] = Field(default=None, alias="confidenceIntervalMean")
-    confidence_interval_median: Optional[List[Optional[float]]] = Field(default=None, alias="confidenceIntervalMedian")
-    interquartile_range: Optional[float] = Field(default=None, alias="interquartileRange")
-    quartiles: Optional[List[float]] = None
+    confidence_interval_mean: Optional[List[Optional[float]]] = Field(
+        default=None, alias="confidenceIntervalMean"
+    )
+    confidence_interval_median: Optional[List[Optional[float]]] = Field(
+        default=None, alias="confidenceIntervalMedian"
+    )
+    interquartile_range: Optional[float] = Field(
+        default=None, alias="interquartileRange"
+    )
+    quartiles: Optional[List[Optional[float]]] = None
     d1: Optional[D1] = None
 
     model_config = ConfigDict(populate_by_name=True)
@@ -94,7 +104,9 @@ class Metric(BaseModel):
 
 class GetMetrics(BaseModel):
     # API returns a single generalStatsGroup object; accept either object or list for robustness
-    general_stats_group: Optional[GeneralStatsGroup | List[GeneralStatsGroup]] = Field(default=None, alias="generalStatsGroup")
+    general_stats_group: Optional[GeneralStatsGroup | List[GeneralStatsGroup]] = Field(
+        default=None, alias="generalStatsGroup"
+    )
     metrics: Optional[Dict[str, Metric]] = Field(default=None, alias="metrics")
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
@@ -123,6 +135,8 @@ class Data(BaseModel):
 class MetricsQueryResponse(BaseModel):
     # GraphQL may return data: null alongside errors; make this optional to surface errors cleanly
     data: Optional[Data] = None
-    errors: Optional[List[Dict[str, Any]]] = None  # GraphQL typically uses structured errors
+    errors: Optional[List[Dict[str, Any]]] = (
+        None  # GraphQL typically uses structured errors
+    )
 
     model_config = ConfigDict(populate_by_name=True)

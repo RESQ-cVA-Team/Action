@@ -1,16 +1,35 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, cast
 
-from src.shared.ssot_loader import get_metric_text_lookup, get_ssot_items, normalize_metric_text_key
+from src.shared.ssot_loader import (
+    get_metric_text_lookup,
+    get_ssot_items,
+    normalize_metric_text_key,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def normalize_text(value: str) -> str:
-    text = (value or "").strip().lower().replace("_", " ").replace("-", " ")
+    text = (value or "").strip().lower()
+    text = re.sub(r"[\W_]+", " ", text, flags=re.UNICODE)
     return " ".join(text.split())
+
+
+def _flatten_synonyms(value: Any) -> List[str]:
+    out: List[str] = []
+
+    if isinstance(value, dict):
+        for localized in cast(Dict[Any, Any], value).values():
+            if isinstance(localized, list):
+                for item in cast(List[Any], localized):
+                    if isinstance(item, str) and item.strip():
+                        out.append(item.strip())
+
+    return out
 
 
 def _load_ssot_items(filename: str) -> List[Dict[str, Any]]:
@@ -70,19 +89,19 @@ def resolve_catalog_candidates(filename: str, raw_value: str) -> List[str]:
             continue
         canonical = canonical_any.strip().upper()
         aliases = [canonical_any]
-        synonyms_any = item.get("synonyms")
-        if isinstance(synonyms_any, list):
-            for value in cast(List[Any], synonyms_any):
-                if isinstance(value, str):
-                    aliases.append(value)
+        aliases.extend(_flatten_synonyms(item.get("synonyms")))
 
-        normalized_aliases = [normalize_text(alias) for alias in aliases if normalize_text(alias)]
+        normalized_aliases = [
+            normalize_text(alias) for alias in aliases if normalize_text(alias)
+        ]
         if normalized in normalized_aliases:
             if canonical not in exact_matches:
                 exact_matches.append(canonical)
             continue
 
-        if any(normalized in alias or alias in normalized for alias in normalized_aliases):
+        if any(
+            normalized in alias or alias in normalized for alias in normalized_aliases
+        ):
             if canonical not in fuzzy_matches:
                 fuzzy_matches.append(canonical)
 

@@ -7,6 +7,7 @@ _loaded = False
 _DOTENV_OVERRIDE_ENV = "ACTION_DOTENV_OVERRIDE"
 _TRUTHY_VALUES = {"1", "true", "yes", "y", "on"}
 _FALSY_VALUES = {"0", "false", "no", "n", "off", ""}
+_PRODUCTION_VALUES = {"prod", "production"}
 
 
 def _parse_bool(value: str | None, default: bool) -> bool:
@@ -21,6 +22,14 @@ def _parse_bool(value: str | None, default: bool) -> bool:
     return default
 
 
+def _is_production_like_env() -> bool:
+    for key in ("ACTION_ENV", "APP_ENV", "ENV", "ENVIRONMENT", "NODE_ENV"):
+        value = os.getenv(key)
+        if value and value.strip().lower() in _PRODUCTION_VALUES:
+            return True
+    return False
+
+
 def _ensure_loaded() -> None:
     """Load .env once (if present) to populate os.environ.
 
@@ -33,7 +42,9 @@ def _ensure_loaded() -> None:
 
     global _loaded
     if not _loaded:
-        load_dotenv(override=_parse_bool(os.getenv(_DOTENV_OVERRIDE_ENV), default=False))
+        override_requested = _parse_bool(os.getenv(_DOTENV_OVERRIDE_ENV), default=False)
+        override_enabled = override_requested and not _is_production_like_env()
+        load_dotenv(override=override_enabled)
         _loaded = True
 
 

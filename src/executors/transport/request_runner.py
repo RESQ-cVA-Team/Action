@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Callable, Dict, List, Optional, cast
 
 from src.domain.dto.charts.types import ChartSeries
 from src.domain.graphql.request import GraphQLQueryRequest
@@ -12,6 +12,8 @@ from src.executors.mapping.series_mapper import map_metrics_payload_to_series
 from src.util.logging_utils import log_context
 
 logger = logging.getLogger(__name__)
+
+GraphQLQueryCallback = Callable[[Dict[str, Any]], None]
 
 
 def _runner_log_context(
@@ -52,6 +54,8 @@ async def run_graphql_request(
     scope_label: Optional[str] = None,
     request_warnings: Optional[List[str]] = None,
     log_graphql_query: bool = False,
+    batched_time_periods: Optional[List[Any]] = None,
+    query_cb: Optional[GraphQLQueryCallback] = None,
 ) -> List[ChartSeries]:
     trace_label = trace_id
     request_label = scope_label or " | ".join([part for part in label_parts if part]) or "(none)"
@@ -64,8 +68,32 @@ async def run_graphql_request(
             graphql_hash=q_hash,
             request_label=request_label,
         ):
+            if query_cb is not None:
+                try:
+                    query_cb(
+                        {
+                            "trace_id": trace_id,
+                            "request_label": request_label,
+                            "group_by_field": group_by_field,
+                            "query_hash": q_hash,
+                            "query": query_str,
+                        }
+                    )
+                except Exception:
+                    logger.debug(
+                        "[plan_executor] Failed to emit GraphQL query callback",
+                        exc_info=True,
+                        extra=_runner_log_context(
+                            event="request_runner.graphql_query_callback_failed",
+                            outcome="degraded",
+                            request_label=request_label,
+                            query_hash=q_hash,
+                            group_by_field=group_by_field,
+                        ),
+                    )
+
             if log_graphql_query:
-                logger.debug("[plan_executor] GraphQL query for chart:\n%s", query_str)
+                logger.info("[plan_executor] GraphQL query for chart:\n%s", query_str)
             else:
                 logger.debug(
                     "[plan_executor] GraphQL query prepared",
@@ -83,7 +111,13 @@ async def run_graphql_request(
             except GraphQLProxyError as exc:
                 if exc.kind == "timeout":
                     request_failures.append("timeout")
-                elif exc.kind == "http_error" and exc.status_code in {429, 500, 502, 503, 504}:
+                elif exc.kind == "http_error" and exc.status_code in {
+                    429,
+                    500,
+                    502,
+                    503,
+                    504,
+                }:
                     request_failures.append("service_unavailable")
                 else:
                     request_failures.append("upstream_error")
@@ -203,6 +237,7 @@ async def run_graphql_request(
         group_by_field=group_by_field,
         add_time_period_labels=add_time_period_labels,
         scope_label=scope_label,
+        batched_time_periods=batched_time_periods,
     )
 
     skipped_rows = 0

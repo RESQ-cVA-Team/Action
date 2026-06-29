@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, cast
 
+from src.actions.ssot_lookup import resolve_metric_candidates
 from src.shared import ssot_loader
 
 
@@ -65,7 +66,9 @@ def pick_description(descriptions: Dict[str, str], language: str) -> str:
     return ""
 
 
-def suggest_metrics(metric_lookup: Dict[str, Dict[str, Any]], max_items: int = 5) -> List[str]:
+def suggest_metrics(
+    metric_lookup: Dict[str, Dict[str, Any]], max_items: int = 5
+) -> List[str]:
     seen: Dict[str, str] = {}
     for record in metric_lookup.values():
         canonical = record.get("canonical")
@@ -80,3 +83,32 @@ def suggest_metrics(metric_lookup: Dict[str, Dict[str, Any]], max_items: int = 5
             break
 
     return list(seen.values())
+
+
+def resolve_next_metric_candidate(raw_value: str) -> Optional[str]:
+    candidates = resolve_metric_candidates(raw_value)
+    if not candidates:
+        return None
+    canonical = candidates[0]
+    ssot_items = ssot_loader.get_ssot_items("MetricType.yml")
+
+    current_index: Optional[int] = None
+    for item in ssot_items:
+        if item.get("canonical") == canonical:
+            raw_idx = item.get("index")
+            if isinstance(raw_idx, int):
+                current_index = raw_idx
+            break
+    if current_index is None:
+        return None
+
+    next_index = current_index + 1
+    matches: List[str] = []
+    for item in ssot_items:
+        if item.get("index") == next_index:
+            next_canonical = item.get("canonical")
+            if isinstance(next_canonical, str) and next_canonical.strip():
+                matches.append(next_canonical.strip().upper())
+    if len(matches) == 1:
+        return matches[0]
+    return None

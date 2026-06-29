@@ -5,6 +5,18 @@ on:
     branches:
       - master
       - dev
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: "Branch, tag, or commit to build (optional; defaults to selected run ref)"
+        required: false
+        type: string
+      push:
+        description: "Push image to GHCR (false builds only)"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
 
 jobs:
   build:
@@ -18,6 +30,7 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+          ref: ${{ github.event.inputs.target_ref || github.ref }}
         
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
@@ -35,11 +48,24 @@ jobs:
           echo "REPO_NAME_LC=${REPO_NAME,,}" >> "$GITHUB_ENV"
 
       - name: Select image tags for branch
+        env:
+          TARGET_REF: ${{ github.event.inputs.target_ref }}
         run: |
           SHORT_SHA="${GITHUB_SHA::7}"
           BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
           echo "BUILD_DATE=$BUILD_DATE" >> "$GITHUB_ENV"
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            RAW_REF="${TARGET_REF:-${GITHUB_REF_NAME}}"
+            SAFE_REF="$(echo "$RAW_REF" | tr '[:upper:]' '[:lower:]' | tr '/ ' '-' | tr -cd 'a-z0-9._-')"
+            if [ -z "$SAFE_REF" ]; then
+              SAFE_REF="manual"
+            fi
+            echo "IMAGE_TAG=${SAFE_REF}-manual" >> "$GITHUB_ENV"
+            echo "IMAGE_SHA_TAG=${SAFE_REF}-${SHORT_SHA}" >> "$GITHUB_ENV"
+            exit 0
+          fi
 
           case "${GITHUB_REF_NAME}" in
             master)
@@ -64,16 +90,23 @@ jobs:
           wc -l src/shared/SSOT/*.yml || true
 
       - name: Build and push Docker image (fail-fast if SSOT missing)
+        env:
+          PUSH_IMAGES: ${{ github.event.inputs.push || 'true' }}
         run: |
           set -euo pipefail
           ACTION_VERSION="$(tr -d '[:space:]' < VERSION)"
           SSOT_SHA="$(git ls-files -s src/shared/SSOT | awk '{print $2}' || echo 'unknown')"
+          DOCKER_OUTPUT_FLAG="--push"
+          ATTEST_ARGS=(--provenance=mode=max --sbom=true)
+          if [ "${PUSH_IMAGES:-true}" = "false" ]; then
+            DOCKER_OUTPUT_FLAG="--load"
+            ATTEST_ARGS=()
+          fi
           docker buildx build \
             --platform linux/amd64 \
             --progress=plain \
-            --provenance=mode=max \
-            --sbom=true \
-            --push \
+            "${ATTEST_ARGS[@]}" \
+            $DOCKER_OUTPUT_FLAG \
             --build-arg ACTION_VERSION=$ACTION_VERSION \
             --build-arg ACTION_COMMIT_SHA=$GITHUB_SHA \
             --build-arg ACTION_IMAGE_TAG=$IMAGE_TAG \

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Union, cast
+from typing import Any, Dict, List, Literal, Optional, Set, Union, cast
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -108,6 +108,7 @@ class DateFilter(BaseModel):
     """
 
     operator: str
+    type: Literal["DateFilter"] = "DateFilter"
     value: str  # ISO 8601 date string
 
     @field_validator("operator")
@@ -137,6 +138,7 @@ class AgeFilter(BaseModel):
     """
 
     operator: str
+    type: Literal["AgeFilter"] = "AgeFilter"
     value: float
 
     @field_validator("operator")
@@ -158,6 +160,7 @@ class NIHSSFilter(BaseModel):
     """
 
     operator: str
+    type: Literal["NIHSSFilter"] = "NIHSSFilter"
     value: float
 
     @field_validator("operator")
@@ -177,6 +180,7 @@ class AndFilter(BaseModel):
         and_: List of filter nodes to combine with AND logic.
     """
 
+    type: Literal["AndFilter"] = "AndFilter"
     and_: List["FilterNode"]
 
 
@@ -188,6 +192,7 @@ class OrFilter(BaseModel):
         or_: List of filter nodes to combine with OR logic.
     """
 
+    type: Literal["OrFilter"] = "OrFilter"
     or_: List["FilterNode"]
 
 
@@ -199,6 +204,7 @@ class NotFilter(BaseModel):
         not_: The filter node to negate.
     """
 
+    type: Literal["NotFilter"] = "NotFilter"
     not_: "FilterNode"
 
 
@@ -210,6 +216,7 @@ class SexFilter(BaseModel):
         value: The sex value to filter by (must be in SexType).
     """
 
+    type: Literal["SexFilter"] = "SexFilter"
     value: str  # Should be a value from SexType
 
     @field_validator("value")
@@ -229,6 +236,7 @@ class StrokeFilter(BaseModel):
         value: The stroke type to filter by (must be in StrokeType).
     """
 
+    type: Literal["StrokeFilter"] = "StrokeFilter"
     value: str  # Should be a value from StrokeType
 
     @field_validator("value")
@@ -249,6 +257,7 @@ class BooleanFilter(BaseModel):
         value: The boolean value to match (True/False).
     """
 
+    type: Literal["BooleanFilter"] = "BooleanFilter"
     boolean_type: str  # Should be a value from BooleanType
     value: bool
 
@@ -261,7 +270,17 @@ class BooleanFilter(BaseModel):
         return v_norm
 
 
-FilterNode = Union[AndFilter, OrFilter, NotFilter, DateFilter, AgeFilter, NIHSSFilter, SexFilter, StrokeFilter, BooleanFilter]
+FilterNode = Union[
+    AndFilter,
+    OrFilter,
+    NotFilter,
+    DateFilter,
+    AgeFilter,
+    NIHSSFilter,
+    SexFilter,
+    StrokeFilter,
+    BooleanFilter,
+]
 
 
 class GroupBySex(HashableBaseModel):
@@ -490,7 +509,11 @@ class DataOriginSpec(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     provider_id: Optional[List[int]] = Field(default=None, alias="providerId", description="Provider IDs to query.")
-    provider_group_id: Optional[List[int]] = Field(default=None, alias="providerGroupId", description="Provider group IDs to query.")
+    provider_group_id: Optional[List[int]] = Field(
+        default=None,
+        alias="providerGroupId",
+        description="Provider group IDs to query.",
+    )
 
     @field_validator("provider_id", "provider_group_id")
     def validate_positive_ids(cls, v: Optional[List[int]]) -> Optional[List[int]]:
@@ -563,32 +586,15 @@ class OriginScopeSpec(BaseModel):
         return token
 
 
-class DistributionSpec(BaseModel):
-    """
-    Specification for a distribution to be computed.
-
-    Attributes:
-        num_buckets: Number of buckets in the distribution.
-        min_value: Minimum value of the distribution range.
-        max_value: Maximum value of the distribution range.
-    """
-
-    num_buckets: int = Field(description="Number of buckets in the distribution.")
-    min_value: int = Field(description="Minimum value of the distribution range.")
-    max_value: int = Field(description="Maximum value of the distribution range.")
-
-
 class MetricSpec(BaseModel):
     """
     Specification for a metric to be analyzed or visualized.
 
     Attributes:
         metric: The metric type (must be in MetricType).
-        distribution: Optional distribution specification for this metric.
     """
 
     metric: str  # Should be a value from MetricType
-    distribution: Optional[DistributionSpec] = None
     data_origin: Optional[DataOriginSpec] = Field(default=None, alias="dataOrigin")
     origin_scope: Optional[OriginScopeSpec] = Field(default=None, alias="originScope")
 
@@ -601,6 +607,49 @@ class MetricSpec(BaseModel):
         if v_norm not in allowed_values:
             raise ValueError(f"{v} is not a valid MetricType. Allowed: {sorted(allowed_values)}")
         return v_norm
+
+
+class NumericValueDomainSpec(BaseModel):
+    """Optional numeric domain override for chart metric requests."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    lower_bound: Optional[int] = Field(default=None, alias="lowerBound")
+    upper_bound: Optional[int] = Field(default=None, alias="upperBound")
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> "NumericValueDomainSpec":
+        if self.lower_bound is not None and self.upper_bound is not None and self.lower_bound >= self.upper_bound:
+            raise ValueError("numericResolution.valueDomain requires lowerBound < upperBound.")
+        return self
+
+
+class NumericBucketingSpec(BaseModel):
+    """Optional bucketing override for chart metric requests."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    bucket_count: Optional[int] = Field(default=None, alias="bucketCount")
+    bucket_size: Optional[int] = Field(default=None, alias="bucketSize")
+
+    @model_validator(mode="after")
+    def validate_bucketing(self) -> "NumericBucketingSpec":
+        if self.bucket_count is None and self.bucket_size is None:
+            raise ValueError("numericResolution.bucketing requires bucketCount or bucketSize.")
+        if self.bucket_count is not None and self.bucket_count <= 0:
+            raise ValueError("numericResolution.bucketing.bucketCount must be > 0.")
+        if self.bucket_size is not None and self.bucket_size <= 0:
+            raise ValueError("numericResolution.bucketing.bucketSize must be > 0.")
+        return self
+
+
+class NumericResolutionSpec(BaseModel):
+    """Chart-level numeric request controls shared by all metrics in the chart."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    value_domain: Optional[NumericValueDomainSpec] = Field(default=None, alias="valueDomain")
+    bucketing: Optional[NumericBucketingSpec] = None
 
 
 class ChartSpec(BaseModel):
@@ -618,6 +667,9 @@ class ChartSpec(BaseModel):
     filters: Optional[FilterNode] = None
     group_by: Optional[List[GroupBySpec]] = None
     metrics: List[MetricSpec]
+    numeric_resolution: Optional[NumericResolutionSpec] = Field(default=None, alias="numericResolution")
+
+    model_config = ConfigDict(populate_by_name=True)
 
     @field_validator("chart_type")
     def validate_chart_type(cls, v: str) -> str:

@@ -4,6 +4,7 @@ Clean, type-safe alternative to the builder pattern approach.
 Uses SSOT-based enums for consistency across the system.
 """
 
+from datetime import datetime, timedelta, timezone
 from typing import Any, List, Literal, Mapping, Optional, Union, cast
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -48,6 +49,12 @@ def _numeric_filter_properties() -> set[str]:
 
 
 _NUMERIC_FILTER_PROPERTIES = _numeric_filter_properties()
+
+
+def _default_time_bounds() -> tuple[str, str]:
+    end_date = datetime.now(timezone.utc).date()
+    start_date = end_date - timedelta(days=730)
+    return start_date.isoformat(), end_date.isoformat()
 
 
 class IntegerFilter(BaseModel):
@@ -163,8 +170,8 @@ class MetricRequest(BaseModel):
 class TimePeriod(BaseModel):
     """Time period for the query"""
 
-    start_date: Optional[str] = Field(default="2022-01-01", alias="startDate")
-    end_date: Optional[str] = Field(default="2024-12-31", alias="endDate")
+    start_date: Optional[str] = Field(default_factory=lambda: _default_time_bounds()[0], alias="startDate")
+    end_date: Optional[str] = Field(default_factory=lambda: _default_time_bounds()[1], alias="endDate")
 
     @model_validator(mode="after")
     def _fill_none_bounds(self):
@@ -172,10 +179,11 @@ class TimePeriod(BaseModel):
 
         This allows callers to pass None to mean "use the implicit min/max".
         """
+        default_start, default_end = _default_time_bounds()
         if self.start_date is None:
-            self.start_date = "2022-01-01"
+            self.start_date = default_start
         if self.end_date is None:
-            self.end_date = "2024-12-31"
+            self.end_date = default_end
         return self
 
 

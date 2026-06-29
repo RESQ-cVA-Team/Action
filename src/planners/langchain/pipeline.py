@@ -8,7 +8,19 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from threading import Lock
-from typing import Any, Callable, Dict, List, Literal, Optional, Type, TypedDict, Union, cast, overload
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Type,
+    TypedDict,
+    Union,
+    cast,
+    overload,
+)
 
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -34,16 +46,22 @@ _INTENT_KEYWORDS: Dict[str, List[str]] = {
     "distribution": ["distribution", "histogram", "violin", "box"],
     "time": ["over time", "last ", "monthly", "weekly", "yearly", "time series"],
     "group_by": [" by ", "grouped by", "split by"],
-    "stat_test": ["compare", "mann-whitney", "statistical test", "significant", "difference between"],
+    "stat_test": [
+        "compare",
+        "mann-whitney",
+        "statistical test",
+        "significant",
+        "difference between",
+    ],
 }
 
 _SUPPORTED_STAT_TESTS = ["MANN_WHITNEY_U_TEST"]
 
 _PLANNER_REQUEST_TIMEOUT_SECONDS = 30.0
-_MAX_FEW_SHOTS = 2
+_MAX_FEW_SHOTS = 3
 _PLAN_CACHE_SIZE = 256
 _PLAN_CACHE_TTL_SECONDS = 900.0
-_PLAN_CACHE_KEY_VERSION = "v2"
+_PLAN_CACHE_KEY_VERSION = "v3"
 
 LLM_PROVIDER = get_llm_provider()
 _LLM_MODEL = (env.get_env("LLM_MODEL", default="") or "").strip()
@@ -435,16 +453,25 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
             "Put human references in originScope.value and ISO country in originScope.countryCode when available. "
             "Only use dataOrigin when explicit numeric provider/group IDs are directly provided by the user. "
             "When comparing multiple scopes in one chart, use separate metric entries with metric-level originScope/dataOrigin. "
+            "Numeric resolution guidance: put numeric range/bucketing controls at chart level in numericResolution (valueDomain/bucketing), never under metric objects. "
+            "Use numericResolution.valueDomain for explicit lower/upper bounds and numericResolution.bucketing for bucketCount/bucketSize when the user asks for binning granularity. "
             "Never emit empty objects in group_by. If no grouping is intended, set group_by to null or omit it. "
             "Sex semantics guidance: phrases like 'males only' or 'females only' should usually be chart filters (SexFilter), while 'split/group by sex' should use GroupBySex. "
             "Prefer LINE/BAR for trends or comparisons; BOX/VIOLIN/HISTOGRAM for distributions. "
             "Chart intent guidance: If user asks for one graph/one chart/single visual with multiple splits, prefer one chart with multiple group_by dimensions. If user asks for separate charts/multiple visuals, produce multiple chart specs. "
-            "Statistical test guidance: Only use test types listed in SUPPORTED_STAT_TESTS_JSON; otherwise omit statistical_tests and return charts.",
+            "Statistical test guidance: Only use test types listed in SUPPORTED_STAT_TESTS_JSON; otherwise omit statistical_tests and return charts."
+            "Time grouping guidance: When group_by entity is quarter or quarterly, use GroupByTime with grain=QUARTER. When month or monthly, use grain=MONTH. When year or yearly, use grain=YEAR. Never emit an empty object for group_by entries."
+            "Update guidance: When the question starts with 'Previous chart plan', treat that plan as the base. Inherit all fields (chart_type, group_by, filters, metrics, origin_scope) and only replace what the user explicitly mentions in their new request. If the user says 'show X instead', only change the metric. If they say 'filter by females', only add a filter. Never drop group_by or other dimensions unless explicitly asked. "
+            "Filter merging rule: When adding a new filter to a chart that already has a filter of a different type, combine them using AndFilter rather than replacing. For example, if the existing filter is {{'type': 'StrokeFilter', 'value': 'ISCHEMIC'}} and the user adds a sex filter, produce {{'type': 'AndFilter', 'and_': [{{'type': 'StrokeFilter', 'value': 'ISCHEMIC'}}, {{'type': 'SexFilter', 'value': 'FEMALE'}}]}}. Only replace an existing filter when the user specifies a different value of the same filter type (e.g. replace SexFilter with SexFilter if the user wants a different sex). Never silently drop a filter."
+            "Date filter guidance: When the user specifies a year (e.g. 'in 2025', 'from 2025', 'during 2024'), produce two DateFilter nodes wrapped in an AndFilter: one with operator 'GE' and value '{{year}}-01-01', one with operator 'LE' and value '{{year}}-12-31'. Valid operators are GE, LE, GT, LT, EQ, NE only — never invent others. Never use GroupByTime for a date filter.",
         ),
         ("system", "SCHEMA:\n" + SCHEMA_DESCRIPTION),
         ("system", "FEW_SHOT_EXAMPLES:\n{few_shots}"),
         ("system", "SUPPORTED_STAT_TESTS_JSON:\n{supported_stat_tests}"),
-        ("system", "REASONING (English internal reasoning shown below can differ from output language):\n{reasoning}"),
+        (
+            "system",
+            "REASONING (English internal reasoning shown below can differ from output language):\n{reasoning}",
+        ),
         ("user", "USER_UTTERANCE:\n{question}\n\nENTITIES_DETECTED(JSON):\n{entities}"),
     ]
 )
@@ -556,7 +583,12 @@ def generate_analysis_plan(
 
         logger.debug(
             "[Planner] generate_analysis_plan invoked",
-            extra={"log_context": {"question_length": len(question or ""), "entity_count": len(entities or {})}},
+            extra={
+                "log_context": {
+                    "question_length": len(question or ""),
+                    "entity_count": len(entities or {}),
+                }
+            },
         )
 
         steps: List[Any] = []

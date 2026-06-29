@@ -2,17 +2,132 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import date, datetime
 from itertools import product
 from typing import Any, List, Optional, Sequence, Tuple
 
-from src.domain.graphql.request import DateFilter, IntegerFilter, LogicalFilter, SexFilter, StrokeFilter, TimePeriod
+from src.domain.graphql.request import (
+    DateFilter,
+    IntegerFilter,
+    LogicalFilter,
+    SexFilter,
+    StrokeFilter,
+    TimePeriod,
+)
 from src.domain.graphql.ssot_enums import GroupByType, Operator, SexType, StrokeType
 from src.domain.langchain import schema as S
-from src.domain.langchain.schema import GroupByAge, GroupByCanonicalField, GroupByNIHSS, GroupBySex, GroupBySpec, GroupByStrokeType, GroupByTime
+from src.domain.langchain.schema import (
+    GroupByAge,
+    GroupByCanonicalField,
+    GroupByNIHSS,
+    GroupBySex,
+    GroupBySpec,
+    GroupByStrokeType,
+    GroupByTime,
+)
 from src.shared.ssot_loader import get_sex_label, get_stroke_label
 from src.util.coalesce import coalesce
 
 logger = logging.getLogger(__name__)
+
+
+def _collect_lc_date_bounds(node: Any) -> tuple[Optional[str], Optional[str]]:
+    from src.domain.langchain.schema import AndFilter as LCAndFilter
+    from src.domain.langchain.schema import DateFilter as LCDateFilter
+
+    min_start: Optional[str] = None
+    max_end: Optional[str] = None
+    if node is None:
+        return None, None
+    if isinstance(node, LCAndFilter):
+        for child in node.and_ or []:
+            s, e = _collect_lc_date_bounds(child)
+            if s and (min_start is None or s < min_start):
+                min_start = s
+            if e and (max_end is None or e > max_end):
+                max_end = e
+    elif isinstance(node, LCDateFilter):
+        op = str(node.operator).upper()
+        if op in ("GE", "GT"):
+            min_start = node.value
+        elif op in ("LE", "LT"):
+            max_end = node.value
+    return min_start, max_end
+
+
+def _parse_iso_date(value: Optional[str]) -> Optional[date]:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except Exception:
+        try:
+            return datetime.fromisoformat(text).date()
+        except Exception:
+            return None
+
+
+def _build_month_periods_from_bounds(start_iso: Optional[str], end_iso: Optional[str]) -> List[TimePeriod]:
+    from calendar import monthrange
+
+    start = _parse_iso_date(start_iso)
+    end = _parse_iso_date(end_iso)
+    if start is None or end is None:
+        return []
+    if start > end:
+        start, end = end, start
+
+    y, m = start.year, start.month
+    end_key = (end.year, end.month)
+    periods: List[TimePeriod] = []
+    while (y, m) <= end_key:
+        month_start = date(y, m, 1)
+        month_end = date(y, m, monthrange(y, m)[1])
+        periods.append(
+            TimePeriod(
+                startDate=month_start.isoformat(),
+                endDate=month_end.isoformat(),
+            )
+        )
+        if m == 12:
+            y += 1
+            m = 1
+        else:
+            m += 1
+
+    return periods
+
+
+def _build_recent_month_periods(month_count: int = 12) -> List[TimePeriod]:
+    from calendar import monthrange
+
+    if month_count <= 0:
+        return []
+
+    today = date.today()
+    y, m = today.year, today.month
+    periods: List[TimePeriod] = []
+
+    for _ in range(month_count):
+        month_start = date(y, m, 1)
+        month_end = date(y, m, monthrange(y, m)[1])
+        periods.append(
+            TimePeriod(
+                startDate=month_start.isoformat(),
+                endDate=month_end.isoformat(),
+            )
+        )
+        if m == 1:
+            y -= 1
+            m = 12
+        else:
+            m -= 1
+
+    periods.reverse()
+    return periods
 
 
 def _compiler_log_context(event: str, operation: str, **fields: Any) -> dict[str, dict[str, Any]]:
@@ -162,6 +277,69 @@ class Dimension:
                     buckets.append(_month_bucket(y, m))
                     y, m = _shift_month(y, m, 1)
                 return buckets
+
+            def _quarter_bucket(year: int, quarter: int) -> tuple[date, date]:
+                start_month = (quarter - 1) * 3 + 1
+                end_month = start_month + 2
+                end_day = monthrange(year, end_month)[1]
+                return date(year, start_month, 1), date(year, end_month, end_day)
+
+            def _shift_quarter(year: int, quarter: int, delta: int) -> tuple[int, int]:
+                total = (year * 4 + (quarter - 1)) + delta
+                new_year = total // 4
+                new_quarter = (total % 4) + 1
+                return new_year, new_quarter
+
+            if isinstance(window, S.TimeWindow) and grain == "QUARTER":
+                unit = str(window.unit).upper()
+                quarter_span = 0
+                if unit == "QUARTER":
+                    quarter_span = window.last_n
+                elif unit == "YEAR":
+                    quarter_span = window.last_n * 4
+                elif unit == "MONTH":
+                    quarter_span = max(1, window.last_n // 3)
+
+                if quarter_span <= 0:
+                    return []
+
+                today = date.today()
+                current_quarter = (today.month - 1) // 3 + 1
+                buckets: list[tuple[date, date]] = []
+                for i in range(quarter_span):
+                    y, q = _shift_quarter(today.year, current_quarter, -i)
+                    buckets.append(_quarter_bucket(y, q))
+                buckets.reverse()
+                return buckets
+
+            if isinstance(window, S.TimeRange) and grain == "QUARTER":
+                start = _parse_date(window.start_date)
+                end = _parse_date(window.end_date)
+                if start is None or end is None:
+                    return []
+                if start > end:
+                    start, end = end, start
+
+                y = start.year
+                q = (start.month - 1) // 3 + 1
+                end_key = (end.year, (end.month - 1) // 3 + 1)
+                buckets: list[tuple[date, date]] = []
+                while (y, q) <= end_key:
+                    buckets.append(_quarter_bucket(y, q))
+                    y, q = _shift_quarter(y, q, 1)
+                return buckets
+
+            if grain == "QUARTER" and window is None:
+                # No window specified - default to last 8 quarters (2 years)
+                today = date.today()
+                current_quarter = (today.month - 1) // 3 + 1
+                buckets: list[tuple[date, date]] = []
+                for i in range(8):
+                    y, q = _shift_quarter(today.year, current_quarter, -i)
+                    buckets.append(_quarter_bucket(y, q))
+                buckets.reverse()
+                return buckets
+
             return []
         if isinstance(self.spec, GroupByAge):
             return list(self.spec.buckets)
@@ -220,8 +398,16 @@ class Dimension:
             return LogicalFilter(
                 operator="AND",
                 children=[
-                    IntegerFilter(property="ADMISSION_NIHSS", operator=Operator("GE"), value=cat.min),
-                    IntegerFilter(property="ADMISSION_NIHSS", operator=Operator("LT"), value=cat.max),
+                    IntegerFilter(
+                        property="ADMISSION_NIHSS",
+                        operator=Operator("GE"),
+                        value=cat.min,
+                    ),
+                    IntegerFilter(
+                        property="ADMISSION_NIHSS",
+                        operator=Operator("LT"),
+                        value=cat.max,
+                    ),
                 ],
             )
         if isinstance(self.spec, GroupByTime):
@@ -243,8 +429,16 @@ class Dimension:
             return LogicalFilter(
                 operator="AND",
                 children=[
-                    DateFilter(property="DISCHARGE_DATE", operator=Operator("GE"), value=start.isoformat()),
-                    DateFilter(property="DISCHARGE_DATE", operator=Operator("LE"), value=end.isoformat()),
+                    DateFilter(
+                        property="DISCHARGE_DATE",
+                        operator=Operator("GE"),
+                        value=start.isoformat(),
+                    ),
+                    DateFilter(
+                        property="DISCHARGE_DATE",
+                        operator=Operator("LE"),
+                        value=end.isoformat(),
+                    ),
                 ],
             )
         return None
@@ -316,9 +510,43 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
                         ),
                     )
                     continue
+    if batched_time_enabled and not batched_time_periods and batched_time_dim is not None:
+        batched_time_spec = batched_time_dim.spec
+        if isinstance(batched_time_spec, GroupByTime):
+            grain = str(batched_time_spec.grain).upper()
+            if grain == "MONTH":
+                bound_start, bound_end = _collect_lc_date_bounds(chart.filters)
+                batched_time_periods = _build_month_periods_from_bounds(bound_start, bound_end)
+                if not batched_time_periods:
+                    # Keep monthly chart semantics stable when planner omitted
+                    # explicit time window/date filters.
+                    batched_time_periods = _build_recent_month_periods(12)
+
     if batched_time_enabled and not batched_time_periods:
         batched_time_enabled = False
         batched_time_dim = None
+
+    # After batched_time_periods is built, constrain to DateFilter bounds if present
+    if batched_time_enabled and batched_time_periods:
+        bound_start, bound_end = _collect_lc_date_bounds(chart.filters)
+        if bound_start or bound_end:
+            filtered_periods: List[TimePeriod] = []
+            for tp in batched_time_periods:
+                tp_start = tp.start_date
+                tp_end = tp.end_date
+                if bound_start and tp_end and tp_end < bound_start:
+                    continue
+                if bound_end and tp_start and tp_start > bound_end:
+                    continue
+                filtered_periods.append(tp)
+            if filtered_periods:
+                batched_time_periods = filtered_periods
+            elif batched_time_dim is not None and isinstance(batched_time_dim.spec, GroupByTime):
+                grain = str(batched_time_dim.spec.grain).upper()
+                if grain == "MONTH":
+                    rebuilt = _build_month_periods_from_bounds(bound_start, bound_end)
+                    if rebuilt:
+                        batched_time_periods = rebuilt
 
     filter_dims: List[Dimension]
     if batched_time_enabled and batched_time_dim is not None:

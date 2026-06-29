@@ -13,9 +13,20 @@ from src.domain.dto.charts.scatter import ScatterPlot
 from src.domain.dto.charts.types import ChartAxis, ChartMetadata, ChartSeries, ChartType
 from src.domain.dto.charts.waterfall import WaterfallChart, WaterfallStep
 from src.domain.langchain import schema as S
-from src.domain.langchain.schema import GroupByAge, GroupByCanonicalField, GroupByNIHSS, GroupBySex, GroupByStrokeType, GroupByTime
+from src.domain.langchain.schema import (
+    GroupByAge,
+    GroupByCanonicalField,
+    GroupByNIHSS,
+    GroupBySex,
+    GroupByStrokeType,
+    GroupByTime,
+)
 from src.executors.planning.query_compiler import Dimension
-from src.shared.ssot_loader import get_canonical_display_name, get_metric_display_name, get_metric_metadata
+from src.shared.ssot_loader import (
+    get_canonical_display_name,
+    get_metric_display_name,
+    get_metric_metadata,
+)
 
 logger = logging.getLogger(__name__)
 _METRIC_METADATA = get_metric_metadata()
@@ -346,16 +357,6 @@ def _fallback_across(plan_chart: S.ChartSpec, metric_codes: List[str]) -> str:
 
     metric_code = metric_codes[0]
     metric_unit = _metric_unit(metric_code)
-    metric_spec = plan_chart.metrics[0] if plan_chart.metrics else None
-    distribution = getattr(metric_spec, "distribution", None) if metric_spec is not None else None
-
-    if distribution is not None:
-        min_value = getattr(distribution, "min_value", None)
-        max_value = getattr(distribution, "max_value", None)
-        range_text = f"{min_value}-{max_value}" if min_value is not None and max_value is not None else "range"
-        if metric_unit:
-            return f"distribution bins {range_text} {metric_unit}"
-        return f"distribution bins {range_text}"
 
     if metric_unit:
         return f"value range in {metric_unit}"
@@ -363,7 +364,11 @@ def _fallback_across(plan_chart: S.ChartSpec, metric_codes: List[str]) -> str:
     return "value range"
 
 
-def _derive_title(plan_chart: S.ChartSpec, dimensions: List[Dimension], sampled_period_override: Optional[str] = None) -> str:
+def _derive_title(
+    plan_chart: S.ChartSpec,
+    dimensions: List[Dimension],
+    sampled_period_override: Optional[str] = None,
+) -> str:
     metric_codes = _metric_codes(plan_chart)
     metrics_part = ", ".join(metric_codes) if metric_codes else get_metric_display_name(plan_chart.chart_type or "CHART")
 
@@ -433,7 +438,8 @@ def build_chart_dto(
     )
 
     if chart_type_upper == ChartType.LINE.value:
-        return LineChart(metadata=metadata, series=series)
+        has_time_grouping = any(isinstance(g, GroupByTime) for g in (plan_chart.group_by or []))
+        return LineChart(metadata=metadata, series=series, smooth=not has_time_grouping)
     if chart_type_upper == ChartType.BAR.value:
         return BarChart(metadata=metadata, series=series)
     if chart_type_upper == ChartType.SCATTER.value:
@@ -499,5 +505,8 @@ def build_chart_dto(
         )
         return BoxPlot(metadata=metadata, data=[box])
 
-    logger.warning("Chart type %s not yet implemented; defaulting to LINE rendering", plan_chart.chart_type)
+    logger.warning(
+        "Chart type %s not yet implemented; defaulting to LINE rendering",
+        plan_chart.chart_type,
+    )
     return LineChart(metadata=metadata, series=series)

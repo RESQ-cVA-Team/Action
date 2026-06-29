@@ -564,7 +564,6 @@ def _resolve_metric_origin(
     scope_ref = metric_origin_scope or default_scope
     resolved_data_origin: Optional[S.DataOriginSpec] = None
     fail_open_for_metric = fail_open_for_default_scope and metric_origin_scope is None
-    metric_distribution = cast(Optional[S.DistributionSpec], getattr(metric, "distribution", None))
 
     if scope_ref is not None:
         try:
@@ -613,7 +612,6 @@ def _resolve_metric_origin(
 
     return S.MetricSpec(
         metric=metric.metric,
-        distribution=metric_distribution,
         dataOrigin=resolved_data_origin,
         originScope=scope_ref,
     )
@@ -671,11 +669,13 @@ def resolve_plan_metric_origins(plan: S.AnalysisPlan, user_sub: str, trace_id: s
 
         chart_filters = cast(Optional[S.FilterNode], getattr(chart, "filters", None))
         chart_group_by = cast(Optional[List[S.GroupBySpec]], getattr(chart, "group_by", None))
+        chart_numeric_resolution = cast(Optional[S.NumericResolutionSpec], getattr(chart, "numeric_resolution", None))
         resolved_chart = S.ChartSpec(
             chart_type=chart.chart_type,
             filters=chart_filters,
             group_by=chart_group_by,
             metrics=resolved_metrics,
+            numericResolution=chart_numeric_resolution,
         )
         resolved_charts.append(resolved_chart)
 

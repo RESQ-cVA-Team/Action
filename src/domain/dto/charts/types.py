@@ -20,7 +20,7 @@ class ChartPoint(BaseModel):
     """Single data point for charts"""
 
     x: Union[str, int, float]
-    y: Union[int, float]
+    y: Optional[Union[int, float]]
     label: Optional[str] = None
 
 

@@ -19,13 +19,34 @@ from src.executors.graphql.client import GraphQLProxyClient
 from src.executors.mapping.chart_builder import build_chart_dto
 from src.executors.mapping.filter_mapper import to_gql_filter
 from src.executors.mapping.series_mapper import merge_series_by_name
-from src.executors.mapping.summary_builder import make_batch_summary, make_execution_summary
-from src.executors.planning.metric_request_factory import build_metric_requests
-from src.executors.planning.origin_scope_resolver import OriginScopeResolutionError, resolve_plan_metric_origins
-from src.executors.planning.query_compiler import Dimension, compile_chart_grouping, estimate_query_count_for_plan
-from src.executors.planning.request_plan import RequestSpec, build_fallback_request_specs, build_primary_request_specs, should_retry_unbatched_time
+from src.executors.mapping.summary_builder import (
+    make_batch_summary,
+    make_execution_summary,
+)
+from src.executors.planning.metric_request_factory import (
+    build_metric_requests,
+)
+from src.executors.planning.origin_scope_resolver import (
+    OriginScopeResolutionError,
+    resolve_plan_metric_origins,
+)
+from src.executors.planning.query_compiler import (
+    Dimension,
+    compile_chart_grouping,
+    estimate_query_count_for_plan,
+)
+from src.executors.planning.request_plan import (
+    RequestSpec,
+    build_fallback_request_specs,
+    build_primary_request_specs,
+    should_retry_unbatched_time,
+)
 from src.executors.transport.request_runner import run_graphql_request
-from src.shared.ssot_loader import get_metric_display_name, get_metric_metadata, get_statistics_metric_enum_map
+from src.shared.ssot_loader import (
+    get_metric_display_name,
+    get_metric_metadata,
+    get_statistics_metric_enum_map,
+)
 from src.util import env as env_util
 from src.util.coalesce import coalesce
 from src.util.logging_utils import bind_current_context
@@ -80,10 +101,22 @@ _EXECUTOR_SYNC_MAX_CONCURRENCY = _executor_sync_concurrency
 
 proxy_url, action_server_token = env_util.require_all_env("RASA_PROXY_URL", "ACTION_SERVER_TOKEN")
 graphql_target = env_util.require_any_env("RASA_PROXY_GRAPHQL_TARGET")
+
+_graphql_timeout_raw = env_util.get_env("EXECUTOR_GRAPHQL_TIMEOUT_SECONDS", default="30") or "30"
+try:
+    _graphql_timeout_seconds = max(5, int(float(_graphql_timeout_raw)))
+except Exception:
+    _graphql_timeout_seconds = 30
+
 client = GraphQLProxyClient(
     proxy_url=proxy_url,
     action_server_token=action_server_token,
     target=graphql_target if isinstance(graphql_target, str) and graphql_target.strip() else "graphql",
+    timeout_seconds=_graphql_timeout_seconds,
+    connect_timeout_seconds=5,
+    max_total_timeout_seconds=_graphql_timeout_seconds + 5,
+    retry_attempts=1,
+    retry_backoff_seconds=0.2,
 )
 
 
@@ -186,7 +219,9 @@ def _build_default_data_origin() -> DataOrigin:
     return DataOrigin(**kwargs)
 
 
-def _collect_date_bounds(filter_obj: Optional[Any]) -> tuple[Optional[str], Optional[str]]:
+def _collect_date_bounds(
+    filter_obj: Optional[Any],
+) -> tuple[Optional[str], Optional[str]]:
     if filter_obj is None:
         return None, None
 
@@ -230,7 +265,9 @@ def _merge_case_filters(base_filter: Optional[Any], cohort_filter: Optional[Any]
     return GQLLogicalFilter(operator="AND", children=[base_filter, cohort_filter])
 
 
-def _cohort_split_from_groupby(group_by: Optional[List[GroupBySpec]]) -> Optional[tuple[Dimension, Any, Any, str, str]]:
+def _cohort_split_from_groupby(
+    group_by: Optional[List[GroupBySpec]],
+) -> Optional[tuple[Dimension, Any, Any, str, str]]:
     if not group_by:
         return None
 
@@ -388,7 +425,13 @@ query MannWhitney($metric: [StatisticsMetricEnum!]!, $cohortA: CohortFilterInput
         },
     }
 
-    payload = client.query_raw(query_str=query, user_sub=user_sub, variables=variables, trace_id=trace_id, raise_on_error=False)
+    payload = client.query_raw(
+        query_str=query,
+        user_sub=user_sub,
+        variables=variables,
+        trace_id=trace_id,
+        raise_on_error=False,
+    )
     if payload is None:
         return []
 
@@ -527,6 +570,7 @@ class VisualizationExecutionError(RuntimeError):
 
 def _to_execution_error(failure_reasons: List[str], trace_id: Optional[str] = None) -> VisualizationExecutionError:
     reason_set = set(failure_reasons)
+    service_unavailable_count = sum(1 for reason in failure_reasons if reason == "service_unavailable")
     if "no_data" in reason_set:
         return VisualizationExecutionError(
             user_message="The analytics service returned no data for this visualization request. Try a wider date range or different filters.",
@@ -536,12 +580,19 @@ def _to_execution_error(failure_reasons: List[str], trace_id: Optional[str] = No
         )
     if "timeout" in reason_set:
         return VisualizationExecutionError(
-            user_message="The data service timed out while generating the visualization. Please try again.",
+            user_message="The data service is currently down. Please try again in a few minutes.",
             reason="timeout",
             code="EXEC_TIMEOUT",
             trace_id=trace_id,
         )
     if "service_unavailable" in reason_set:
+        if service_unavailable_count >= 2:
+            return VisualizationExecutionError(
+                user_message=("The analytics platform appears to be experiencing an outage right now (upstream service unavailable). Please try again in a moment."),
+                reason="service_unavailable",
+                code="EXEC_SERVICE_UNAVAILABLE",
+                trace_id=trace_id,
+            )
         return VisualizationExecutionError(
             user_message="The analytics service is temporarily unavailable. Please try again in a moment.",
             reason="service_unavailable",
@@ -553,6 +604,13 @@ def _to_execution_error(failure_reasons: List[str], trace_id: Optional[str] = No
             user_message="The analytics service returned an error while generating the visualization.",
             reason="graphql_error",
             code="EXEC_GRAPHQL_ERROR",
+            trace_id=trace_id,
+        )
+    if "upstream_error" in reason_set:
+        return VisualizationExecutionError(
+            user_message="The analytics service is currently unreachable. Please try again in a moment.",
+            reason="upstream_error",
+            code="EXEC_UPSTREAM_ERROR",
             trace_id=trace_id,
         )
     return VisualizationExecutionError(
@@ -756,7 +814,12 @@ def execute_plan(plan: AnalysisPlan, user_sub: str) -> VisualizationResponse:
     - If an event loop is already running, offload to a new thread and run a fresh loop there.
     """
     trace_id = uuid4().hex
-    coro = execute_plan_async(plan, user_sub, max_concurrency=_EXECUTOR_SYNC_MAX_CONCURRENCY, trace_id=trace_id)
+    coro = execute_plan_async(
+        plan,
+        user_sub,
+        max_concurrency=_EXECUTOR_SYNC_MAX_CONCURRENCY,
+        trace_id=trace_id,
+    )
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -768,6 +831,7 @@ def execute_plan(plan: AnalysisPlan, user_sub: str) -> VisualizationResponse:
 
 ProgressCallback = Callable[[str], None]
 SummaryCallback = Callable[[ExecutionSummary], None]
+QueryDebugCallback = Callable[[Dict[str, Any]], None]
 
 
 @dataclass(frozen=True)
@@ -776,6 +840,7 @@ class ExecutionContext:
     semaphore: asyncio.Semaphore
     progress_cb: Optional[ProgressCallback]
     log_graphql_query: bool
+    query_cb: Optional[QueryDebugCallback]
 
 
 @dataclass(frozen=True)
@@ -824,6 +889,8 @@ async def _execute_request_spec(
         semaphore=context.semaphore,
         log_graphql_query=context.log_graphql_query,
         request_warnings=request_warnings,
+        batched_time_periods=spec.batched_time_periods,
+        query_cb=context.query_cb,
     )
     return RequestExecutionResult(spec=spec, series=series)
 
@@ -900,6 +967,7 @@ async def execute_plan_async(
     progress_cb: Optional[ProgressCallback] = None,
     summary_cb: Optional[SummaryCallback] = None,
     trace_id: Optional[str] = None,
+    query_cb: Optional[QueryDebugCallback] = None,
 ) -> VisualizationResponse:
     """Async version that runs GraphQL requests concurrently.
 
@@ -911,7 +979,10 @@ async def execute_plan_async(
     if not trace_id_resolved:
         raise ValueError("trace_id is required for execute_plan_async")
 
-    logger.info("[plan_executor] execute_plan_async start", extra={"trace_id": trace_id_resolved})
+    logger.info(
+        "[plan_executor] execute_plan_async start",
+        extra={"trace_id": trace_id_resolved},
+    )
 
     try:
         plan = resolve_plan_metric_origins(plan=plan, user_sub=user_sub, trace_id=trace_id_resolved)
@@ -940,6 +1011,7 @@ async def execute_plan_async(
         semaphore=sem,
         progress_cb=progress_cb,
         log_graphql_query=_LOG_GRAPHQL_QUERY,
+        query_cb=query_cb,
     )
 
     for planChart in plan_charts:

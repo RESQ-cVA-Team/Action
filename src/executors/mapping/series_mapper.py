@@ -75,11 +75,12 @@ def map_metrics_payload_to_series(
     group_by_field: Optional[str],
     add_time_period_labels: bool,
     scope_label: Optional[str] = None,
+    batched_time_periods: Optional[List[Any]] = None,  # ADD THIS
 ) -> List[ChartSeries]:
     series: List[ChartSeries] = []
 
     for metric_name, metric in metrics_payload.items():
-        for kpi in metric.kpi_group:
+        for kpi_index, kpi in enumerate(metric.kpi_group):
             if getattr(kpi, "kpi1", None) is None:
                 continue
 
@@ -92,32 +93,25 @@ def map_metrics_payload_to_series(
             # still indicate grouped-style output should be produced from stats.
             is_grouped_or_time = bool(group_by_field) or add_time_period_labels or bool(label_parts)
             if is_grouped_or_time:
-                y_value: Optional[float] = None
-                if isinstance(kpi.kpi1.mean, (int, float)):
-                    y_value = float(kpi.kpi1.mean)
-                elif isinstance(kpi.kpi1.median, (int, float)):
-                    y_value = float(kpi.kpi1.median)
-                elif kpi.kpi1.case_count:
-                    try:
-                        y_value = float(kpi.kpi1.case_count[0])
-                    except Exception:
-                        y_value = None
-                if y_value is None:
-                    continue
-
                 x_value: str
-                if add_time_period_labels and kpi.time_period is not None:
-                    start = kpi.time_period.start_date
-                    end = kpi.time_period.end_date
-                    if isinstance(start, str) and start:
-                        try:
-                            x_value = datetime.fromisoformat(start).strftime("%Y-%m")
-                        except Exception:
-                            x_value = start
-                    elif isinstance(end, str) and end:
-                        x_value = end
-                    else:
-                        x_value = label_parts[-1] if label_parts else "period"
+                tp_start: Optional[str] = None
+                tp_end: Optional[str] = None
+                if kpi.time_period is not None:
+                    tp_start = kpi.time_period.start_date
+                    tp_end = kpi.time_period.end_date
+                elif add_time_period_labels and batched_time_periods:
+                    # kpi_index = list(metric.kpi_group).index(kpi)
+                    if kpi_index < len(batched_time_periods):
+                        tp = batched_time_periods[kpi_index]
+                        tp_start = getattr(tp, "startDate", None) or getattr(tp, "start_date", None)
+                        tp_end = getattr(tp, "endDate", None) or getattr(tp, "end_date", None)
+
+                if add_time_period_labels and tp_start:
+                    try:
+                        dt = datetime.fromisoformat(str(tp_start))
+                        x_value = dt.strftime("%Y-%m")
+                    except Exception:
+                        x_value = f"{tp_start} to {tp_end}" if tp_end else str(tp_start)
                 elif server_label:
                     mapped = get_enum_option_label(group_by_field, server_label) if group_by_field else None
                     x_value = mapped or server_label
@@ -125,6 +119,22 @@ def map_metrics_payload_to_series(
                     x_value = label_parts[-1]
                 else:
                     x_value = "value"
+
+                y_value: Optional[float] = None
+                if isinstance(kpi.kpi1.median, (int, float)):
+                    y_value = float(kpi.kpi1.median)
+                elif isinstance(kpi.kpi1.mean, (int, float)):
+                    y_value = float(kpi.kpi1.mean)
+                elif kpi.kpi1.case_count:
+                    try:
+                        y_value = float(kpi.kpi1.case_count[0])
+                    except Exception:
+                        y_value = None
+
+                # Preserve explicit time buckets as missing points (y=None)
+                # so frontend can render gaps instead of implied zeros.
+                if y_value is None and not (add_time_period_labels and tp_start):
+                    continue
 
                 name_parts: List[str] = []
                 if include_metric_alias:
