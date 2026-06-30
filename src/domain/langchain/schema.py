@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Set, Union, cast
+from typing import Annotated, Any, Dict, List, Literal, Optional, Set, Union, cast
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -304,6 +304,7 @@ class GroupBySex(HashableBaseModel):
         categories: List of sex categories to group by (must be in SexType). None = all.
     """
 
+    kind: Literal["sex"] = "sex"
     categories: Optional[List[str]] = Field(
         default=None, description="List of sex categories to group by. None = all."
     )
@@ -345,6 +346,7 @@ class GroupByAge(HashableBaseModel):
         buckets: List of age buckets (each a Bucket object).
     """
 
+    kind: Literal["age"] = "age"
     buckets: List[Bucket] = Field(description="List of age buckets.")
 
 
@@ -356,6 +358,7 @@ class GroupByNIHSS(HashableBaseModel):
         buckets: List of NIHSS score buckets (each a Bucket object).
     """
 
+    kind: Literal["nihss"] = "nihss"
     buckets: List[Bucket] = Field(description="List of NIHSS score buckets.")
 
 
@@ -367,6 +370,7 @@ class GroupByStrokeType(HashableBaseModel):
         categories: List of stroke types to group by (must be in StrokeType). None = all.
     """
 
+    kind: Literal["stroke_type"] = "stroke_type"
     categories: Optional[List[str]] = Field(
         default=None, description="List of stroke types to group by. None = all."
     )
@@ -449,6 +453,7 @@ class GroupByTime(HashableBaseModel):
         include_partial: Whether to include the current, incomplete bucket.
     """
 
+    kind: Literal["time"] = "time"
     grain: str = Field(description="Time aggregation grain.")
     window: Optional[Union[TimeWindow, TimeRange]] = Field(
         default=None, description="Optional relative or absolute time window."
@@ -476,6 +481,7 @@ class GroupByBoolean(HashableBaseModel):
         values: List of boolean values to group by. None = all.
     """
 
+    kind: Literal["boolean"] = "boolean"
     boolean_type: str = Field(
         description="The boolean field to group by. Should be a value from BooleanType."
     )
@@ -503,6 +509,7 @@ class GroupByCanonicalField(HashableBaseModel):
         values: List of values to group by. None = all.
     """
 
+    kind: Literal["canonical_field"] = "canonical_field"
     field: str = Field(
         description="Canonical field name, should be a value from CanonicalGroupByField."
     )
@@ -530,19 +537,23 @@ class CustomGroup(HashableBaseModel):
         filters: List of filters defining this group.
     """
 
+    kind: Literal["custom"] = "custom"
     label: str = Field(description="Label for the custom group.")
     filters: List[FilterNode] = Field(description="Filters defining this group.")
 
 
-GroupBySpec = Union[
-    GroupBySex,
-    GroupByAge,
-    GroupByNIHSS,
-    GroupByStrokeType,
-    GroupByBoolean,
-    GroupByCanonicalField,
-    GroupByTime,
-    CustomGroup,
+GroupBySpec = Annotated[
+    Union[
+        GroupBySex,
+        GroupByStrokeType,
+        GroupByAge,
+        GroupByNIHSS,
+        GroupByTime,
+        GroupByBoolean,
+        GroupByCanonicalField,
+        CustomGroup,
+    ],
+    Field(discriminator="kind"),
 ]
 
 

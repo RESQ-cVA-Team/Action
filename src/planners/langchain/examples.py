@@ -285,6 +285,32 @@ def example_statistical_test_dtn_by_sex() -> Tuple[str, str]:
     return user, assistant
 
 
+def example_filter_time_and_sex() -> Tuple[str, str]:
+    detected_entities = {
+        "metric": ["DTN"],
+        "chart_type": ["LINE"],
+        "group_by": ["QUARTER"],
+        "stroke_type": ["ISCHEMIC"],
+        "sex": ["MALE", "FEMALE"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="LINE",
+                filters=StrokeFilter(value="ISCHEMIC"),
+                group_by=[GroupByTime(grain="QUARTER"), GroupBySex(categories=None)],
+                metrics=[MetricSpec(metric="DTN")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nshow DTN per quarter for ischemic patients grouped by sex\n\n"
+        "ENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
+    )
+    return user, plan.model_dump_json(indent=2)
+
+
 def example_dtn_my_hospital_vs_country_average() -> Tuple[str, str]:
     detected_entities = {
         "metric": ["DTN"],
@@ -496,6 +522,30 @@ def example_dtn_ischemic_only_filter() -> Tuple[str, str]:
     return user, assistant
 
 
+def example_group_by_stroke_type_bare() -> Tuple[str, str]:
+    detected_entities = {
+        "stroke_type": ["stroke type"],
+        "metric": ["DTN"],
+        "chart_type": ["LINE"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="LINE",
+                group_by=[GroupByStrokeType(categories=None)],
+                metrics=[MetricSpec(metric="DTN")],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = (
+        "USER_UTTERANCE:\nShow me a line chart of DTN grouped by stroke type\n\nENTITIES_DETECTED(JSON):\n"
+        + json.dumps(detected_entities)
+    )
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
 def example_dtn_ischemic_and_female_filter() -> Tuple[str, str]:
     detected_entities = {"sex": ["FEMALE"], "metric": ["DTN"], "chart_type": ["LINE"]}
     plan = AnalysisPlan(
@@ -517,7 +567,7 @@ def example_dtn_ischemic_and_female_filter() -> Tuple[str, str]:
     user = (
         "USER_UTTERANCE:\nPrevious chart plan (carry over everything except what the user explicitly changes):\n"
         '{"charts": [{"chart_type": "LINE", "filters": {"type": "StrokeFilter", "value": "ISCHEMIC"}, '
-        '"group_by": [{"grain": "QUARTER"}], "metrics": [{"metric": "DTN"}]}]}\n\n'
+        '"group_by": [{"kind": "time", "grain": "QUARTER"}], "metrics": [{"metric": "DTN"}]}]}\n\n'
         "Conversation context (oldest to newest user turns):\nfilter for female patients\n\n"
         "ENTITIES_DETECTED(JSON):\n" + json.dumps(detected_entities)
     )
@@ -567,6 +617,30 @@ def example_mw_hospital_vs_hospital() -> Tuple[str, str]:
     return user, assistant
 
 
+def example_dtn_grouped_by_sex_bare() -> Tuple[str, str]:
+    detected_entities = {
+        "metric": ["DTN"],
+        "chart_type": ["LINE"],
+    }
+    plan = AnalysisPlan(
+        charts=[
+            ChartSpec(
+                chart_type="LINE",
+                group_by=[GroupBySex(categories=["MALE", "FEMALE"])],
+                metrics=[
+                    MetricSpec(
+                        metric="DTN",
+                    )
+                ],
+            )
+        ],
+        statistical_tests=None,
+    )
+    user = f"USER_UTTERANCE:\nShow DTN grouped by sex\n\nENTITIES_DETECTED(JSON):\n{json.dumps(detected_entities)}"
+    assistant = plan.model_dump_json(indent=2)
+    return user, assistant
+
+
 def get_few_shot_examples() -> List[Dict[str, str]]:
     examples: List[Dict[str, str]] = []
     for user, assistant in [
@@ -589,6 +663,9 @@ def get_few_shot_examples() -> List[Dict[str, str]]:
         example_dtn_quarterly(),
         example_dtn_monthly(),
         example_dtn_ischemic_and_female_filter(),
+        example_group_by_stroke_type_bare(),
+        example_filter_time_and_sex(),
+        example_dtn_grouped_by_sex_bare(),
     ]:
         examples.append(
             {

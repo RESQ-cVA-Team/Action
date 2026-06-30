@@ -335,6 +335,8 @@ def _decision_stage(
         raise RuntimeError("LLM unavailable")
 
     chain = _DECISION_PROMPT | llm
+    if not entities.get("chart_type"):
+        entities = {**entities, "chart_type": "LINE"}
     payload = {
         "language": (language or "en").strip() or "en",
         "question": question or "",

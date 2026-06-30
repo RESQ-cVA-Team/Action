@@ -9,7 +9,6 @@ from rasa_sdk.events import FollowupAction, SlotSet
 from src.actions.error_messages import visualization_error_payload
 from src.actions.helpers.metric import resolve_next_metric_candidate
 from src.actions.helpers.visualization import (
-    format_execution_summary,
     normalize_entities,
     pretty_print_graphql_query,
     resolve_override_language,
@@ -1333,22 +1332,22 @@ class ActionOneShotGenerateVisualization(LongAction):
                     )
             finally:
                 if completed_successfully:
-                    if _SHOW_EXECUTION_SUMMARY and execution_summary is not None:
-                        ctx.say(
-                            text=format_execution_summary(
-                                execution_summary,
-                                show_normalization=_SHOW_NORMALIZATION_SUMMARY,
-                                planner_diagnostics=planner_diagnostics,
-                                language=language,
-                            )
-                        )
-                    else:
-                        # ctx.say(
-                        #     text=translate(
-                        #         "action.visualization.success_complete",
-                        #         language=language,
-                        #     )
-                        # )
+                    # if _SHOW_EXECUTION_SUMMARY and execution_summary is not None:
+                    #     ctx.say(
+                    #         text=format_execution_summary(
+                    #             execution_summary,
+                    #             show_normalization=_SHOW_NORMALIZATION_SUMMARY,
+                    #             planner_diagnostics=planner_diagnostics,
+                    #             language=language,
+                    #         )
+                    #     )
+                    # else:
+                    # ctx.say(
+                    #     text=translate(
+                    #         "action.visualization.success_complete",
+                    #         language=language,
+                    #     )
+                    # )
                     if plan_obj is not None:
                         _emit_next_metric_followup(
                             ctx=ctx, plan_obj=plan_obj, language=language

@@ -57,6 +57,17 @@ _INTENT_KEYWORDS: Dict[str, List[str]] = {
 
 _SUPPORTED_STAT_TESTS = ["MANN_WHITNEY_U_TEST"]
 
+_KIND_ALIASES = {
+    "GroupBySex": "sex",
+    "GroupByStrokeType": "stroke_type",
+    "GroupByAge": "age",
+    "GroupByNIHSS": "nihss",
+    "GroupByTime": "time",
+    "GroupByBoolean": "boolean",
+    "GroupByCanonicalField": "canonical_field",
+    "CustomGroup": "custom",
+}
+
 _PLANNER_REQUEST_TIMEOUT_SECONDS = 30.0
 _MAX_FEW_SHOTS = 3
 _PLAN_CACHE_SIZE = 256
@@ -146,6 +157,18 @@ def _assert_no_empty_groupby_entries(payload: Dict[str, Any]) -> None:
                 )
 
 
+def _normalize_plan_dict(plan: Dict[str, Any]) -> Dict[str, Any]:
+    """Default chart_type to LINE and fix group_by kind aliases before validation."""
+    for chart in plan.get("charts") or []:
+        if isinstance(chart, dict):
+            if not chart.get("chart_type"):
+                chart["chart_type"] = "LINE"
+            for gb in chart.get("group_by") or []:
+                if isinstance(gb, dict) and gb.get("kind") in _KIND_ALIASES:
+                    gb["kind"] = _KIND_ALIASES[gb["kind"]]
+    return plan
+
+
 def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
     import json
 
@@ -154,7 +177,9 @@ def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
 
     if isinstance(response, dict):
         _assert_no_empty_groupby_entries(cast(Dict[str, Any], response))
-        return AnalysisPlan.model_validate(response)
+        return AnalysisPlan.model_validate(
+            _normalize_plan_dict(cast(Dict[str, Any], response))
+        )
 
     text = _extract_text(response)
     json_block = _extract_json_block(text)
@@ -162,7 +187,9 @@ def _coerce_analysis_plan(response: Any) -> AnalysisPlan:
     if not isinstance(parsed, dict):
         raise ValueError("Model output JSON must be an object")
     _assert_no_empty_groupby_entries(cast(Dict[str, Any], parsed))
-    return AnalysisPlan.model_validate(parsed)
+    return AnalysisPlan.model_validate(
+        _normalize_plan_dict(cast(Dict[str, Any], parsed))
+    )
 
 
 def get_schema_description(model: Type[Any]) -> str:
