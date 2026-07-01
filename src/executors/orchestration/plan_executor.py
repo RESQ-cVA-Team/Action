@@ -11,9 +11,13 @@ from src.domain.dto.analytics import StatisticalTestResult
 from src.domain.dto.charts.types import ChartAxis, ChartSeries
 from src.domain.dto.execution_summary import ExecutionBatchSummary, ExecutionSummary
 from src.domain.dto.response import VisualizationResponse
+from src.domain.graphql.request import BooleanFilter as GQLBooleanFilter
 from src.domain.graphql.request import DataOrigin, TimePeriod
 from src.domain.graphql.request import DateFilter as GQLDateFilter
+from src.domain.graphql.request import IntegerFilter as GQLIntegerFilter
 from src.domain.graphql.request import LogicalFilter as GQLLogicalFilter
+from src.domain.graphql.request import SexFilter as GQLSexFilter
+from src.domain.graphql.request import StrokeFilter as GQLStrokeFilter
 from src.domain.langchain.schema import AnalysisPlan, GroupBySpec, StatisticalTestSpec
 from src.executors.graphql.client import GraphQLProxyClient
 from src.executors.mapping.chart_builder import build_chart_dto
@@ -55,11 +59,19 @@ logger = logging.getLogger(__name__)
 # Privacy/safety defaults:
 # - Avoid logging raw GraphQL queries by default.
 _LOG_GRAPHQL_QUERY = env_util.env_flag("EXECUTOR_LOG_GRAPHQL_QUERY", default=False)
-_EMIT_COMPILER_DIAGNOSTICS = env_util.env_flag("EXECUTOR_EMIT_COMPILER_DIAGNOSTICS", default=False)
-_ENABLE_UNBATCHED_TIME_FALLBACK = env_util.env_flag("EXECUTOR_ENABLE_UNBATCHED_TIME_FALLBACK", default=True)
-_STRICT_MODE = env_util.env_flag("ANALYTICS_STRICT_MODE", default=False) or env_util.env_flag("EXECUTOR_STRICT_MODE", default=False)
+_EMIT_COMPILER_DIAGNOSTICS = env_util.env_flag(
+    "EXECUTOR_EMIT_COMPILER_DIAGNOSTICS", default=False
+)
+_ENABLE_UNBATCHED_TIME_FALLBACK = env_util.env_flag(
+    "EXECUTOR_ENABLE_UNBATCHED_TIME_FALLBACK", default=True
+)
+_STRICT_MODE = env_util.env_flag(
+    "ANALYTICS_STRICT_MODE", default=False
+) or env_util.env_flag("EXECUTOR_STRICT_MODE", default=False)
 
-_executor_default_concurrency_raw = env_util.get_env("EXECUTOR_DEFAULT_MAX_CONCURRENCY", default="4") or "4"
+_executor_default_concurrency_raw = (
+    env_util.get_env("EXECUTOR_DEFAULT_MAX_CONCURRENCY", default="4") or "4"
+)
 try:
     _executor_default_concurrency = max(1, int(_executor_default_concurrency_raw))
 except Exception:
@@ -79,7 +91,9 @@ except Exception:
     _executor_default_concurrency = 4
 _EXECUTOR_DEFAULT_MAX_CONCURRENCY = _executor_default_concurrency
 
-_executor_sync_concurrency_raw = env_util.get_env("EXECUTOR_SYNC_MAX_CONCURRENCY", default="1") or "1"
+_executor_sync_concurrency_raw = (
+    env_util.get_env("EXECUTOR_SYNC_MAX_CONCURRENCY", default="1") or "1"
+)
 try:
     _executor_sync_concurrency = max(1, int(_executor_sync_concurrency_raw))
 except Exception:
@@ -99,10 +113,14 @@ except Exception:
     _executor_sync_concurrency = 1
 _EXECUTOR_SYNC_MAX_CONCURRENCY = _executor_sync_concurrency
 
-proxy_url, action_server_token = env_util.require_all_env("RASA_PROXY_URL", "ACTION_SERVER_TOKEN")
+proxy_url, action_server_token = env_util.require_all_env(
+    "RASA_PROXY_URL", "ACTION_SERVER_TOKEN"
+)
 graphql_target = env_util.require_any_env("RASA_PROXY_GRAPHQL_TARGET")
 
-_graphql_timeout_raw = env_util.get_env("EXECUTOR_GRAPHQL_TIMEOUT_SECONDS", default="30") or "30"
+_graphql_timeout_raw = (
+    env_util.get_env("EXECUTOR_GRAPHQL_TIMEOUT_SECONDS", default="30") or "30"
+)
 try:
     _graphql_timeout_seconds = max(5, int(float(_graphql_timeout_raw)))
 except Exception:
@@ -111,7 +129,9 @@ except Exception:
 client = GraphQLProxyClient(
     proxy_url=proxy_url,
     action_server_token=action_server_token,
-    target=graphql_target if isinstance(graphql_target, str) and graphql_target.strip() else "graphql",
+    target=graphql_target
+    if isinstance(graphql_target, str) and graphql_target.strip()
+    else "graphql",
     timeout_seconds=_graphql_timeout_seconds,
     connect_timeout_seconds=5,
     max_total_timeout_seconds=_graphql_timeout_seconds + 5,
@@ -201,8 +221,12 @@ def _parse_int_csv(raw: str) -> List[int]:
     return out
 
 
-_DEFAULT_PROVIDER_GROUP_IDS = _parse_int_csv(env_util.get_env("EXECUTOR_DEFAULT_PROVIDER_GROUP_IDS", default="1") or "1")
-_DEFAULT_PROVIDER_IDS = _parse_int_csv(env_util.get_env("EXECUTOR_DEFAULT_PROVIDER_IDS", default="") or "")
+_DEFAULT_PROVIDER_GROUP_IDS = _parse_int_csv(
+    env_util.get_env("EXECUTOR_DEFAULT_PROVIDER_GROUP_IDS", default="1") or "1"
+)
+_DEFAULT_PROVIDER_IDS = _parse_int_csv(
+    env_util.get_env("EXECUTOR_DEFAULT_PROVIDER_IDS", default="") or ""
+)
 
 
 def _build_default_data_origin() -> DataOrigin:
@@ -257,12 +281,103 @@ def _default_time_period_from_filter(filter_obj: Optional[Any]) -> Dict[str, str
     }
 
 
-def _merge_case_filters(base_filter: Optional[Any], cohort_filter: Optional[Any]) -> Optional[Any]:
+def _merge_case_filters(
+    base_filter: Optional[Any], cohort_filter: Optional[Any]
+) -> Optional[Any]:
     if base_filter is None:
         return cohort_filter
     if cohort_filter is None:
         return base_filter
     return GQLLogicalFilter(operator="AND", children=[base_filter, cohort_filter])
+
+
+# Adaptation layer for GraphQL filter objects to the statistical test payload format. This is necessary because the GraphQL API expects a specific structure for filters.
+def _serialize_case_filter_input(filter_obj: Optional[Any]) -> Optional[Dict[str, Any]]:
+    if filter_obj is None:
+        return None
+
+    if isinstance(filter_obj, GQLLogicalFilter):
+        children: List[Dict[str, Any]] = []
+        for child in filter_obj.children:
+            child_serialized = _serialize_case_filter_input(child)
+            if child_serialized is not None:
+                children.append(child_serialized)
+        return {
+            "node": {
+                "logicalOperator": str(filter_obj.operator),
+                "children": children,
+            }
+        }
+
+    if isinstance(filter_obj, GQLIntegerFilter):
+        return {
+            "leaf": {
+                "integerCaseFilter": {
+                    "property": filter_obj.property,
+                    "operator": filter_obj.operator.value,
+                    "value": int(filter_obj.value),
+                }
+            }
+        }
+
+    if isinstance(filter_obj, GQLBooleanFilter):
+        return {
+            "leaf": {
+                "booleanCaseFilter": {
+                    "property": str(filter_obj.property),
+                    "value": bool(filter_obj.value),
+                }
+            }
+        }
+
+    if isinstance(filter_obj, GQLSexFilter):
+        return {
+            "leaf": {
+                "enumCaseFilter": {
+                    "sexType": {
+                        "values": [filter_obj.sex_type.value],
+                        "contains": bool(filter_obj.contains),
+                    }
+                }
+            }
+        }
+
+    if isinstance(filter_obj, GQLStrokeFilter):
+        return {
+            "leaf": {
+                "enumCaseFilter": {
+                    "strokeType": {
+                        "values": [filter_obj.stroke_type.value],
+                        "contains": bool(filter_obj.contains),
+                    }
+                }
+            }
+        }
+
+    if isinstance(filter_obj, GQLDateFilter):
+        return {
+            "leaf": {
+                "dateCaseFilter": {
+                    "property": filter_obj.property,
+                    "operator": filter_obj.operator.value,
+                    "value": filter_obj.value,
+                }
+            }
+        }
+
+    logger.warning(
+        "[plan_executor] Unsupported case filter type for statistical test payload: %s",
+        type(filter_obj).__name__,
+        extra={
+            "log_context": {
+                "event": "plan_executor.statistical_test.unsupported_case_filter",
+                "operation": "_serialize_case_filter_input",
+                "outcome": "degraded",
+                "filter_type": type(filter_obj).__name__,
+            }
+        },
+    )
+    return None
 
 
 def _cohort_split_from_groupby(
@@ -292,16 +407,57 @@ def _cohort_split_from_groupby(
     return None
 
 
-def _execute_mann_whitney_test(test: StatisticalTestSpec, user_sub: str, trace_id: str) -> List[StatisticalTestResult]:
-    base_filter = to_gql_filter(test.filters)
+def _has_distinct_metric_cohorts(
+    metric_a: Optional[Any], metric_b: Optional[Any]
+) -> bool:
+    if metric_a is None or metric_b is None:
+        return False
 
-    metrics = test.metrics or []
+    metric_a_origin = getattr(metric_a, "data_origin", None)
+    metric_b_origin = getattr(metric_b, "data_origin", None)
+    metric_a_scope = getattr(metric_a, "origin_scope", None)
+    metric_b_scope = getattr(metric_b, "origin_scope", None)
+
+    if metric_a_origin is None or metric_b_origin is None:
+        return False
+
+    origin_a_payload = metric_a_origin.model_dump(by_alias=True, exclude_none=True)
+    origin_b_payload = metric_b_origin.model_dump(by_alias=True, exclude_none=True)
+    if origin_a_payload != origin_b_payload:
+        return True
+
+    if metric_a_scope is None or metric_b_scope is None:
+        return False
+
+    scope_a_payload = metric_a_scope.model_dump(by_alias=True, exclude_none=True)
+    scope_b_payload = metric_b_scope.model_dump(by_alias=True, exclude_none=True)
+    if scope_a_payload != scope_b_payload:
+        return True
+
+    label_a = getattr(metric_a_scope, "label", None)
+    label_b = getattr(metric_b_scope, "label", None)
+    if isinstance(label_a, str) and isinstance(label_b, str):
+        return bool(
+            label_a.strip() and label_b.strip() and label_a.strip() != label_b.strip()
+        )
+
+    return False
+
+
+def _translate_mann_whitney_metrics(
+    metrics: List[Any], trace_id: str
+) -> tuple[List[str], Optional[StatisticalTestResult]]:
+    # Convert planner metric codes to backend enum values once for all MW paths.
     metric_values = [metric.metric for metric in metrics if metric.metric.strip()]
     if not metric_values:
-        return []
+        return [], StatisticalTestResult(
+            test_type="MANN_WHITNEY_U_TEST",
+            status="skipped",
+            reason="No metric was provided for statistical testing",
+            title="Mann-Whitney U Test: skipped",
+            details={"trace_id": trace_id},
+        )
 
-    # Translate SSOT canonical names to StatisticsMetricEnum GQL values and
-    # validate that each metric is supported by the statistics endpoint.
     stats_enum_map = get_statistics_metric_enum_map()
     translated_metrics: List[str] = []
     ineligible: List[str] = []
@@ -312,7 +468,9 @@ def _execute_mann_whitney_test(test: StatisticalTestSpec, user_sub: str, trace_i
         else:
             translated_metrics.append(gql_name)
     if ineligible:
-        reason = f"Metric(s) not supported for statistical testing: {', '.join(ineligible)}"
+        reason = (
+            f"Metric(s) not supported for statistical testing: {', '.join(ineligible)}"
+        )
         logger.warning(
             "[plan_executor] Skipping MANN_WHITNEY_U_TEST: %s",
             reason,
@@ -320,22 +478,334 @@ def _execute_mann_whitney_test(test: StatisticalTestSpec, user_sub: str, trace_i
                 "log_context": {
                     "trace_id": trace_id or "-",
                     "event": "plan_executor.statistical_test.skipped_ineligible_metrics",
-                    "operation": "_execute_mann_whitney_test",
+                    "operation": "_translate_mann_whitney_metrics",
                     "outcome": "degraded",
                     "test_type": "MANN_WHITNEY_U_TEST",
                     "ineligible_metric_count": len(ineligible),
                 }
             },
         )
+        return [], StatisticalTestResult(
+            test_type="MANN_WHITNEY_U_TEST",
+            status="skipped",
+            reason=reason,
+            title="Mann-Whitney U Test: skipped",
+            details={"trace_id": trace_id},
+        )
+
+    return translated_metrics, None
+
+
+def _label_from_date_bounds(
+    start_date: Optional[str], end_date: Optional[str], fallback: str
+) -> str:
+    if not start_date or not end_date:
+        return fallback
+    quarter_lookup = {
+        ("01-01", "03-31"): "Q1",
+        ("04-01", "06-30"): "Q2",
+        ("07-01", "09-30"): "Q3",
+        ("10-01", "12-31"): "Q4",
+    }
+    if len(start_date) >= 10 and len(end_date) >= 10 and start_date[:4] == end_date[:4]:
+        quarter = quarter_lookup.get((start_date[5:10], end_date[5:10]))
+        if quarter is not None:
+            return f"{quarter} {start_date[:4]}"
+    return f"{start_date} to {end_date}"
+
+
+def _execute_mann_whitney_query(
+    *,
+    metric_values: List[str],
+    user_sub: str,
+    trace_id: str,
+    label_a: str,
+    label_b: str,
+    data_origin_payload_a: Dict[str, Any],
+    data_origin_payload_b: Dict[str, Any],
+    time_period_payload_a: Dict[str, str],
+    time_period_payload_b: Dict[str, str],
+    cohort_filter_a: Optional[Any],
+    cohort_filter_b: Optional[Any],
+) -> List[StatisticalTestResult]:
+    # Shared GraphQL execution path for both standard and temporal MW comparisons.
+    query = """
+query MannWhitney($metric: [StatisticsMetricEnum!]!, $cohortA: CohortFilterInput!, $cohortB: CohortFilterInput!) {
+  getMannWhitneyUTest(metric: $metric, cohortA: $cohortA, cohortB: $cohortB) {
+    metric
+    uStatistic
+    pValue
+    significant
+    cohortA { size median }
+    cohortB { size median }
+  }
+}
+    """.strip()
+
+    variables: Dict[str, Any] = {
+        "metric": metric_values,
+        "cohortA": {
+            "dataOrigin": data_origin_payload_a,
+            "timePeriod": time_period_payload_a,
+            "caseFilter": _serialize_case_filter_input(cohort_filter_a),
+        },
+        "cohortB": {
+            "dataOrigin": data_origin_payload_b,
+            "timePeriod": time_period_payload_b,
+            "caseFilter": _serialize_case_filter_input(cohort_filter_b),
+        },
+    }
+
+    payload = client.query_raw(
+        query_str=query,
+        user_sub=user_sub,
+        variables=variables,
+        trace_id=trace_id,
+        raise_on_error=False,
+    )
+    if payload is None:
         return [
             StatisticalTestResult(
                 test_type="MANN_WHITNEY_U_TEST",
                 status="skipped",
-                reason=reason,
+                reason="Mann-Whitney endpoint returned no payload",
                 title="Mann-Whitney U Test: skipped",
+                details={"trace_id": trace_id},
             )
         ]
-    metric_values = translated_metrics
+
+    payload_errors_any = payload.get("errors")
+    if isinstance(payload_errors_any, list) and payload_errors_any:
+        payload_errors = cast(List[Any], payload_errors_any)
+        first_error = payload_errors[0]
+        if isinstance(first_error, dict):
+            first_error_dict = cast(Dict[str, Any], first_error)
+            error_message = str(
+                first_error_dict.get("message") or "GraphQL returned an error"
+            )
+        else:
+            error_message = str(first_error)
+        return [
+            StatisticalTestResult(
+                test_type="MANN_WHITNEY_U_TEST",
+                status="error",
+                reason=error_message,
+                title="Mann-Whitney U Test: error",
+                details={"trace_id": trace_id},
+            )
+        ]
+
+    data = _mapping_to_dict(payload.get("data"))
+    if not data:
+        return [
+            StatisticalTestResult(
+                test_type="MANN_WHITNEY_U_TEST",
+                status="skipped",
+                reason="Mann-Whitney endpoint returned empty data",
+                title="Mann-Whitney U Test: skipped",
+                details={"trace_id": trace_id},
+            )
+        ]
+
+    rows_raw: Any = data.get("getMannWhitneyUTest")
+    if isinstance(rows_raw, dict):
+        rows_raw = [rows_raw]
+    if not isinstance(rows_raw, list):
+        return [
+            StatisticalTestResult(
+                test_type="MANN_WHITNEY_U_TEST",
+                status="error",
+                reason="Mann-Whitney response shape is invalid",
+                title="Mann-Whitney U Test: error",
+                details={"trace_id": trace_id},
+            )
+        ]
+
+    out: List[StatisticalTestResult] = []
+    rows = cast(List[object], rows_raw)
+    for row_any in rows:
+        if not isinstance(row_any, dict):
+            continue
+        row = cast(Dict[str, Any], row_any)
+
+        p_value_any = row.get("pValue")
+        p_value: Optional[float]
+        if isinstance(p_value_any, (int, float)):
+            p_value = float(p_value_any)
+        else:
+            p_value = None
+
+        u_stat_any = row.get("uStatistic")
+        u_stat = float(u_stat_any) if isinstance(u_stat_any, (int, float)) else None
+        significant_any = row.get("significant")
+        significant = (
+            bool(significant_any) if isinstance(significant_any, bool) else None
+        )
+
+        cohort_a = cast(Dict[str, Any], row.get("cohortA") or {})
+        cohort_b = cast(Dict[str, Any], row.get("cohortB") or {})
+
+        metric_name = row.get("metric")
+        metric_label = str(metric_name) if isinstance(metric_name, str) else "UNKNOWN"
+
+        out.append(
+            StatisticalTestResult(
+                test_type="MANN_WHITNEY_U_TEST",
+                status="success",
+                p_value=p_value,
+                passed=significant,
+                title=f"Mann-Whitney U Test: {metric_label}",
+                details={
+                    "trace_id": trace_id,
+                    "metric": metric_label,
+                    "u_statistic": u_stat,
+                    "cohort_a_label": label_a,
+                    "cohort_b_label": label_b,
+                    "cohort_a_size": cohort_a.get("size"),
+                    "cohort_b_size": cohort_b.get("size"),
+                    "cohort_a_median": cohort_a.get("median"),
+                    "cohort_b_median": cohort_b.get("median"),
+                },
+            )
+        )
+
+    if not out:
+        return [
+            StatisticalTestResult(
+                test_type="MANN_WHITNEY_U_TEST",
+                status="skipped",
+                reason="Mann-Whitney returned no comparable cohort rows",
+                title="Mann-Whitney U Test: skipped",
+                details={"trace_id": trace_id},
+            )
+        ]
+
+    return out
+
+
+def _can_pair_temporal_mann_whitney_tests(
+    test_a: StatisticalTestSpec, test_b: StatisticalTestSpec
+) -> bool:
+    if test_a.group_by is not None or test_b.group_by is not None:
+        return False
+    if test_a.filters is None or test_b.filters is None:
+        return False
+
+    metrics_a = [
+        m.metric.strip().upper()
+        for m in (test_a.metrics or [])
+        if m.metric and m.metric.strip()
+    ]
+    metrics_b = [
+        m.metric.strip().upper()
+        for m in (test_b.metrics or [])
+        if m.metric and m.metric.strip()
+    ]
+    if not metrics_a or not metrics_b:
+        return False
+    return metrics_a == metrics_b
+
+
+def _execute_temporal_pair_mann_whitney(
+    test_a: StatisticalTestSpec,
+    test_b: StatisticalTestSpec,
+    user_sub: str,
+    trace_id: str,
+) -> List[StatisticalTestResult]:
+    metrics = list(test_a.metrics or [])
+    metric_values, metric_error = _translate_mann_whitney_metrics(metrics, trace_id)
+    if metric_error is not None:
+        return [metric_error]
+
+    metric_a = metrics[0] if len(metrics) > 0 else None
+    metric_b = metrics[1] if len(metrics) > 1 else None
+    shared_origin = (
+        (metric_a.data_origin if metric_a is not None else None)
+        or (metric_b.data_origin if metric_b is not None else None)
+        or _build_default_data_origin()
+    )
+    data_origin_payload = cast(Any, shared_origin).model_dump(
+        by_alias=True, exclude_none=True
+    )
+
+    filter_a = to_gql_filter(test_a.filters)
+    filter_b = to_gql_filter(test_b.filters)
+
+    start_a, end_a = _collect_date_bounds(filter_a)
+    start_b, end_b = _collect_date_bounds(filter_b)
+    label_a = _label_from_date_bounds(start_a, end_a, "Cohort A")
+    label_b = _label_from_date_bounds(start_b, end_b, "Cohort B")
+
+    shared_start_candidates = [
+        candidate for candidate in [start_a, start_b] if candidate
+    ]
+    shared_end_candidates = [candidate for candidate in [end_a, end_b] if candidate]
+    if shared_start_candidates and shared_end_candidates:
+        shared_time_period = {
+            "startDate": min(shared_start_candidates),
+            "endDate": max(shared_end_candidates),
+        }
+    else:
+        shared_time_period = _default_time_period_from_filter(None)
+
+    return _execute_mann_whitney_query(
+        metric_values=metric_values,
+        user_sub=user_sub,
+        trace_id=trace_id,
+        label_a=label_a,
+        label_b=label_b,
+        data_origin_payload_a=data_origin_payload,
+        data_origin_payload_b=data_origin_payload,
+        time_period_payload_a=shared_time_period,
+        time_period_payload_b=shared_time_period,
+        cohort_filter_a=filter_a,
+        cohort_filter_b=filter_b,
+    )
+
+
+def _statistical_result_signature(result: StatisticalTestResult) -> tuple[Any, ...]:
+    details = result.details or {}
+    return (
+        result.test_type,
+        result.status,
+        result.reason,
+        result.title,
+        result.p_value,
+        result.passed,
+        details.get("metric"),
+        details.get("cohort_a_label"),
+        details.get("cohort_b_label"),
+        details.get("cohort_a_size"),
+        details.get("cohort_b_size"),
+        details.get("cohort_a_median"),
+        details.get("cohort_b_median"),
+        details.get("u_statistic"),
+    )
+
+
+def _dedupe_statistical_results(
+    results: List[StatisticalTestResult],
+) -> List[StatisticalTestResult]:
+    deduped: List[StatisticalTestResult] = []
+    seen: set[tuple[Any, ...]] = set()
+    for result in results:
+        signature = _statistical_result_signature(result)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        deduped.append(result)
+    return deduped
+
+
+def _execute_mann_whitney_test(
+    test: StatisticalTestSpec, user_sub: str, trace_id: str
+) -> List[StatisticalTestResult]:
+    base_filter = to_gql_filter(test.filters)
+
+    metrics = test.metrics or []
+    metric_values, metric_error = _translate_mann_whitney_metrics(metrics, trace_id)
+    if metric_error is not None:
+        return [metric_error]
 
     # Preferred path: explicitly scoped metric pair (hospital-vs-hospital,
     # hospital-vs-national, etc.) where first two metric entries define cohorts.
@@ -353,12 +823,22 @@ def _execute_mann_whitney_test(test: StatisticalTestSpec, user_sub: str, trace_i
     cohort_filter_a = base_filter
     cohort_filter_b = base_filter
 
-    if metric_a_origin is not None and metric_b_origin is not None:
-        data_origin_payload_a = metric_a_origin.model_dump(by_alias=True, exclude_none=True)
-        data_origin_payload_b = metric_b_origin.model_dump(by_alias=True, exclude_none=True)
-        if metric_a_scope is not None and metric_a_scope.label and metric_a_scope.label.strip():
+    if _has_distinct_metric_cohorts(metric_a, metric_b):
+        origin_a = cast(Any, metric_a_origin)
+        origin_b = cast(Any, metric_b_origin)
+        data_origin_payload_a = origin_a.model_dump(by_alias=True, exclude_none=True)
+        data_origin_payload_b = origin_b.model_dump(by_alias=True, exclude_none=True)
+        if (
+            metric_a_scope is not None
+            and metric_a_scope.label
+            and metric_a_scope.label.strip()
+        ):
             label_a = metric_a_scope.label.strip()
-        if metric_b_scope is not None and metric_b_scope.label and metric_b_scope.label.strip():
+        if (
+            metric_b_scope is not None
+            and metric_b_scope.label
+            and metric_b_scope.label.strip()
+        ):
             label_b = metric_b_scope.label.strip()
     else:
         # Backward-compatible fallback: derive cohorts from two-way group_by split.
@@ -390,117 +870,73 @@ def _execute_mann_whitney_test(test: StatisticalTestSpec, user_sub: str, trace_i
         dim, cat_a, cat_b, label_a_split, label_b_split = cohort_split
         cohort_filter_a = _merge_case_filters(base_filter, dim.filter_for(cat_a))
         cohort_filter_b = _merge_case_filters(base_filter, dim.filter_for(cat_b))
-        data_origin_payload_default = _build_default_data_origin().model_dump(by_alias=True, exclude_none=True)
+        shared_origin = (
+            metric_a_origin or metric_b_origin or _build_default_data_origin()
+        )
+        data_origin_payload_default = cast(Any, shared_origin).model_dump(
+            by_alias=True, exclude_none=True
+        )
         data_origin_payload_a = data_origin_payload_default
         data_origin_payload_b = data_origin_payload_default
         label_a = label_a_split
         label_b = label_b_split
 
     time_period_payload = _default_time_period_from_filter(base_filter)
-
-    query = """
-query MannWhitney($metric: [StatisticsMetricEnum!]!, $cohortA: CohortFilterInput!, $cohortB: CohortFilterInput!) {
-  getMannWhitneyUTest(metric: $metric, cohortA: $cohortA, cohortB: $cohortB) {
-    metric
-    uStatistic
-    pValue
-    significant
-    cohortA { size median }
-    cohortB { size median }
-  }
-}
-    """.strip()
-
-    variables: Dict[str, Any] = {
-        "metric": metric_values,
-        "cohortA": {
-            "dataOrigin": data_origin_payload_a,
-            "timePeriod": time_period_payload,
-            "caseFilter": cohort_filter_a.model_dump(by_alias=True, exclude_none=True) if cohort_filter_a is not None else None,
-        },
-        "cohortB": {
-            "dataOrigin": data_origin_payload_b,
-            "timePeriod": time_period_payload,
-            "caseFilter": cohort_filter_b.model_dump(by_alias=True, exclude_none=True) if cohort_filter_b is not None else None,
-        },
-    }
-
-    payload = client.query_raw(
-        query_str=query,
-        user_sub=user_sub,
-        variables=variables,
-        trace_id=trace_id,
-        raise_on_error=False,
+    origin_a = data_origin_payload_a or _build_default_data_origin().model_dump(
+        by_alias=True, exclude_none=True
     )
-    if payload is None:
-        return []
-
-    data = _mapping_to_dict(payload.get("data"))
-    if not data:
-        return []
-
-    rows_any = data.get("getMannWhitneyUTest")
-    if not isinstance(rows_any, list):
-        return []
-
-    out: List[StatisticalTestResult] = []
-    rows = cast(List[object], rows_any)
-    for row_any in rows:
-        if not isinstance(row_any, dict):
-            continue
-        row = cast(Dict[str, Any], row_any)
-
-        p_value_any = row.get("pValue")
-        p_value: Optional[float]
-        if isinstance(p_value_any, (int, float)):
-            p_value = float(p_value_any)
-        else:
-            p_value = None
-
-        u_stat_any = row.get("uStatistic")
-        u_stat = float(u_stat_any) if isinstance(u_stat_any, (int, float)) else None
-        significant_any = row.get("significant")
-        significant = bool(significant_any) if isinstance(significant_any, bool) else None
-
-        cohort_a = cast(Dict[str, Any], row.get("cohortA") or {})
-        cohort_b = cast(Dict[str, Any], row.get("cohortB") or {})
-
-        metric_name = row.get("metric")
-        metric_label = str(metric_name) if isinstance(metric_name, str) else "UNKNOWN"
-
-        out.append(
-            StatisticalTestResult(
-                test_type="MANN_WHITNEY_U_TEST",
-                status="success",
-                p_value=p_value,
-                passed=significant,
-                title=f"Mann-Whitney U Test: {metric_label}",
-                details={
-                    "trace_id": trace_id,
-                    "metric": metric_label,
-                    "u_statistic": u_stat,
-                    "cohort_a_label": label_a,
-                    "cohort_b_label": label_b,
-                    "cohort_a_size": cohort_a.get("size"),
-                    "cohort_b_size": cohort_b.get("size"),
-                    "cohort_a_median": cohort_a.get("median"),
-                    "cohort_b_median": cohort_b.get("median"),
-                },
-            )
-        )
-
-    return out
+    origin_b = data_origin_payload_b or _build_default_data_origin().model_dump(
+        by_alias=True, exclude_none=True
+    )
+    return _execute_mann_whitney_query(
+        metric_values=metric_values,
+        user_sub=user_sub,
+        trace_id=trace_id,
+        label_a=label_a,
+        label_b=label_b,
+        data_origin_payload_a=origin_a,
+        data_origin_payload_b=origin_b,
+        time_period_payload_a=time_period_payload,
+        time_period_payload_b=time_period_payload,
+        cohort_filter_a=cohort_filter_a,
+        cohort_filter_b=cohort_filter_b,
+    )
 
 
-def _execute_statistical_tests(plan: AnalysisPlan, user_sub: str, trace_id: str) -> List[StatisticalTestResult]:
+def _execute_statistical_tests(
+    plan: AnalysisPlan, user_sub: str, trace_id: str
+) -> List[StatisticalTestResult]:
     tests = plan.statistical_tests or []
     results: List[StatisticalTestResult] = []
 
-    for test in tests:
+    index = 0
+    while index < len(tests):
+        test = tests[index]
         test_type = (test.test_type or "").upper().strip()
         try:
             if test_type == "MANN_WHITNEY_U_TEST":
-                results.extend(_execute_mann_whitney_test(test=test, user_sub=user_sub, trace_id=trace_id))
+                if index + 1 < len(tests):
+                    next_test = tests[index + 1]
+                    next_type = (next_test.test_type or "").upper().strip()
+                    if (
+                        next_type == "MANN_WHITNEY_U_TEST"
+                        and _can_pair_temporal_mann_whitney_tests(test, next_test)
+                    ):
+                        results.extend(
+                            _execute_temporal_pair_mann_whitney(
+                                test_a=test,
+                                test_b=next_test,
+                                user_sub=user_sub,
+                                trace_id=trace_id,
+                            )
+                        )
+                        index += 2
+                        continue
+                results.extend(
+                    _execute_mann_whitney_test(
+                        test=test, user_sub=user_sub, trace_id=trace_id
+                    )
+                )
             else:
                 logger.warning(
                     "[plan_executor] Statistical test type '%s' is not implemented yet",
@@ -529,11 +965,14 @@ def _execute_statistical_tests(plan: AnalysisPlan, user_sub: str, trace_id: str)
                     }
                 },
             )
+        index += 1
 
     return results
 
 
-def _emit_compiler_diagnostics(progress_cb: Optional[Callable[[str], None]], payload: Dict[str, Any], trace_id: str) -> None:
+def _emit_compiler_diagnostics(
+    progress_cb: Optional[Callable[[str], None]], payload: Dict[str, Any], trace_id: str
+) -> None:
     log_context_fields: Dict[str, Any] = {
         "trace_id": trace_id,
         "event": "plan_executor.compiler_diagnostics",
@@ -546,7 +985,9 @@ def _emit_compiler_diagnostics(progress_cb: Optional[Callable[[str], None]], pay
         extra={"log_context": log_context_fields},
     )
     if progress_cb is not None:
-        progress_cb(f"Compiler diagnostics: {json.dumps(payload, default=str, sort_keys=True)}")
+        progress_cb(
+            f"Compiler diagnostics: {json.dumps(payload, default=str, sort_keys=True)}"
+        )
 
 
 class VisualizationExecutionError(RuntimeError):
@@ -568,9 +1009,13 @@ class VisualizationExecutionError(RuntimeError):
         self.clarification_options = list(clarification_options or [])
 
 
-def _to_execution_error(failure_reasons: List[str], trace_id: Optional[str] = None) -> VisualizationExecutionError:
+def _to_execution_error(
+    failure_reasons: List[str], trace_id: Optional[str] = None
+) -> VisualizationExecutionError:
     reason_set = set(failure_reasons)
-    service_unavailable_count = sum(1 for reason in failure_reasons if reason == "service_unavailable")
+    service_unavailable_count = sum(
+        1 for reason in failure_reasons if reason == "service_unavailable"
+    )
     if "no_data" in reason_set:
         return VisualizationExecutionError(
             user_message="The analytics service returned no data for this visualization request. Try a wider date range or different filters.",
@@ -588,7 +1033,9 @@ def _to_execution_error(failure_reasons: List[str], trace_id: Optional[str] = No
     if "service_unavailable" in reason_set:
         if service_unavailable_count >= 2:
             return VisualizationExecutionError(
-                user_message=("The analytics platform appears to be experiencing an outage right now (upstream service unavailable). Please try again in a moment."),
+                user_message=(
+                    "The analytics platform appears to be experiencing an outage right now (upstream service unavailable). Please try again in a moment."
+                ),
                 reason="service_unavailable",
                 code="EXEC_SERVICE_UNAVAILABLE",
                 trace_id=trace_id,
@@ -704,10 +1151,14 @@ def _derive_distribution_defaults(metric_code: str) -> tuple[int, int, int]:
     return bins, rmin, rmax
 
 
-def _axis_from_meta(metric_code: str, x_min: int, x_max: int) -> tuple[ChartAxis, ChartAxis]:
+def _axis_from_meta(
+    metric_code: str, x_min: int, x_max: int
+) -> tuple[ChartAxis, ChartAxis]:
     metric_key = (metric_code or "").upper()
     meta = _get_metric_meta(metric_key)
-    display = _AXIS_LABEL_OVERRIDES.get(metric_key) or _normalize_axis_display_label(get_metric_display_name(metric_key))
+    display = _AXIS_LABEL_OVERRIDES.get(metric_key) or _normalize_axis_display_label(
+        get_metric_display_name(metric_key)
+    )
     unit_any: Any = meta.get("unit")
     if unit_any is None:
         unit_any = cast(Dict[str, Any], meta.get("numeric") or {}).get("unit")
@@ -849,7 +1300,9 @@ class RequestExecutionResult:
     series: List[ChartSeries]
 
 
-def _emit_progress(context: ExecutionContext, completed: int, total: int, prefix: str = "Fetching data") -> None:
+def _emit_progress(
+    context: ExecutionContext, completed: int, total: int, prefix: str = "Fetching data"
+) -> None:
     if context.progress_cb is None:
         return
     if total > 0:
@@ -927,7 +1380,9 @@ async def _execute_specs_concurrent(
         result = await task
         results.append(result)
         completed += 1
-        _emit_progress(context, completed=completed, total=total_requests, prefix=progress_prefix)
+        _emit_progress(
+            context, completed=completed, total=total_requests, prefix=progress_prefix
+        )
 
     return results
 
@@ -955,7 +1410,9 @@ async def _execute_specs_sequential(
         )
         results.append(result)
         completed += 1
-        _emit_progress(context, completed=completed, total=total_requests, prefix=progress_prefix)
+        _emit_progress(
+            context, completed=completed, total=total_requests, prefix=progress_prefix
+        )
 
     return results
 
@@ -985,7 +1442,9 @@ async def execute_plan_async(
     )
 
     try:
-        plan = resolve_plan_metric_origins(plan=plan, user_sub=user_sub, trace_id=trace_id_resolved)
+        plan = resolve_plan_metric_origins(
+            plan=plan, user_sub=user_sub, trace_id=trace_id_resolved
+        )
     except OriginScopeResolutionError as exc:
         raise VisualizationExecutionError(
             user_message=str(exc),
@@ -1004,7 +1463,11 @@ async def execute_plan_async(
     actual_queries = 0
     summary_batches: List[ExecutionBatchSummary] = []
 
-    resolved_concurrency = _EXECUTOR_DEFAULT_MAX_CONCURRENCY if max_concurrency is None else max(1, int(max_concurrency))
+    resolved_concurrency = (
+        _EXECUTOR_DEFAULT_MAX_CONCURRENCY
+        if max_concurrency is None
+        else max(1, int(max_concurrency))
+    )
     sem = asyncio.Semaphore(resolved_concurrency)
     execution_context = ExecutionContext(
         user_sub=user_sub,
@@ -1015,10 +1478,12 @@ async def execute_plan_async(
     )
 
     for planChart in plan_charts:
-        metric_requests, derived_axes, metric_data_origins, metric_scope_labels = build_metric_requests(
-            plan_chart=planChart,
-            derive_defaults_fn=_derive_distribution_defaults,
-            axis_from_meta_fn=_axis_from_meta,
+        metric_requests, derived_axes, metric_data_origins, metric_scope_labels = (
+            build_metric_requests(
+                plan_chart=planChart,
+                derive_defaults_fn=_derive_distribution_defaults,
+                axis_from_meta_fn=_axis_from_meta,
+            )
         )
 
         compiled_grouping = compile_chart_grouping(planChart)
@@ -1059,7 +1524,9 @@ async def execute_plan_async(
                     chart_type=planChart.chart_type,
                     server_groupby=gb_field,
                     filter_dimensions=[d.kind.__name__ for d in filter_dims],
-                    batched_time_period_count=len(batched_time_periods) if batched_time_enabled else 0,
+                    batched_time_period_count=len(batched_time_periods)
+                    if batched_time_enabled
+                    else 0,
                     query_count=total_requests,
                 )
             )
@@ -1135,14 +1602,20 @@ async def execute_plan_async(
                     total_requests=retry_count,
                     progress_prefix="Retrying with per-period requests",
                 )
-                all_series = [item for result in request_results for item in result.series]
+                all_series = [
+                    item for result in request_results for item in result.series
+                ]
 
             sampled_period_override = _sampled_period_from_specs(primary_specs)
             if sampled_period_override is None and fallback_specs:
                 sampled_period_override = _sampled_period_from_specs(fallback_specs)
 
             # Surface partial-result scenarios (some scopes returned no rows) without failing whole chart.
-            empty_scope_labels = [_request_scope_label(result.spec) for result in request_results if not result.series]
+            empty_scope_labels = [
+                _request_scope_label(result.spec)
+                for result in request_results
+                if not result.series
+            ]
             for scope_label in sorted(set(empty_scope_labels)):
                 warning_msg = f"No data was returned for {scope_label}. The chart includes the data that is available."
                 if warning_msg not in response.warnings:
@@ -1198,7 +1671,9 @@ async def execute_plan_async(
                     },
                 )
                 if request_failures:
-                    raise _to_execution_error(request_failures, trace_id=trace_id_resolved)
+                    raise _to_execution_error(
+                        request_failures, trace_id=trace_id_resolved
+                    )
                 raise _to_execution_error(["no_data"], trace_id=trace_id_resolved)
             vis_chart = build_chart_dto(
                 plan_chart=planChart,
@@ -1210,7 +1685,16 @@ async def execute_plan_async(
             response.charts.append(vis_chart)
 
     if plan.statistical_tests:
-        response.stats.extend(_execute_statistical_tests(plan=plan, user_sub=user_sub, trace_id=trace_id_resolved))
+        # Statistical tests issue backend requests outside chart batching; include
+        # them in the summary count so stats-only plans are not reported as zero.
+        actual_queries += len(plan.statistical_tests)
+        response.stats.extend(
+            _dedupe_statistical_results(
+                _execute_statistical_tests(
+                    plan=plan, user_sub=user_sub, trace_id=trace_id_resolved
+                )
+            )
+        )
 
     if summary_cb is not None:
         payload = make_execution_summary(

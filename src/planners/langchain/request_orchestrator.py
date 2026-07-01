@@ -71,6 +71,23 @@ _TEMPORAL_MISSING_FIELDS = {
     "range",
 }
 
+_STAT_TEST_ENTITY_KEYS = {
+    "statistical_test_type",
+    "statistical_tests",
+    "test_type",
+    "test_types",
+}
+
+_STAT_TEST_KEYWORDS = (
+    "statistical test",
+    "mann-whitney",
+    "mann whitney",
+    "compare",
+    "significant",
+    "significance",
+    "difference between",
+)
+
 _DECISION_PROMPT = ChatPromptTemplate.from_messages(  # type: ignore[attr-defined]
     [
         (
@@ -88,9 +105,10 @@ Return strict JSON only:
 }}
 
 Rules:
-- The ONLY required fields are metric and chart_type. Everything else is optional.
-- If both metric and chart_type are known, return decision="proceed" and message=null.
-- If only one is missing, return decision="clarify", put the missing field in missing_fields, and write one concise question in message (under 25 words).
+- For chart requests, required fields are metric and chart_type.
+- For statistical-test-only requests, required fields are metric and statistical_test_type; chart_type is optional and should not trigger clarification.
+- If required fields for the detected intent are present, return decision="proceed" and message=null.
+- If one required field is missing, return decision="clarify", put the missing field in missing_fields, and write one concise question in message (under 25 words).
 - If out of scope, return decision="reject" with a short message.
 - Never ask the user to clarify or provide time_scope, time_range, grouping_dimension, sex, or stroke_type — these are optional and should be accepted if present, not rejected.
 - Prefer resolving metrics from VALID_METRIC_CANDIDATES_JSON before asking.
@@ -241,6 +259,27 @@ def _coerce_options(raw: Any) -> List[str]:
     return out
 
 
+def _is_missing_chart_type_only(missing_fields: List[str]) -> bool:
+    normalized = [field.strip().lower() for field in missing_fields if field and field.strip()]
+    return bool(normalized) and all(field == "chart_type" for field in normalized)
+
+
+def _has_statistical_test_signal(question: str, entities: Dict[str, Any]) -> bool:
+    for key in _STAT_TEST_ENTITY_KEYS:
+        value = entities.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+        if isinstance(value, list):
+            value_list = cast(List[Any], value)
+            if any(isinstance(item, str) and item.strip() for item in value_list):
+                return True
+
+    question_norm = (question or "").strip().lower()
+    if not question_norm:
+        return False
+    return any(keyword in question_norm for keyword in _STAT_TEST_KEYWORDS)
+
+
 def _decision_stage(
     question: str,
     entities: Dict[str, Any],
@@ -274,7 +313,7 @@ def _decision_stage(
     llm_message_raw = parsed.get("message")
     llm_message = llm_message_raw.strip() if isinstance(llm_message_raw, str) and llm_message_raw.strip() else None
 
-    return VisualizationRequestOutcome(
+    outcome = VisualizationRequestOutcome(
         decision=cast(OutcomeDecision, decision_raw),
         reason=reason,
         message=llm_message,
@@ -282,6 +321,23 @@ def _decision_stage(
         clarification_options=clarification_options,
         missing_fields=missing_fields,
     )
+
+    # Deterministic safeguard: do not block statistical-test requests on chart_type.
+    if (
+        outcome.decision == "clarify"
+        and _is_missing_chart_type_only(outcome.missing_fields)
+        and _has_statistical_test_signal(question, entities)
+    ):
+        return VisualizationRequestOutcome(
+            decision="proceed",
+            reason="statistical_test_without_chart_type",
+            message=None,
+            clarification_type=None,
+            clarification_options=[],
+            missing_fields=[],
+        )
+
+    return outcome
 
 
 def orchestrate_visualization_request(
