@@ -4,7 +4,6 @@ import asyncio
 import collections
 import json
 import logging
-import os
 import threading
 import uuid
 from abc import ABC, abstractmethod
@@ -16,13 +15,12 @@ import requests
 from rasa_sdk import Action  # type: ignore
 
 from src.util import env as env_util
-from src.util.keycloak_service_account import get_service_account_token
+from src.util.keycloak_service_account import get_service_account_token_or_raise, is_configured as _keycloak_service_account_configured
 from src.util.logging_utils import bind_current_context, log_context
 
 from . import long_action_registry as registry
 from .long_action_context import DispatcherLike, LongActionContext
 
-_CALLBACK_TOKEN_ENV = "LONG_TASK_CALLBACK_TOKEN"
 _CALLBACK_BASE_URL_ENV = "CALLBACK_BASE_URL"
 _CALLBACK_ALLOWED_ORIGINS_ENV = "LONG_TASK_CALLBACK_ALLOWED_ORIGINS"
 _CALLBACK_ALLOWED_PATHS_ENV = "LONG_TASK_CALLBACK_ALLOWED_PATHS"
@@ -136,13 +134,15 @@ class TrackerLike(Protocol):
     def current_state(self) -> Dict[str, Any]: ...
 
 
-def _get_callback_config(tracker: TrackerLike) -> Optional[Tuple[str, str]]:
-    """Return (url, token) for the long-task callback if configured.
+def _get_callback_config(tracker: TrackerLike) -> Optional[str]:
+    """Return the long-task callback URL if callback mode is usable for this
+    turn.
 
     The callback URL is taken from the incoming message metadata as
-    `metadata.callback_url`. If that is not present or empty, callback mode is
-    considered unsupported for this turn. The token is read from the
-    LONG_TASK_CALLBACK_TOKEN environment variable.
+    `metadata.callback_url`. If that is not present or empty, or Action's
+    Keycloak service-account identity (the only auth this callback now
+    sends) isn't configured, callback mode is considered unsupported for
+    this turn.
     """
 
     callback_url: Optional[str] = None
@@ -157,11 +157,10 @@ def _get_callback_config(tracker: TrackerLike) -> Optional[Tuple[str, str]]:
     if not callback_url:
         return None
 
-    token = os.getenv(_CALLBACK_TOKEN_ENV) or ""
-    if not token:
+    if not _keycloak_service_account_configured():
         logger.warning(
-            "Callback URL present but %s is not configured; falling back to synchronous execution",
-            _CALLBACK_TOKEN_ENV,
+            "Callback URL present but Action's Keycloak service-account identity is not "
+            "configured; falling back to synchronous execution",
             extra={
                 "log_context": {
                     "callback_endpoint": _callback_endpoint_label(callback_url),
@@ -244,7 +243,7 @@ def _get_callback_config(tracker: TrackerLike) -> Optional[Tuple[str, str]]:
         )
         return None
 
-    return callback_url, token
+    return callback_url
 
 
 def _extract_webapp_job_id(callback_url: str) -> Optional[str]:
@@ -436,7 +435,7 @@ class LongAction(Action, ABC):
         with log_context(**log_fields):
             # Prework always runs in dispatcher mode so subclasses can emit normal
             # in-band messages and return Rasa events before any long-running work.
-            pre_webapp_job_id = _extract_webapp_job_id(callback_cfg[0]) if callback_cfg else None
+            pre_webapp_job_id = _extract_webapp_job_id(callback_cfg) if callback_cfg else None
             pre_ctx = LongActionContext(
                 sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher, webapp_job_id=pre_webapp_job_id
             )
@@ -458,7 +457,7 @@ class LongAction(Action, ABC):
             # Callback is configured: run the long task asynchronously and notify
             # the frontend via HTTP callback when finished. We do not schedule Rasa
             # reminders or use a poller in this mode.
-            callback_url, callback_token = callback_cfg
+            callback_url = callback_cfg
             job_id = uuid.uuid4().hex
             webapp_job_id = _extract_webapp_job_id(callback_url)
 
@@ -467,7 +466,7 @@ class LongAction(Action, ABC):
                     sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher, webapp_job_id=webapp_job_id
                 )
                 ctx._job_id = job_id
-                enqueue, drain = self._start_progress_sender(ctx, job_id, callback_url, callback_token)
+                enqueue, drain = self._start_progress_sender(ctx, job_id, callback_url)
                 ctx.attach_progress_callback(enqueue)
                 with log_context(job_id=job_id, callback_mode=True):
                     enqueue(self._lock_message())
@@ -484,12 +483,12 @@ class LongAction(Action, ABC):
             # In callback mode, stream every ctx.say() as a progress callback to
             # the frontend while the job is running. enqueue() never blocks on
             # network I/O -- see _start_progress_sender.
-            enqueue, drain = self._start_progress_sender(ctx, job_id, callback_url, callback_token)
+            enqueue, drain = self._start_progress_sender(ctx, job_id, callback_url)
             ctx.attach_progress_callback(enqueue)
 
             threading.Thread(
                 target=bind_current_context(self._run_work),
-                args=(ctx, job_id, callback_url, callback_token, enqueue, drain),
+                args=(ctx, job_id, callback_url, enqueue, drain),
                 daemon=True,
             ).start()
 
@@ -501,7 +500,6 @@ class LongAction(Action, ABC):
         ctx: LongActionContext,
         job_id: str,
         callback_url: str,
-        callback_token: str,
     ) -> Tuple[Callable[[Dict[str, Any]], None], Callable[[], None]]:
         """Start a dedicated background sender thread for one job's progress
         callbacks, and return (enqueue, drain).
@@ -559,7 +557,7 @@ class LongAction(Action, ABC):
                 if item is None:
                     return
                 try:
-                    self._send_progress_blocking(ctx, job_id, callback_url, callback_token, item)
+                    self._send_progress_blocking(ctx, job_id, callback_url, item)
                 except Exception:
                     logger.debug(
                         "Progress sender thread failed to send a message; continuing without interrupting work",
@@ -582,7 +580,6 @@ class LongAction(Action, ABC):
         ctx: LongActionContext,
         job_id: str,
         callback_url: str,
-        callback_token: str,
         message: Dict[str, Any],
     ) -> None:
         """Send a callback for a single ctx.say() message. Blocks on network I/O --
@@ -607,16 +604,10 @@ class LongAction(Action, ABC):
         payload: Dict[str, Any] = self._build_callback_payload(ctx, message, trace_id)
         headers: Dict[str, str] = {
             "Content-Type": "application/json",
-            # Kept unconditionally for backward compat during the rollout --
-            # see the Authorization header below for the real service
-            # identity, once Webapp's Keycloak service-account client exists.
-            "x-long-task-callback-token": callback_token,
+            "Authorization": f"Bearer {get_service_account_token_or_raise()}",
         }
         if isinstance(trace_id, str) and trace_id.strip():
             headers["x-trace-id"] = trace_id.strip()
-        service_token = get_service_account_token()
-        if service_token:
-            headers["Authorization"] = f"Bearer {service_token}"
 
         with log_context(
             trace_id=trace_id or "-",
@@ -695,7 +686,6 @@ class LongAction(Action, ABC):
         ctx: LongActionContext,
         job_id: str,
         callback_url: str,
-        callback_token: str,
         enqueue: Callable[[Dict[str, Any]], None],
         drain: Callable[[], None],
     ) -> None:

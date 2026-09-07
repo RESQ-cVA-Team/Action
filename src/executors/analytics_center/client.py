@@ -11,7 +11,7 @@ import requests
 
 from src.shared import ssot_loader
 from src.util import env as env_util
-from src.util.keycloak_service_account import get_service_account_token
+from src.util.keycloak_service_account import get_service_account_token_or_raise
 from src.util.logging_utils import log_context
 
 logger = logging.getLogger(__name__)
@@ -96,14 +96,12 @@ class AnalyticsCenterClient:
     def __init__(
         self,
         proxy_url: str,
-        action_server_token: str,
         target: str = "analytics",
         timeout_seconds: int = 30,
         retry_attempts: int = 2,
         retry_backoff_seconds: float = 0.6,
     ):
         self.proxy_url = proxy_url
-        self.action_server_token = action_server_token
         self.target = target
         self.timeout_seconds = timeout_seconds
         self.retry_attempts = max(0, int(retry_attempts))
@@ -198,15 +196,9 @@ class AnalyticsCenterClient:
         trace_label = self._require_trace_id(trace_id, request_name)
         headers = {
             "Content-Type": "application/json",
-            # Kept unconditionally for backward compat during the rollout --
-            # see the Authorization header below for the real service
-            # identity, once Webapp's Keycloak service-account client exists.
-            "x-action-server-token": self.action_server_token,
+            "Authorization": f"Bearer {get_service_account_token_or_raise()}",
+            "x-trace-id": trace_label,
         }
-        headers["x-trace-id"] = trace_label
-        service_token = get_service_account_token()
-        if service_token:
-            headers["Authorization"] = f"Bearer {service_token}"
 
         request_payload: ProxyRequestPayload = {
             # senderId carries conversation routing identity (for example thread scoping).
@@ -743,11 +735,10 @@ class AnalyticsCenterClient:
 
 
 def get_analytics_center_client() -> AnalyticsCenterClient:
-    proxy_url, action_server_token = env_util.require_all_env("RASA_PROXY_URL", "ACTION_SERVER_TOKEN")
+    proxy_url = env_util.require_any_env("RASA_PROXY_URL")
     target = env_util.require_any_env("RASA_PROXY_ANALYTICS_TARGET")
     target_val = target if isinstance(target, str) and target.strip() else "analytics"
     return AnalyticsCenterClient(
         proxy_url=proxy_url,
-        action_server_token=action_server_token,
         target=target_val,
     )
