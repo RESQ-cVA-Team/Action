@@ -13,8 +13,8 @@ RUN apt-get update && apt-get install -y \
     && npm install -g pyright \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN /opt/venv/bin/pip install --upgrade pip && /opt/venv/bin/pip install -r requirements.txt
+COPY requirements.txt requirements-dev.txt .
+RUN /opt/venv/bin/pip install --upgrade pip && /opt/venv/bin/pip install -r requirements-dev.txt
 
 EXPOSE 5055
 
