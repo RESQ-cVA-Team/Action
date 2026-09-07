@@ -10,12 +10,13 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable, Deque, Dict, List, Optional, Protocol, Tuple, cast
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import requests
 from rasa_sdk import Action  # type: ignore
 
 from src.util import env as env_util
+from src.util.keycloak_service_account import get_service_account_token
 from src.util.logging_utils import bind_current_context, log_context
 
 from . import long_action_registry as registry
@@ -246,6 +247,22 @@ def _get_callback_config(tracker: TrackerLike) -> Optional[Tuple[str, str]]:
     return callback_url, token
 
 
+def _extract_webapp_job_id(callback_url: str) -> Optional[str]:
+    """Pull the jobId Webapp minted for this callback out of its own URL.
+
+    Webapp embeds `?jobId=...` in the callback URL it generates server-side
+    (api/rasa/route.ts); relaying it back alongside the GraphQL proxy calls
+    this action makes mid-job lets Webapp resolve identity from its own
+    server-side job store instead of trusting a caller-supplied senderId.
+    """
+    query = urlsplit(callback_url).query
+    values = parse_qs(query).get("jobId")
+    if not values:
+        return None
+    candidate = values[0].strip()
+    return candidate or None
+
+
 def _normalize_trace_id(value: Any) -> Optional[str]:
     if value is None:
         return None
@@ -419,14 +436,20 @@ class LongAction(Action, ABC):
         with log_context(**log_fields):
             # Prework always runs in dispatcher mode so subclasses can emit normal
             # in-band messages and return Rasa events before any long-running work.
-            pre_ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher)
+            pre_webapp_job_id = _extract_webapp_job_id(callback_cfg[0]) if callback_cfg else None
+            pre_ctx = LongActionContext(
+                sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher, webapp_job_id=pre_webapp_job_id
+            )
             pre_outcome = await self.prework(pre_ctx)
             immediate_events = pre_outcome.events
             if not pre_outcome.proceed:
                 return immediate_events
 
             # If no callback is configured, fall back to synchronous execution so
-            # behavior is predictable in rasa shell and simple REST setups.
+            # behavior is predictable in rasa shell and simple REST setups. No
+            # webapp jobId exists in this mode (no callback URL to extract it
+            # from) -- GraphQLProxyClient calls made here fall back to the
+            # legacy senderId-based identity path on Webapp's rasa-proxy.
             if callback_cfg is None:
                 ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher)
                 await self.work(ctx)
@@ -437,9 +460,12 @@ class LongAction(Action, ABC):
             # reminders or use a poller in this mode.
             callback_url, callback_token = callback_cfg
             job_id = uuid.uuid4().hex
+            webapp_job_id = _extract_webapp_job_id(callback_url)
 
             if _DEFER_CALLBACK_HANDOFF:
-                ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher)
+                ctx = LongActionContext(
+                    sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher, webapp_job_id=webapp_job_id
+                )
                 ctx._job_id = job_id
                 enqueue, drain = self._start_progress_sender(ctx, job_id, callback_url, callback_token)
                 ctx.attach_progress_callback(enqueue)
@@ -452,7 +478,7 @@ class LongAction(Action, ABC):
                         drain()
                 return [*immediate_events, *ctx.pending_events]
 
-            ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot)
+            ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot, webapp_job_id=webapp_job_id)
             ctx._job_id = job_id
 
             # In callback mode, stream every ctx.say() as a progress callback to
@@ -581,10 +607,16 @@ class LongAction(Action, ABC):
         payload: Dict[str, Any] = self._build_callback_payload(ctx, message, trace_id)
         headers: Dict[str, str] = {
             "Content-Type": "application/json",
+            # Kept unconditionally for backward compat during the rollout --
+            # see the Authorization header below for the real service
+            # identity, once Webapp's Keycloak service-account client exists.
             "x-long-task-callback-token": callback_token,
         }
         if isinstance(trace_id, str) and trace_id.strip():
             headers["x-trace-id"] = trace_id.strip()
+        service_token = get_service_account_token()
+        if service_token:
+            headers["Authorization"] = f"Bearer {service_token}"
 
         with log_context(
             trace_id=trace_id or "-",
