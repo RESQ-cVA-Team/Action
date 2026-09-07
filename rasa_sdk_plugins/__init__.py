@@ -52,11 +52,14 @@ if _ACTION_REQUIRE_AUTH_TOKEN and not _ACTION_TOKEN:
 def attach_sanic_app_extensions(app: Sanic) -> None:
     @app.on_request
     async def _require_action_token(request) -> Optional[HTTPResponse]:
-        # Only the action-invocation endpoint is gated -- /health must stay
-        # open for container health checks, and /version, /actions,
-        # /debug/fewshot-relevance are separate, lower-sensitivity surfaces
-        # (the debug endpoint's own auth is tracked separately).
-        if request.path != "/webhook" or not _ACTION_TOKEN:
+        # /health must stay open for container health checks; /version and
+        # /actions stay open too (no sensitive data, needed for tooling).
+        # /debug/* reuses the same service token as the action-invocation
+        # endpoint -- it's a lower-sensitivity surface (local, static
+        # few-shot examples, no user data), but "anything reachable gets to
+        # trigger it" is still worth closing off.
+        is_gated = request.path == "/webhook" or request.path.startswith("/debug/")
+        if not is_gated or not _ACTION_TOKEN:
             return None
 
         query_token = request.args.get("token")
