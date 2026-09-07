@@ -64,6 +64,64 @@ class OriginScopeResolverSemanticsTests(unittest.TestCase):
         self.assertIsNotNone(resolved_chart.semantics.time)
         self.assertEqual(resolved_chart.semantics.time.grain, "MONTH")
 
+    def test_resolve_scope_provider_id_rejects_inaccessible_provider(self) -> None:
+        class FakeClient:
+            def list_providers(self, **kwargs):
+                return {"results": [{"id": 1853, "nameEnglish": "Hospital A"}], "count": 1}
+
+        scope = S.OriginScopeSpec(scopeType="provider_id", value=9999)
+        with patch.object(origin_scope_resolver, "get_analytics_center_client", return_value=FakeClient()):
+            with self.assertRaises(origin_scope_resolver.OriginScopeResolutionError):
+                origin_scope_resolver._resolve_scope(
+                    scope=scope,
+                    user_sub="test-provider-id-reject",
+                    trace_id="trace-provider-id-reject",
+                )
+
+    def test_resolve_scope_provider_id_accepts_accessible_provider(self) -> None:
+        class FakeClient:
+            def list_providers(self, **kwargs):
+                return {"results": [{"id": 1853, "nameEnglish": "Hospital A"}], "count": 1}
+
+        scope = S.OriginScopeSpec(scopeType="provider_id", value=1853)
+        with patch.object(origin_scope_resolver, "get_analytics_center_client", return_value=FakeClient()):
+            resolved = origin_scope_resolver._resolve_scope(
+                scope=scope,
+                user_sub="test-provider-id-accept",
+                trace_id="trace-provider-id-accept",
+            )
+
+        self.assertEqual(resolved.provider_id, [1853])
+
+    def test_resolve_scope_provider_group_id_rejects_inaccessible_group(self) -> None:
+        class FakeClient:
+            def list_provider_groups(self, **kwargs):
+                return {"results": [{"id": 42, "name": "Group A"}], "count": 1}
+
+        scope = S.OriginScopeSpec(scopeType="provider_group_id", value=7777)
+        with patch.object(origin_scope_resolver, "get_analytics_center_client", return_value=FakeClient()):
+            with self.assertRaises(origin_scope_resolver.OriginScopeResolutionError):
+                origin_scope_resolver._resolve_scope(
+                    scope=scope,
+                    user_sub="test-group-id-reject",
+                    trace_id="trace-group-id-reject",
+                )
+
+    def test_resolve_scope_provider_group_id_accepts_accessible_group(self) -> None:
+        class FakeClient:
+            def list_provider_groups(self, **kwargs):
+                return {"results": [{"id": 42, "name": "Group A"}], "count": 1}
+
+        scope = S.OriginScopeSpec(scopeType="provider_group_id", value=42)
+        with patch.object(origin_scope_resolver, "get_analytics_center_client", return_value=FakeClient()):
+            resolved = origin_scope_resolver._resolve_scope(
+                scope=scope,
+                user_sub="test-group-id-accept",
+                trace_id="trace-group-id-accept",
+            )
+
+        self.assertEqual(resolved.provider_group_id, [42])
+
     def test_search_accessible_providers_by_name_stops_after_exact_match(self) -> None:
         calls = []
 

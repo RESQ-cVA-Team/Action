@@ -323,6 +323,7 @@ def _execute_mann_whitney_query(
     user_sub: str,
     trace_id: str,
     label_a: str,
+    job_id: Optional[str] = None,
     label_b: str,
     data_origin_payload_a: Dict[str, Any],
     data_origin_payload_b: Dict[str, Any],
@@ -362,6 +363,7 @@ query MannWhitney($metric: [StatisticsMetricEnum!]!, $cohortA: CohortFilterInput
     payload = client.query_raw(
         query_str=query,
         user_sub=user_sub,
+        job_id=job_id,
         variables=variables,
         trace_id=trace_id,
         raise_on_error=False,
@@ -500,6 +502,7 @@ def _execute_temporal_pair_mann_whitney(
     test_b: StatisticalTestSpec,
     user_sub: str,
     trace_id: str,
+    job_id: Optional[str] = None,
 ) -> List[StatisticalTestResult]:
     metrics = list(test_a.metrics or [])
     metric_values = _translate_mann_whitney_metrics(metrics, trace_id)
@@ -545,6 +548,7 @@ def _execute_temporal_pair_mann_whitney(
     results = _execute_mann_whitney_query(
         metric_values=metric_values,
         user_sub=user_sub,
+        job_id=job_id,
         trace_id=trace_id,
         label_a=label_a,
         label_b=label_b,
@@ -663,7 +667,7 @@ def _dedupe_statistical_results(
     return deduped
 
 
-def _execute_mann_whitney_test(test: StatisticalTestSpec, user_sub: str, trace_id: str) -> List[StatisticalTestResult]:
+def _execute_mann_whitney_test(test: StatisticalTestSpec, user_sub: str, trace_id: str, job_id: Optional[str] = None) -> List[StatisticalTestResult]:
     base_filter = to_gql_filter(test.filters)
 
     metrics = test.metrics or []
@@ -723,6 +727,7 @@ def _execute_mann_whitney_test(test: StatisticalTestSpec, user_sub: str, trace_i
     results = _execute_mann_whitney_query(
         metric_values=metric_values,
         user_sub=user_sub,
+        job_id=job_id,
         trace_id=trace_id,
         label_a=label_a,
         label_b=label_b,
@@ -736,7 +741,7 @@ def _execute_mann_whitney_test(test: StatisticalTestSpec, user_sub: str, trace_i
     return _ensure_mann_whitney_cohort_viability(results, trace_id)
 
 
-def _execute_statistical_tests(plan: AnalysisPlan, user_sub: str, trace_id: str) -> List[StatisticalTestResult]:
+def _execute_statistical_tests(plan: AnalysisPlan, user_sub: str, trace_id: str, job_id: Optional[str] = None) -> List[StatisticalTestResult]:
     tests = plan.statistical_tests or []
     results: List[StatisticalTestResult] = []
 
@@ -754,12 +759,13 @@ def _execute_statistical_tests(plan: AnalysisPlan, user_sub: str, trace_id: str)
                             test_a=test,
                             test_b=next_test,
                             user_sub=user_sub,
+                            job_id=job_id,
                             trace_id=trace_id,
                         )
                     )
                     index += 2
                     continue
-            results.extend(_execute_mann_whitney_test(test=test, user_sub=user_sub, trace_id=trace_id))
+            results.extend(_execute_mann_whitney_test(test=test, user_sub=user_sub, job_id=job_id, trace_id=trace_id))
         else:
             raise VisualizationExecutionError(
                 user_message=("I cannot run the requested statistical test type yet. Please use a supported test type."),
@@ -1016,7 +1022,7 @@ def _sampled_period_from_specs(specs: List[RequestSpec]) -> Optional[str]:
     return None
 
 
-def execute_plan(plan: AnalysisPlan, user_sub: str) -> VisualizationResponse:
+def execute_plan(plan: AnalysisPlan, user_sub: str, job_id: Optional[str] = None) -> VisualizationResponse:
     """Sync wrapper that delegates to the async implementation with concurrency=1.
 
     - If no event loop is running, run the coroutine directly with asyncio.run.
@@ -1026,6 +1032,7 @@ def execute_plan(plan: AnalysisPlan, user_sub: str) -> VisualizationResponse:
     coro = execute_plan_async(
         plan,
         user_sub,
+        job_id=job_id,
         max_concurrency=_EXECUTOR_SYNC_MAX_CONCURRENCY,
         trace_id=trace_id,
     )
@@ -1046,6 +1053,7 @@ QueryDebugCallback = Callable[[Dict[str, Any]], None]
 @dataclass(frozen=True)
 class ExecutionContext:
     user_sub: str
+    job_id: Optional[str]
     semaphore: asyncio.Semaphore
     progress_cb: Optional[ProgressCallback]
     log_graphql_query: bool
@@ -1094,6 +1102,7 @@ async def _execute_request_spec(
         request_failures=request_failures,
         client=client,
         user_sub=context.user_sub,
+        job_id=context.job_id,
         trace_id=trace_id,
         semaphore=context.semaphore,
         log_graphql_query=context.log_graphql_query,
@@ -1173,6 +1182,7 @@ async def _execute_specs_sequential(
 async def execute_plan_async(
     plan: AnalysisPlan,
     user_sub: str,
+    job_id: Optional[str] = None,
     max_concurrency: Optional[int] = None,
     progress_cb: Optional[ProgressCallback] = None,
     summary_cb: Optional[SummaryCallback] = None,
@@ -1199,6 +1209,10 @@ async def execute_plan_async(
     )
 
     try:
+        # jobId is deliberately not threaded into origin-scope resolution here --
+        # that subsystem has its own separate, confirmed authorization gap
+        # (see SECURITY-TODO.md cluster 1) that this identity-hardening pass
+        # does not touch. Revisit once that's fixed.
         plan = await asyncio.wait_for(
             asyncio.to_thread(
                 resolve_plan_metric_origins,
@@ -1252,6 +1266,7 @@ async def execute_plan_async(
     sem = asyncio.Semaphore(resolved_concurrency)
     execution_context = ExecutionContext(
         user_sub=user_sub,
+        job_id=job_id,
         semaphore=sem,
         progress_cb=progress_cb,
         log_graphql_query=_LOG_GRAPHQL_QUERY,
@@ -1406,7 +1421,7 @@ async def execute_plan_async(
         # Statistical tests issue backend requests outside chart batching; include
         # them in the summary count so stats-only plans are not reported as zero.
         actual_queries += len(plan.statistical_tests)
-        response.stats.extend(_dedupe_statistical_results(_execute_statistical_tests(plan=plan, user_sub=user_sub, trace_id=trace_id_resolved)))
+        response.stats.extend(_dedupe_statistical_results(_execute_statistical_tests(plan=plan, user_sub=user_sub, job_id=job_id, trace_id=trace_id_resolved)))
 
     stats_count = len(response.stats)
     stats_skipped = sum(1 for result in response.stats if result.status == "skipped")

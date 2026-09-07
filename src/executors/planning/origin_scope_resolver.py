@@ -12,7 +12,7 @@ from src.util import env as env_util
 logger = logging.getLogger(__name__)
 
 _DEFAULT_SCOPE_TYPE = (env_util.get_env("EXECUTOR_DEFAULT_ORIGIN_SCOPE", default="mine") or "mine").strip().lower()
-_FAIL_OPEN = env_util.env_flag("EXECUTOR_ORIGIN_SCOPE_FAIL_OPEN", default=True)
+_FAIL_OPEN = env_util.env_flag("EXECUTOR_ORIGIN_SCOPE_FAIL_OPEN", default=False)
 _MAX_PROVIDER_IDS_RAW = env_util.get_env("EXECUTOR_ORIGIN_SCOPE_MAX_PROVIDER_IDS", default="500") or "500"
 
 
@@ -860,26 +860,51 @@ def _resolve_scope(
 
     if scope_type == "provider_id":
         if isinstance(value, int):
-            return S.DataOriginSpec(providerId=[value])
-        if isinstance(value, str) and value.strip().isdigit():
-            return S.DataOriginSpec(providerId=[int(value.strip())])
-        raise OriginScopeResolutionError(
-            "Provider scope requires a numeric provider ID.",
-            clarification_type="provider_id",
-        )
+            provider_id = value
+        elif isinstance(value, str) and value.strip().isdigit():
+            provider_id = int(value.strip())
+        else:
+            raise OriginScopeResolutionError(
+                "Provider scope requires a numeric provider ID.",
+                clarification_type="provider_id",
+            )
+        # Unlike provider_name (which only ever matches within the caller's
+        # own accessible-provider set), a numeric ID was previously accepted
+        # as-is with no check that the caller can actually see that
+        # provider -- any id the planner produced, from any source, granted
+        # that provider's data outright.
+        accessible = _list_accessible_providers(user_sub=user_sub, trace_id=trace_id)
+        accessible_ids = {pid for pid in (_provider_id(p) for p in accessible) if pid is not None}
+        if provider_id not in accessible_ids:
+            raise OriginScopeResolutionError(
+                f"You do not currently have access to provider {provider_id}.",
+                clarification_type="provider_id",
+            )
+        return S.DataOriginSpec(providerId=[provider_id])
 
     if scope_type == "provider_name":
         return _resolve_provider_name(value=value, user_sub=user_sub, trace_id=trace_id)
 
     if scope_type == "provider_group_id":
         if isinstance(value, int):
-            return S.DataOriginSpec(providerGroupId=[value])
-        if isinstance(value, str) and value.strip().isdigit():
-            return S.DataOriginSpec(providerGroupId=[int(value.strip())])
-        raise OriginScopeResolutionError(
-            "Provider-group scope requires a numeric group ID.",
-            clarification_type="provider_group_id",
-        )
+            group_id = value
+        elif isinstance(value, str) and value.strip().isdigit():
+            group_id = int(value.strip())
+        else:
+            raise OriginScopeResolutionError(
+                "Provider-group scope requires a numeric group ID.",
+                clarification_type="provider_group_id",
+            )
+        # Same gap as provider_id above -- a numeric group ID was accepted
+        # with no check the caller can see that provider group.
+        accessible_groups = _list_accessible_provider_groups(user_sub=user_sub, trace_id=trace_id)
+        accessible_group_ids = {gid for gid in (_provider_group_id(g) for g in accessible_groups) if gid is not None}
+        if group_id not in accessible_group_ids:
+            raise OriginScopeResolutionError(
+                f"You do not currently have access to provider group {group_id}.",
+                clarification_type="provider_group_id",
+            )
+        return S.DataOriginSpec(providerGroupId=[group_id])
 
     if scope_type == "country_code":
         return _resolve_country_scope(

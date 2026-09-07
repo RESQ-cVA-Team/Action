@@ -730,6 +730,7 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
         "user_message": ctx.text,
         "planner_question": planner_question,
         "user_sub": ctx.sender_id,
+        "webapp_job_id": ctx.webapp_job_id,
         "latest_meta": latest_meta,
         "latest_msg": latest_msg,
         "extracted_entities": extracted_entities,
@@ -1158,6 +1159,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                 request_ctx = _extract_request_context(ctx)
                 user_message = cast(str, request_ctx["user_message"])
                 user_sub = cast(str, request_ctx["user_sub"])
+                webapp_job_id = cast(Optional[str], request_ctx.get("webapp_job_id"))
                 language = cast(str, request_ctx.get("language") or "en")
 
                 if _LOG_USER_TEXT:
@@ -1288,6 +1290,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         execute_plan_async(
                             plan_obj,
                             user_sub=user_sub,
+                            job_id=webapp_job_id,
                             max_concurrency=_EXECUTOR_MAX_CONCURRENCY,
                             progress_cb=progress,
                             summary_cb=on_summary,

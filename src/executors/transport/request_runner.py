@@ -51,6 +51,7 @@ async def run_graphql_request(
     user_sub: str,
     trace_id: str,
     semaphore: asyncio.Semaphore,
+    job_id: Optional[str] = None,
     scope_label: Optional[str] = None,
     request_warnings: Optional[List[str]] = None,
     log_graphql_query: bool = False,
@@ -108,6 +109,7 @@ async def run_graphql_request(
                     trace_id=trace_id,
                     variables=None,
                     raise_on_error=True,
+                    job_id=job_id,
                 )
             except GraphQLProxyError as exc:
                 if exc.kind == "timeout":

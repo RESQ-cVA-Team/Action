@@ -10,6 +10,7 @@ import requests
 
 import src.domain.graphql.response as gqlr
 from src.util import env as env_util
+from src.util.keycloak_service_account import get_service_account_token
 from src.util.logging_utils import log_context
 
 
@@ -24,6 +25,11 @@ class ProxyHttpRequestPayload(TypedDict):
     body: GraphQLPayload
 
 
+# jobId (when present) is the authoritative identity signal on Webapp's
+# rasa-proxy -- senderId is kept only as a legacy fallback for as long as
+# Webapp's dual-accept rollout window is open. Built as a plain dict below
+# rather than typed here, since TypedDict can't cleanly express "senderId
+# required, jobId optional" without a second class.
 class ProxyRequestPayload(TypedDict):
     senderId: str
     target: str
@@ -193,16 +199,24 @@ class GraphQLProxyClient:
         trace_id: str,
         variables: Optional[Dict[str, Any]] = None,
         raise_on_error: bool = False,
+        job_id: Optional[str] = None,
     ) -> gqlr.MetricsQueryResponse | None:
         trace_label = self._require_trace_id(trace_id, "query")
         headers = {
             "Content-Type": "application/json",
+            # Kept unconditionally for backward compat during the rollout --
+            # see the Authorization header below for the real service
+            # identity, once Webapp's Keycloak service-account client exists.
             "x-action-server-token": self.action_server_token,
         }
         headers["x-trace-id"] = trace_label
+        service_token = get_service_account_token()
+        if service_token:
+            headers["Authorization"] = f"Bearer {service_token}"
 
-        proxy_payload: ProxyRequestPayload = {
-            # senderId carries conversation routing identity (for example thread scoping).
+        proxy_payload: Dict[str, Any] = {
+            # senderId carries conversation routing identity (for example thread
+            # scoping). Kept as a legacy fallback -- see jobId below.
             "senderId": user_sub,
             "target": self.target,
             "request": {
@@ -211,6 +225,8 @@ class GraphQLProxyClient:
                 "body": {"query": query_str, "variables": variables or {}},
             },
         }
+        if job_id:
+            proxy_payload["jobId"] = job_id
 
         q_hash = hashlib.sha256(query_str.encode("utf-8")).hexdigest()[:12]
         attempts_total = self.retry_attempts + 1
@@ -467,6 +483,7 @@ class GraphQLProxyClient:
         trace_id: str,
         variables: Optional[Dict[str, Any]] = None,
         raise_on_error: bool = False,
+        job_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Execute a GraphQL query and return the raw JSON object.
 
@@ -476,12 +493,19 @@ class GraphQLProxyClient:
         trace_label = self._require_trace_id(trace_id, "query_raw")
         headers = {
             "Content-Type": "application/json",
+            # Kept unconditionally for backward compat during the rollout --
+            # see the Authorization header below for the real service
+            # identity, once Webapp's Keycloak service-account client exists.
             "x-action-server-token": self.action_server_token,
         }
         headers["x-trace-id"] = trace_label
+        service_token = get_service_account_token()
+        if service_token:
+            headers["Authorization"] = f"Bearer {service_token}"
 
-        proxy_payload: ProxyRequestPayload = {
-            # senderId carries conversation routing identity (for example thread scoping).
+        proxy_payload: Dict[str, Any] = {
+            # senderId carries conversation routing identity (for example thread
+            # scoping). Kept as a legacy fallback -- see jobId below.
             "senderId": user_sub,
             "target": self.target,
             "request": {
@@ -490,6 +514,8 @@ class GraphQLProxyClient:
                 "body": {"query": query_str, "variables": variables or {}},
             },
         }
+        if job_id:
+            proxy_payload["jobId"] = job_id
 
         q_hash = hashlib.sha256(query_str.encode("utf-8")).hexdigest()[:12]
         attempts_total = self.retry_attempts + 1
