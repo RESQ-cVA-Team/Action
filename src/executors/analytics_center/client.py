@@ -11,6 +11,7 @@ import requests
 
 from src.shared import ssot_loader
 from src.util import env as env_util
+from src.util.keycloak_service_account import get_service_account_token
 from src.util.logging_utils import log_context
 
 logger = logging.getLogger(__name__)
@@ -197,9 +198,15 @@ class AnalyticsCenterClient:
         trace_label = self._require_trace_id(trace_id, request_name)
         headers = {
             "Content-Type": "application/json",
+            # Kept unconditionally for backward compat during the rollout --
+            # see the Authorization header below for the real service
+            # identity, once Webapp's Keycloak service-account client exists.
             "x-action-server-token": self.action_server_token,
         }
         headers["x-trace-id"] = trace_label
+        service_token = get_service_account_token()
+        if service_token:
+            headers["Authorization"] = f"Bearer {service_token}"
 
         request_payload: ProxyRequestPayload = {
             # senderId carries conversation routing identity (for example thread scoping).
