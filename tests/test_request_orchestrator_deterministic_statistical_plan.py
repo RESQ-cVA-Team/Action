@@ -1,8 +1,8 @@
 import unittest
 from unittest.mock import patch
 
-from src.planners.langchain.request_orchestrator import orchestrate_visualization_request
-from src.planners.langchain.request_orchestrator import VisualizationRequestOutcome
+from src.domain.langchain.schema import AnalysisPlan
+from src.planners.langchain.request_orchestrator import VisualizationRequestOutcome, orchestrate_visualization_request
 
 
 class RequestOrchestratorDeterministicStatPlanTests(unittest.TestCase):
@@ -14,13 +14,16 @@ class RequestOrchestratorDeterministicStatPlanTests(unittest.TestCase):
             "statistical_test_type": ["MANN_WHITNEY_U_TEST"],
         }
 
-        with patch(
-            "src.planners.langchain.request_orchestrator._decision_stage",
-            return_value=VisualizationRequestOutcome(
-                decision="proceed",
-                reason="all_required_fields_present",
+        with (
+            patch(
+                "src.planners.langchain.request_orchestrator._decision_stage",
+                return_value=VisualizationRequestOutcome(
+                    decision="proceed",
+                    reason="all_required_fields_present",
+                ),
             ),
-        ), patch("src.planners.langchain.request_orchestrator.generate_analysis_plan") as llm_plan:
+            patch("src.planners.langchain.request_orchestrator.generate_analysis_plan") as llm_plan,
+        ):
             outcome = orchestrate_visualization_request(
                 question="Run a Mann-Whitney U test for DTN between Aalborg Hospital and Copenhagen Hospital",
                 entities=entities,
@@ -38,6 +41,34 @@ class RequestOrchestratorDeterministicStatPlanTests(unittest.TestCase):
         self.assertEqual(test.metrics[1].origin_scope.scope_type, "provider_name")
         self.assertEqual(test.metrics[1].origin_scope.value, "Copenhagen Hospital")
 
+    def test_prefers_explicit_metric_name_over_bad_nlu_metric_entity(self) -> None:
+        entities = {
+            "chart_type": ["LINE"],
+            "metric": ["ICH_TREATMENT_TYPE"],
+        }
+
+        with (
+            patch(
+                "src.planners.langchain.request_orchestrator._decision_stage",
+                return_value=VisualizationRequestOutcome(decision="proceed", reason="all_required_fields_present"),
+            ),
+            patch(
+                "src.planners.langchain.request_orchestrator.generate_analysis_plan",
+                return_value=AnalysisPlan(charts=[]),
+            ) as llm_plan,
+        ):
+            outcome = orchestrate_visualization_request(
+                question="Show me a line graph of decompressive craniectomy performed",
+                entities=entities,
+                include_plan=True,
+            )
+
+        self.assertEqual(outcome.decision, "proceed")
+        self.assertIsNotNone(llm_plan.call_args)
+        assert llm_plan.call_args is not None
+        self.assertEqual(llm_plan.call_args.kwargs["entities"]["metric"], ["CRANIECTOMY"])
+        self.assertEqual(entities["metric"], ["ICH_TREATMENT_TYPE"])
+
     def test_builds_deterministic_statistical_plan_for_provider_group_comparison(self) -> None:
         entities = {
             "metric": ["DTN"],
@@ -46,13 +77,16 @@ class RequestOrchestratorDeterministicStatPlanTests(unittest.TestCase):
             "statistical_test_type": ["MANN_WHITNEY_U_TEST"],
         }
 
-        with patch(
-            "src.planners.langchain.request_orchestrator._decision_stage",
-            return_value=VisualizationRequestOutcome(
-                decision="proceed",
-                reason="all_required_fields_present",
+        with (
+            patch(
+                "src.planners.langchain.request_orchestrator._decision_stage",
+                return_value=VisualizationRequestOutcome(
+                    decision="proceed",
+                    reason="all_required_fields_present",
+                ),
             ),
-        ), patch("src.planners.langchain.request_orchestrator.generate_analysis_plan") as llm_plan:
+            patch("src.planners.langchain.request_orchestrator.generate_analysis_plan") as llm_plan,
+        ):
             outcome = orchestrate_visualization_request(
                 question="Run a Mann-Whitney U test for DTN, cohort A is provider group 2825 from 2023-01-01 to 2023-12-31, cohort B is provider group 3001 from 2023-01-01 to 2023-12-31",
                 entities=entities,
@@ -84,13 +118,16 @@ class RequestOrchestratorDeterministicStatPlanTests(unittest.TestCase):
             "statistical_test_type": ["MANN_WHITNEY_U_TEST"],
         }
 
-        with patch(
-            "src.planners.langchain.request_orchestrator._decision_stage",
-            return_value=VisualizationRequestOutcome(
-                decision="proceed",
-                reason="all_required_fields_present",
+        with (
+            patch(
+                "src.planners.langchain.request_orchestrator._decision_stage",
+                return_value=VisualizationRequestOutcome(
+                    decision="proceed",
+                    reason="all_required_fields_present",
+                ),
             ),
-        ), patch("src.planners.langchain.request_orchestrator.generate_analysis_plan") as llm_plan:
+            patch("src.planners.langchain.request_orchestrator.generate_analysis_plan") as llm_plan,
+        ):
             outcome = orchestrate_visualization_request(
                 question="Run a Mann-Whitney U test for DTN between provider 289 and provider 252",
                 entities=entities,
@@ -116,13 +153,16 @@ class RequestOrchestratorDeterministicStatPlanTests(unittest.TestCase):
             "statistical_test_type": ["MANN_WHITNEY_U_TEST"],
         }
 
-        with patch(
-            "src.planners.langchain.request_orchestrator._decision_stage",
-            return_value=VisualizationRequestOutcome(
-                decision="proceed",
-                reason="all_required_fields_present",
+        with (
+            patch(
+                "src.planners.langchain.request_orchestrator._decision_stage",
+                return_value=VisualizationRequestOutcome(
+                    decision="proceed",
+                    reason="all_required_fields_present",
+                ),
             ),
-        ), patch("src.planners.langchain.request_orchestrator.generate_analysis_plan") as llm_plan:
+            patch("src.planners.langchain.request_orchestrator.generate_analysis_plan") as llm_plan,
+        ):
             outcome = orchestrate_visualization_request(
                 question="Run a Mann-Whitney U test for DTN between provider group 2825 and provider group 3001",
                 entities=entities,
@@ -149,13 +189,16 @@ class RequestOrchestratorDeterministicStatPlanTests(unittest.TestCase):
             "statistical_test_type": ["MANN_WHITNEY_U_TEST"],
         }
 
-        with patch(
-            "src.planners.langchain.request_orchestrator._decision_stage",
-            return_value=VisualizationRequestOutcome(
-                decision="proceed",
-                reason="all_required_fields_present",
+        with (
+            patch(
+                "src.planners.langchain.request_orchestrator._decision_stage",
+                return_value=VisualizationRequestOutcome(
+                    decision="proceed",
+                    reason="all_required_fields_present",
+                ),
             ),
-        ), patch("src.planners.langchain.request_orchestrator.generate_analysis_plan") as llm_plan:
+            patch("src.planners.langchain.request_orchestrator.generate_analysis_plan") as llm_plan,
+        ):
             outcome = orchestrate_visualization_request(
                 question="Run a Mann-Whitney U test for DTN between provider 289 and provider 252",
                 entities=entities,
@@ -182,13 +225,16 @@ class RequestOrchestratorDeterministicStatPlanTests(unittest.TestCase):
             "hospital_name": ["Army Alhama de Murcia Hospital"],
         }
 
-        with patch(
-            "src.planners.langchain.request_orchestrator._decision_stage",
-            return_value=VisualizationRequestOutcome(
-                decision="proceed",
-                reason="all_required_fields_present",
+        with (
+            patch(
+                "src.planners.langchain.request_orchestrator._decision_stage",
+                return_value=VisualizationRequestOutcome(
+                    decision="proceed",
+                    reason="all_required_fields_present",
+                ),
             ),
-        ), patch("src.planners.langchain.request_orchestrator.generate_analysis_plan") as llm_plan:
+            patch("src.planners.langchain.request_orchestrator.generate_analysis_plan") as llm_plan,
+        ):
             outcome = orchestrate_visualization_request(
                 question="Can you compare my dtn against army alhama de murcia hospital using a mann whitney u test",
                 entities=entities,

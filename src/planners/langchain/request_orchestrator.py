@@ -286,18 +286,17 @@ def _metric_candidates(question: str, limit: int = 8) -> List[str]:
         entry = lookup[normalized]
         canonical = entry.get("canonical")
         if isinstance(canonical, str) and canonical.strip():
-            return [canonical.strip()]
-        return [str(entry)]
+            return [canonical.strip().upper()]
 
     out: List[str] = []
     for key, entry in lookup.items():
         if normalized not in key and key not in normalized:
             continue
         canonical = entry.get("canonical")
-        if isinstance(canonical, str) and canonical.strip() and canonical not in out:
-            out.append(canonical.strip())
-        elif str(entry).strip() and str(entry).strip() not in out:
-            out.append(str(entry).strip())
+        if isinstance(canonical, str) and canonical.strip():
+            canonical_code = canonical.strip().upper()
+            if canonical_code not in out:
+                out.append(canonical_code)
         if len(out) >= limit:
             break
     return out
@@ -476,6 +475,26 @@ def _extract_metric_code(entities: Dict[str, Any]) -> Optional[str]:
     if not metrics:
         return None
     return metrics[0].upper()
+
+
+def _normalize_entities_for_question(question: str, entities: Dict[str, Any]) -> Dict[str, Any]:
+    normalized_entities = dict(entities or {})
+    metric_candidates = _metric_candidates(question or "")
+    if not metric_candidates:
+        return normalized_entities
+
+    current_metric = _extract_metric_code(normalized_entities)
+    if current_metric is not None and current_metric in metric_candidates:
+        return normalized_entities
+
+    top_candidate = metric_candidates[0]
+    metric_value = normalized_entities.get("metric")
+    if isinstance(metric_value, list):
+        normalized_entities["metric"] = [top_candidate]
+    else:
+        normalized_entities["metric"] = top_candidate
+
+    return normalized_entities
 
 
 def _extract_date_bounds(entities: Dict[str, Any]) -> Optional[tuple[str, str]]:
@@ -1365,12 +1384,13 @@ def orchestrate_visualization_request(
     progress_cb: Optional[Callable[[str], None]] = None,
 ) -> VisualizationRequestOutcome:
     with log_context(trace_id=trace_id or "", orchestrator_include_plan=include_plan):
+        normalized_entities = _normalize_entities_for_question(question, entities)
         if not _ORCHESTRATOR_ENABLED:
             if not include_plan:
                 return VisualizationRequestOutcome(decision="proceed", reason="orchestrator_disabled")
             plan = _generate_plan_with_timeout(
                 question=question,
-                entities=entities,
+                entities=normalized_entities,
                 language=language,
                 max_retries=max_retries,
                 trace_id=trace_id,
@@ -1384,7 +1404,7 @@ def orchestrate_visualization_request(
 
         try:
             report("Analyzing request intent and feasibility")
-            logger.info("Orchestrator input - question: %s, entities: %s", question, entities)
+            logger.info("Orchestrator input - question: %s, entities: %s", question, normalized_entities)
 
             stat_test_support_validation = _validate_statistical_test_support(question)
             if stat_test_support_validation is not None:
@@ -1394,7 +1414,7 @@ def orchestrate_visualization_request(
                 )
                 return stat_test_support_validation
 
-            risk_factor_filter_validation = _validate_risk_factor_filter_support(question, entities)
+            risk_factor_filter_validation = _validate_risk_factor_filter_support(question, normalized_entities)
             if risk_factor_filter_validation is not None:
                 logger.info(
                     "Orchestrator rejection: %s",
@@ -1402,7 +1422,7 @@ def orchestrate_visualization_request(
                 )
                 return risk_factor_filter_validation
 
-            group_by_validation = _validate_group_by_support(question, entities)
+            group_by_validation = _validate_group_by_support(question, normalized_entities)
             if group_by_validation is not None:
                 logger.info(
                     "Orchestrator clarification: %s",
@@ -1410,7 +1430,7 @@ def orchestrate_visualization_request(
                 )
                 return group_by_validation
 
-            stats_entity_validation = _validate_statistical_entity_readiness(question, entities)
+            stats_entity_validation = _validate_statistical_entity_readiness(question, normalized_entities)
             if stats_entity_validation is not None:
                 logger.info(
                     "Orchestrator clarification: %s",
@@ -1418,7 +1438,7 @@ def orchestrate_visualization_request(
                 )
                 return stats_entity_validation
 
-            stage1 = _decision_stage(question, entities, language, conversation_history=conversation_history)
+            stage1 = _decision_stage(question, normalized_entities, language, conversation_history=conversation_history)
             logger.info(
                 "Orchestrator decision: %s, message: %s, missing: %s",
                 stage1.decision,
@@ -1446,7 +1466,7 @@ def orchestrate_visualization_request(
             # re-join conversation_history here too — that previously duplicated
             # history the caller already folded in, and could feed stale keywords
             # from unrelated prior turns into the provider/provider-group checks.
-            deterministic_plan = _build_deterministic_statistical_plan(question, entities)
+            deterministic_plan = _build_deterministic_statistical_plan(question, normalized_entities)
             if deterministic_plan is not None:
                 deterministic_plan = _normalize_plan_semantic_splits(deterministic_plan)
                 stats_validation = _validate_statistical_plan_readiness(deterministic_plan)
@@ -1461,7 +1481,7 @@ def orchestrate_visualization_request(
             logger.info("Plan generation starting via timeout wrapper")
             plan = _generate_plan_with_timeout(
                 question=question,
-                entities=entities,
+                entities=normalized_entities,
                 language=language,
                 max_retries=max_retries,
                 trace_id=trace_id,

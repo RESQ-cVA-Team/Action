@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, List, Optional, cast
 
 from src.domain.dto.charts.types import ChartSeries
 from src.domain.graphql.request import GraphQLQueryRequest
+from src.domain.graphql.response import Metric
 from src.executors.graphql.client import GraphQLProxyClient, GraphQLProxyError
 from src.executors.mapping.series_mapper import map_metrics_payload_to_series
 from src.util.logging_utils import log_context
@@ -14,6 +15,22 @@ from src.util.logging_utils import log_context
 logger = logging.getLogger(__name__)
 
 GraphQLQueryCallback = Callable[[Dict[str, Any]], None]
+MetricsPayload = Dict[str, Metric]
+
+
+def _is_stats_only_request(
+    req: GraphQLQueryRequest,
+    group_by_field: Optional[str],
+    add_time_period_labels: bool,
+    is_filter_grouped: bool,
+) -> bool:
+    metrics = getattr(req, "metrics", None)
+    if not isinstance(metrics, list) or not metrics:
+        return False
+    if group_by_field is not None or add_time_period_labels or is_filter_grouped:
+        return False
+    typed_metrics = cast(List[Any], metrics)
+    return all(not bool(getattr(metric, "include_distribution", False)) and not bool(getattr(metric, "include_labels", False)) for metric in typed_metrics)
 
 
 def _runner_log_context(
@@ -57,7 +74,7 @@ async def run_graphql_request(
     batched_time_periods: Optional[List[Any]] = None,
     query_cb: Optional[GraphQLQueryCallback] = None,
     is_filter_grouped: bool = False,
-) -> List[ChartSeries]:
+) -> tuple[List[ChartSeries], Optional[MetricsPayload]]:
     trace_label = trace_id
     request_label = scope_label or " | ".join([part for part in label_parts if part]) or "(none)"
     async with semaphore:
@@ -137,7 +154,7 @@ async def run_graphql_request(
                         failure_reason=request_failures[-1],
                     ),
                 )
-                return []
+                return [], None
 
     if resp is None:
         request_failures.append("upstream_error")
@@ -152,7 +169,7 @@ async def run_graphql_request(
                 failure_reason="upstream_error",
             ),
         )
-        return []
+        return [], None
 
     def _append_warning(message: str) -> None:
         if request_warnings is None:
@@ -199,7 +216,7 @@ async def run_graphql_request(
         )
         if has_errors:
             _append_warning(f"No data returned for {request_label}; the backend returned validation errors.")
-        return []
+        return [], None
 
     metric_count = len(metrics_payload)
     kpi_group_count = 0
@@ -208,11 +225,29 @@ async def run_graphql_request(
         if kpi_groups is None:
             continue
         if not isinstance(kpi_groups, list):
-            raise ValueError(
-                "Invalid GraphQL metrics payload: "
-                f"metric {metric_alias!r} has non-list kpi_group"
-            )
-        kpi_group_count += len(kpi_groups)
+            raise ValueError(f"Invalid GraphQL metrics payload: metric {metric_alias!r} has non-list kpi_group")
+        typed_kpi_groups = cast(List[Any], kpi_groups)
+        kpi_group_count += len(typed_kpi_groups)
+
+    if _is_stats_only_request(
+        req=req,
+        group_by_field=group_by_field,
+        add_time_period_labels=add_time_period_labels,
+        is_filter_grouped=is_filter_grouped,
+    ):
+        logger.debug(
+            "[plan_executor] Stats-only GraphQL request completed without series mapping",
+            extra=_runner_log_context(
+                event="request_runner.stats_only_request_completed",
+                outcome="success",
+                request_label=request_label,
+                query_hash=q_hash,
+                group_by_field=group_by_field,
+                metric_count=metric_count,
+                kpi_group_count=kpi_group_count,
+            ),
+        )
+        return [], metrics_payload
 
     series = map_metrics_payload_to_series(
         metrics_payload=metrics_payload,
@@ -231,11 +266,9 @@ async def run_graphql_request(
         if kpi_groups is None:
             continue
         if not isinstance(kpi_groups, list):
-            raise ValueError(
-                "Invalid GraphQL metrics payload: "
-                f"metric {metric_alias!r} has non-list kpi_group"
-            )
-        for kpi in cast(List[object], kpi_groups):
+            raise ValueError(f"Invalid GraphQL metrics payload: metric {metric_alias!r} has non-list kpi_group")
+        typed_kpi_groups = cast(List[Any], kpi_groups)
+        for kpi in typed_kpi_groups:
             if getattr(kpi, "kpi1", None) is None:
                 skipped_rows += 1
 
@@ -272,7 +305,7 @@ async def run_graphql_request(
                 has_graphql_errors=bool(getattr(resp, "errors", None)),
             ),
         )
-        return series
+        return series, metrics_payload
 
     has_graphql_errors = bool(getattr(resp, "errors", None))
     if skipped_rows > 0 or has_graphql_errors:
@@ -285,4 +318,4 @@ async def run_graphql_request(
         warning_text = f"Partial data returned for {request_label}; {' and '.join(warning_bits)}."
         _append_warning(warning_text)
 
-    return series
+    return series, metrics_payload

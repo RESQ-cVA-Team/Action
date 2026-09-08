@@ -66,12 +66,8 @@ def _parse_positive_float_env(name: str, raw_value: str, minimum: float) -> floa
     return parsed
 
 
-_execute_plan_timeout_raw = (
-    env_util.get_env("ACTIONS_EXECUTE_PLAN_TIMEOUT_SECONDS", default="90") or "90"
-)
-_EXECUTE_PLAN_TIMEOUT_SECONDS = _parse_positive_float_env(
-    "ACTIONS_EXECUTE_PLAN_TIMEOUT_SECONDS", _execute_plan_timeout_raw, 5.0
-)
+_execute_plan_timeout_raw = env_util.get_env("ACTIONS_EXECUTE_PLAN_TIMEOUT_SECONDS", default="90") or "90"
+_EXECUTE_PLAN_TIMEOUT_SECONDS = _parse_positive_float_env("ACTIONS_EXECUTE_PLAN_TIMEOUT_SECONDS", _execute_plan_timeout_raw, 5.0)
 
 DomainDict = Dict[str, Any]
 RasaEventList = List[Any]
@@ -549,10 +545,11 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                 events = tracker.events
                 intent_name = _extract_intent_name_from_user_event(latest_msg)
                 carry_forward = _should_carry_forward_visualization_context(intent_name, events)
-                latest_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg))
+                latest_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg), question=user_message)
                 if carry_forward:
                     extracted_entities = canonicalize_ssot_entities(
-                        merge_latest_with_thread_entities(latest_entities, events, fallback_limit=fallback_limit)
+                        merge_latest_with_thread_entities(latest_entities, events, fallback_limit=fallback_limit),
+                        question=user_message,
                     )
                     conversation_history = _collect_visualization_thread_messages(events, fallback_limit=fallback_limit)
                 else:
@@ -614,10 +611,7 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                     FollowupAction("action_oneshot_generate_visualization"),
                 ]
             except asyncio.TimeoutError:
-                timeout_message = (
-                    "The visualization execution took too long and timed out. "
-                    "Please try again, narrow the scope, or shorten the date range."
-                )
+                timeout_message = "The visualization execution took too long and timed out. Please try again, narrow the scope, or shorten the date range."
                 logger.warning(
                     "Visualization execution timed out",
                     extra=_action_log_context(
@@ -704,9 +698,12 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
 
     intent_name = _extract_intent_name_from_user_event(latest_msg)
     carry_forward = _should_carry_forward_visualization_context(intent_name, events)
-    latest_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg))
+    latest_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg), question=ctx.text)
     if carry_forward:
-        extracted_entities = canonicalize_ssot_entities(merge_latest_with_thread_entities(latest_entities, events, fallback_limit=12))
+        extracted_entities = canonicalize_ssot_entities(
+            merge_latest_with_thread_entities(latest_entities, events, fallback_limit=12),
+            question=ctx.text,
+        )
         conversation_history = _collect_visualization_thread_messages(events, fallback_limit=12)
         latest_plan_summary = _collect_latest_visualization_plan_summary(events)
     else:
@@ -829,10 +826,7 @@ def _temporal_bounds_clarification(language: str) -> str:
     return translate(
         "action.visualization.missing_time_bounds",
         language=language,
-        default=(
-            "I can plot monthly or quarterly trends, but I need an explicit time range first. "
-            "Please include bounds such as 'from 2023-01-01 to 2023-12-31' or 'last 12 months'."
-        ),
+        default=("I can plot monthly or quarterly trends, but I need an explicit time range first. Please include bounds such as 'from 2023-01-01 to 2023-12-31' or 'last 12 months'."),
     )
 
 
@@ -849,10 +843,7 @@ def _build_empty_plan_clarification(plan_obj: lang_schema.AnalysisPlan, language
     return translate(
         "action.visualization.empty_plan_clarify",
         language=language,
-        default=(
-            "I could not derive an executable analysis plan from that request. "
-            "Please ask for a chart with metric and chart type, or for statistics provide two explicit cohorts to compare."
-        ),
+        default=("I could not derive an executable analysis plan from that request. Please ask for a chart with metric and chart type, or for statistics provide two explicit cohorts to compare."),
     )
 
 
@@ -1246,11 +1237,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                                 "message": outcome.message,
                             }
                         )
-                        default_key = (
-                            "action.visualization.clarify_default"
-                            if decision_name == "clarify"
-                            else "action.visualization.reject_default"
-                        )
+                        default_key = "action.visualization.clarify_default" if decision_name == "clarify" else "action.visualization.reject_default"
                         ctx.say(text=outcome.message or translate(default_key, language=language))
                         return None
 
@@ -1315,10 +1302,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                 confirmation = _build_confirmation_message(plan_obj, is_update=is_update_flow)
                 ctx.say(text=confirmation)
             except asyncio.TimeoutError:
-                timeout_message = (
-                    "The visualization execution took too long and timed out. "
-                    "Please try again, narrow the scope, or shorten the date range."
-                )
+                timeout_message = "The visualization execution took too long and timed out. Please try again, narrow the scope, or shorten the date range."
                 logger.warning(
                     "Visualization execution timed out",
                     extra=_action_log_context(

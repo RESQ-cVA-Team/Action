@@ -13,8 +13,8 @@ from typing import (
 )
 
 from src.actions.i18n import translate
+from src.actions.ssot_lookup import resolve_metric_candidates
 from src.shared.ssot_loader import resolve_chart_type, resolve_sex, resolve_stroke_type
-from src.util import env as env_util
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ _ENTITY_SSOT_RESOLVERS = {
 }
 
 
-def canonicalize_ssot_entities(entities: Dict[str, Any]) -> Dict[str, Any]:
+def canonicalize_ssot_entities(entities: Dict[str, Any], question: Optional[str] = None) -> Dict[str, Any]:
     # Deterministic SSOT canonicalization only (no fallback inference).
     normalized: Dict[str, Any] = {}
     for key, value in entities.items():
@@ -61,6 +61,20 @@ def canonicalize_ssot_entities(entities: Dict[str, Any]) -> Dict[str, Any]:
                 normalized[key] = resolver(value) or value
         else:
             normalized[key] = value
+
+    metric_candidates = resolve_metric_candidates(question or "")
+    if metric_candidates:
+        current_metric = normalized.get("metric")
+        if isinstance(current_metric, list):
+            current_metric_values = [item.strip().upper() for item in current_metric if isinstance(item, str) and item.strip()]
+            if not current_metric_values or current_metric_values[0] not in metric_candidates:
+                normalized["metric"] = [metric_candidates[0]]
+        elif isinstance(current_metric, str):
+            current_metric_value = current_metric.strip().upper()
+            if current_metric_value not in metric_candidates:
+                normalized["metric"] = metric_candidates[0]
+        else:
+            normalized["metric"] = metric_candidates[0]
     return normalized
 
 
@@ -147,11 +161,7 @@ def extract_entities_from_latest_message(
             continue
         ent = cast(Dict[str, Any], ent_any)
         extractors = ent.get("extractors")
-        extractor_names = (
-            {e.get("extractor") for e in extractors if isinstance(e, dict)}
-            if isinstance(extractors, list)
-            else set()
-        )
+        extractor_names = {e.get("extractor") for e in extractors if isinstance(e, dict)} if isinstance(extractors, list) else set()
         if "DIETClassifier" in extractor_names:
             span = (ent.get("start"), ent.get("end"))
             entity_type = ent.get("entity")
@@ -168,18 +178,10 @@ def extract_entities_from_latest_message(
             continue
 
         extractors = ent.get("extractors")
-        extractor_names = (
-            {e.get("extractor") for e in extractors if isinstance(e, dict)}
-            if isinstance(extractors, list)
-            else set()
-        )
+        extractor_names = {e.get("extractor") for e in extractors if isinstance(e, dict)} if isinstance(extractors, list) else set()
         span = (ent.get("start"), ent.get("end"))
         diet_label_for_span = diet_span_labels.get(span)
-        if (
-            "DIETClassifier" not in extractor_names
-            and diet_label_for_span is not None
-            and diet_label_for_span != key_any
-        ):
+        if "DIETClassifier" not in extractor_names and diet_label_for_span is not None and diet_label_for_span != key_any:
             continue
 
         value = ent["value"]
@@ -504,6 +506,7 @@ def format_execution_summary(
     has no such confirmation elsewhere, so it keeps the default. May return
     an empty string (e.g. opening line suppressed and nothing else to add);
     callers should skip sending a message in that case."""
+
     def t(key: str, default: str, params: Optional[Dict[str, Any]] = None) -> str:
         return translate(key, language=language, params=params, default=default)
 
