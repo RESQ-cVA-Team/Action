@@ -9,6 +9,3 @@ services:
       - "5055:5055"
     extra_hosts:
       - "host.docker.internal:host-gateway"
-
-volumes:
-  ollama_data:
