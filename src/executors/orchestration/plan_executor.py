@@ -25,14 +25,10 @@ from src.executors.mapping.chart_builder import build_chart_dto
 from src.executors.mapping.filter_mapper import to_gql_filter
 from src.executors.mapping.series_mapper import merge_series_by_name
 from src.executors.mapping.summary_builder import (
-    make_batch_summary,
     make_execution_summary,
 )
 from src.executors.planning.metric_request_factory import (
-    HistogramBinningStats,
     build_metric_requests,
-    resolve_adaptive_histogram_bin_count,
-    should_defer_histogram_binning,
 )
 from src.executors.planning.origin_scope_resolver import (
     OriginScopeResolutionError,
@@ -1070,43 +1066,6 @@ class RequestExecutionResult:
     metrics_payload: Optional[dict[str, Metric]] = None
 
 
-def _is_adaptive_binning_candidate(plan_chart: Any, specs: List[RequestSpec]) -> bool:
-    if not should_defer_histogram_binning(plan_chart):
-        return False
-    if len(specs) != 1:
-        return False
-
-    spec = specs[0]
-    if spec.group_by_field is not None:
-        return False
-    if spec.is_filter_grouped:
-        return False
-    if spec.batched_time_periods:
-        return False
-    return True
-
-
-def _extract_histogram_binning_stats(result: RequestExecutionResult) -> Optional[HistogramBinningStats]:
-    metrics_payload = result.metrics_payload
-    if not metrics_payload or len(metrics_payload) != 1:
-        return None
-
-    metric = next(iter(metrics_payload.values()))
-    kpi_groups = getattr(metric, "kpi_group", None)
-    if not isinstance(kpi_groups, list) or len(kpi_groups) != 1:
-        return None
-
-    kpi = getattr(kpi_groups[0], "kpi1", None)
-    if kpi is None:
-        return None
-
-    return HistogramBinningStats(
-        cohort_size=getattr(kpi, "cohort_size", None),
-        interquartile_range=getattr(kpi, "interquartile_range", None),
-        quartiles=getattr(kpi, "quartiles", None),
-    )
-
-
 def _emit_progress(context: ExecutionContext, completed: int, total: int, prefix: str = "Fetching data") -> None:
     if context.progress_cb is None:
         return
@@ -1312,7 +1271,6 @@ async def execute_plan_async(
     )
 
     for planChart in plan_charts:
-        defer_histogram_binning = should_defer_histogram_binning(planChart)
         logger.debug(
             "[plan_executor] building metric requests for chart",
             extra={
@@ -1321,10 +1279,7 @@ async def execute_plan_async(
                 "metric_count": len(planChart.metrics),
             },
         )
-        metric_requests, derived_axes, metric_data_origins, metric_scope_labels = build_metric_requests(
-            plan_chart=planChart,
-            include_distribution=not defer_histogram_binning,
-        )
+        metric_requests, derived_axes, metric_data_origins, metric_scope_labels = build_metric_requests(plan_chart=planChart)
 
         try:
             compiled_grouping = compile_chart_grouping(planChart)
@@ -1358,114 +1313,8 @@ async def execute_plan_async(
                 metric_scope_labels=metric_scope_labels,
                 include_general_stats=_INCLUDE_GENERAL_STATS,
             )
-            preflight_specs: List[RequestSpec] = []
-            if defer_histogram_binning and _is_adaptive_binning_candidate(planChart, primary_specs):
-                preflight_metric_requests, _, _, _ = build_metric_requests(
-                    plan_chart=planChart,
-                    include_distribution=False,
-                )
-                preflight_specs = build_primary_request_specs(
-                    metric_requests=preflight_metric_requests,
-                    metric_data_origins=metric_data_origins,
-                    chart_filter=chart_filter,
-                    filter_dims=filter_dims,
-                    combos_list=combos_list,
-                    batched_time_enabled=batched_time_enabled,
-                    batched_time_periods=batched_time_periods,
-                    include_metric_alias=include_metric_alias,
-                    group_by_field=gb_field,
-                    metric_scope_labels=metric_scope_labels,
-                    include_general_stats=_INCLUDE_GENERAL_STATS,
-                )
-
-            total_requests = max(1, len(primary_specs) + len(preflight_specs))
+            total_requests = max(1, len(primary_specs))
             actual_queries += total_requests
-
-            summary_batches.append(
-                make_batch_summary(
-                    chart_title=f"{(planChart.chart_type or 'CHART').upper()} chart",
-                    chart_type=planChart.chart_type,
-                    server_groupby=gb_field,
-                    filter_dimensions=[d.kind.__name__ for d in filter_dims],
-                    batched_time_period_count=len(batched_time_periods) if batched_time_enabled else 0,
-                    query_count=total_requests,
-                )
-            )
-
-            if _EMIT_COMPILER_DIAGNOSTICS:
-                _emit_compiler_diagnostics(
-                    progress_cb,
-                    {
-                        "chart_title": f"{(planChart.chart_type or 'CHART').upper()} chart",
-                        "chart_type": planChart.chart_type,
-                        "server_groupby": gb_field,
-                        "batched_time_enabled": batched_time_enabled,
-                        "batched_time_period_count": len(batched_time_periods),
-                        "filter_dimensions": [d.kind.__name__ for d in filter_dims],
-                        "query_count_estimate": batch.request_count,
-                        "query_count_planned": total_requests,
-                    },
-                    trace_id=trace_id_resolved,
-                )
-
-            if preflight_specs:
-                preflight_failures: List[str] = []
-                preflight_warnings: List[str] = []
-                preflight_results = await _execute_specs_concurrent(
-                    specs=preflight_specs,
-                    request_failures=preflight_failures,
-                    request_warnings=preflight_warnings,
-                    context=execution_context,
-                    trace_id=trace_id_resolved,
-                    total_requests=total_requests,
-                    progress_prefix="Estimating distribution bins",
-                )
-                if preflight_results:
-                    stats = _extract_histogram_binning_stats(preflight_results[0])
-                    metric_code = planChart.metrics[0].metric if planChart.metrics else ""
-                    histogram_bin_count_override = (
-                        resolve_adaptive_histogram_bin_count(
-                            plan_chart=planChart,
-                            metric_code=metric_code,
-                            stats=stats,
-                        )
-                        if stats is not None
-                        else None
-                    )
-                    if histogram_bin_count_override is not None:
-                        logger.debug(
-                            "[plan_executor] Resolved adaptive histogram bin count",
-                            extra={
-                                "trace_id": trace_id_resolved,
-                                "chart_type": planChart.chart_type,
-                                "metric_code": metric_code,
-                                "bin_count": histogram_bin_count_override,
-                            },
-                        )
-                        metric_requests, derived_axes, metric_data_origins, metric_scope_labels = build_metric_requests(
-                            plan_chart=planChart,
-                            histogram_bin_count_override=histogram_bin_count_override,
-                        )
-                        primary_specs = build_primary_request_specs(
-                            metric_requests=metric_requests,
-                            metric_data_origins=metric_data_origins,
-                            chart_filter=chart_filter,
-                            filter_dims=filter_dims,
-                            combos_list=combos_list,
-                            batched_time_enabled=batched_time_enabled,
-                            batched_time_periods=batched_time_periods,
-                            include_metric_alias=include_metric_alias,
-                            group_by_field=gb_field,
-                            metric_scope_labels=metric_scope_labels,
-                            include_general_stats=_INCLUDE_GENERAL_STATS,
-                        )
-                    else:
-                        raise VisualizationExecutionError(
-                            user_message="I could not determine a distribution bin count from the available data.",
-                            reason="distribution_bin_resolution_failed",
-                            code="EXEC_DISTRIBUTION_BIN_RESOLUTION",
-                            trace_id=trace_id_resolved,
-                        )
 
             request_results = await _execute_specs_concurrent(
                 specs=primary_specs,
