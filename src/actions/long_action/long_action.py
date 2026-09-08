@@ -379,7 +379,7 @@ class LongAction(Action, ABC):
         trace_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Build the callback payload in the events/controls envelope format."""
-        payload: Dict[str, Any] = {"senderId": ctx.sender_id}
+        payload: Dict[str, Any] = {}
         if self._is_control_message(message):
             job_id = getattr(ctx, "_job_id", None) or ""
             payload["controls"] = [{
@@ -447,8 +447,9 @@ class LongAction(Action, ABC):
             # If no callback is configured, fall back to synchronous execution so
             # behavior is predictable in rasa shell and simple REST setups. No
             # webapp jobId exists in this mode (no callback URL to extract it
-            # from) -- GraphQLProxyClient calls made here fall back to the
-            # legacy senderId-based identity path on Webapp's rasa-proxy.
+            # from) -- any GraphQLProxyClient/AnalyticsCenterClient call made
+            # here fails loudly (missing_job_id) rather than silently trusting
+            # a caller-supplied identity.
             if callback_cfg is None:
                 ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher)
                 await self.work(ctx)
@@ -595,9 +596,9 @@ class LongAction(Action, ABC):
         - Real messages go in ``events`` as tracker bot-event objects.
         - Lock/release control signals go in ``controls`` as control objects.
 
-        {"senderId": ..., "events": [{"event": "bot", ...}], "controls": []}
+        {"events": [{"event": "bot", ...}], "controls": []}
         or
-        {"senderId": ..., "events": [], "controls": [{"type": "lock|release", ...}]}
+        {"events": [], "controls": [{"type": "lock|release", ...}]}
         """
 
         trace_id = _resolve_progress_trace_id(ctx, message)
@@ -726,11 +727,11 @@ class LongAction(Action, ABC):
         callback mode, each ``ctx.say`` results in a callback envelope with
         explicit tracker events and control signals::
 
-            {"senderId": "...", "events": [{"event": "bot", ...}], "controls": []}
+            {"events": [{"event": "bot", ...}], "controls": []}
 
         Lock/release signals are emitted separately as control payloads::
 
-            {"senderId": "...", "events": [], "controls": [{"type": "lock", ...}]}
+            {"events": [], "controls": [{"type": "lock", ...}]}
 
         The return value is not sent to the frontend and is only for
         internal use by subclasses if needed.

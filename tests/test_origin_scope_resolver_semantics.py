@@ -25,6 +25,7 @@ class OriginScopeResolverSemanticsTests(unittest.TestCase):
         with patch.object(origin_scope_resolver, "get_analytics_center_client", return_value=FakeClient()):
             providers = origin_scope_resolver._list_accessible_providers(
                 user_sub="0a709c3b-2c71-4c5b-85d6-66454da5c9d7:thread:4",
+                job_id="job-1",
                 trace_id="trace-1",
             )
 
@@ -52,6 +53,7 @@ class OriginScopeResolverSemanticsTests(unittest.TestCase):
             resolved = origin_scope_resolver.resolve_plan_metric_origins(
                 plan=plan,
                 user_sub="user-1",
+                job_id="job-1",
                 trace_id="trace-1",
             )
 
@@ -75,6 +77,7 @@ class OriginScopeResolverSemanticsTests(unittest.TestCase):
                 origin_scope_resolver._resolve_scope(
                     scope=scope,
                     user_sub="test-provider-id-reject",
+                    job_id="job-1",
                     trace_id="trace-provider-id-reject",
                 )
 
@@ -88,6 +91,7 @@ class OriginScopeResolverSemanticsTests(unittest.TestCase):
             resolved = origin_scope_resolver._resolve_scope(
                 scope=scope,
                 user_sub="test-provider-id-accept",
+                job_id="job-1",
                 trace_id="trace-provider-id-accept",
             )
 
@@ -104,6 +108,7 @@ class OriginScopeResolverSemanticsTests(unittest.TestCase):
                 origin_scope_resolver._resolve_scope(
                     scope=scope,
                     user_sub="test-group-id-reject",
+                    job_id="job-1",
                     trace_id="trace-group-id-reject",
                 )
 
@@ -117,6 +122,7 @@ class OriginScopeResolverSemanticsTests(unittest.TestCase):
             resolved = origin_scope_resolver._resolve_scope(
                 scope=scope,
                 user_sub="test-group-id-accept",
+                job_id="job-1",
                 trace_id="trace-group-id-accept",
             )
 
@@ -142,6 +148,7 @@ class OriginScopeResolverSemanticsTests(unittest.TestCase):
             providers = origin_scope_resolver._search_accessible_providers_by_name(
                 requested_names=["Army Alhama de Murcia Hospital"],
                 user_sub="user-1",
+                job_id="job-1",
                 trace_id="trace-2",
             )
 

@@ -3,7 +3,7 @@ import logging
 import random
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Optional, TypedDict, cast
+from typing import Any, Dict, Mapping, Optional, cast
 from urllib.parse import urlsplit
 
 import requests
@@ -12,28 +12,6 @@ import src.domain.graphql.response as gqlr
 from src.util import env as env_util
 from src.util.keycloak_service_account import get_service_account_token_or_raise
 from src.util.logging_utils import log_context
-
-
-class GraphQLPayload(TypedDict):
-    query: str
-    variables: Dict[str, Any]
-
-
-class ProxyHttpRequestPayload(TypedDict):
-    path: str
-    method: str
-    body: GraphQLPayload
-
-
-# jobId (when present) is the authoritative identity signal on Webapp's
-# rasa-proxy -- senderId is kept only as a legacy fallback for as long as
-# Webapp's dual-accept rollout window is open. Built as a plain dict below
-# rather than typed here, since TypedDict can't cleanly express "senderId
-# required, jobId optional" without a second class.
-class ProxyRequestPayload(TypedDict):
-    senderId: str
-    target: str
-    request: ProxyHttpRequestPayload
 
 
 logger = logging.getLogger(__name__)
@@ -200,6 +178,12 @@ class GraphQLProxyClient:
         job_id: Optional[str] = None,
     ) -> gqlr.MetricsQueryResponse | None:
         trace_label = self._require_trace_id(trace_id, "query")
+        if not job_id:
+            raise GraphQLProxyError(
+                kind="missing_job_id",
+                message="A jobId is required to identify this request; none is available "
+                "in synchronous/shell execution mode.",
+            )
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {get_service_account_token_or_raise()}",
@@ -207,9 +191,7 @@ class GraphQLProxyClient:
         }
 
         proxy_payload: Dict[str, Any] = {
-            # senderId carries conversation routing identity (for example thread
-            # scoping). Kept as a legacy fallback -- see jobId below.
-            "senderId": user_sub,
+            "jobId": job_id,
             "target": self.target,
             "request": {
                 "path": self.path,
@@ -217,8 +199,6 @@ class GraphQLProxyClient:
                 "body": {"query": query_str, "variables": variables or {}},
             },
         }
-        if job_id:
-            proxy_payload["jobId"] = job_id
 
         q_hash = hashlib.sha256(query_str.encode("utf-8")).hexdigest()[:12]
         attempts_total = self.retry_attempts + 1
@@ -483,6 +463,12 @@ class GraphQLProxyClient:
         as statistical test queries.
         """
         trace_label = self._require_trace_id(trace_id, "query_raw")
+        if not job_id:
+            raise GraphQLProxyError(
+                kind="missing_job_id",
+                message="A jobId is required to identify this request; none is available "
+                "in synchronous/shell execution mode.",
+            )
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {get_service_account_token_or_raise()}",
@@ -490,9 +476,7 @@ class GraphQLProxyClient:
         }
 
         proxy_payload: Dict[str, Any] = {
-            # senderId carries conversation routing identity (for example thread
-            # scoping). Kept as a legacy fallback -- see jobId below.
-            "senderId": user_sub,
+            "jobId": job_id,
             "target": self.target,
             "request": {
                 "path": self.path,
@@ -500,8 +484,6 @@ class GraphQLProxyClient:
                 "body": {"query": query_str, "variables": variables or {}},
             },
         }
-        if job_id:
-            proxy_payload["jobId"] = job_id
 
         q_hash = hashlib.sha256(query_str.encode("utf-8")).hexdigest()[:12]
         attempts_total = self.retry_attempts + 1
