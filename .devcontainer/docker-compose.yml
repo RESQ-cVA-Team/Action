@@ -8,7 +8,7 @@ services:
     ports:
       - "5055:5055"
     environment:
-      RASA_PROXY_URL: http://host.docker.internal:3000
+      RASA_PROXY_URL: http://host.docker.internal:3000/api/rasa-proxy
       RASA_PROXY_GRAPHQL_TARGET: graphql
       RASA_PROXY_ANALYTICS_TARGET: analytics
       LONG_TASK_CALLBACK_ALLOWED_ORIGINS: "http://host.docker.internal:3000,http://host.docker.internal:4010"

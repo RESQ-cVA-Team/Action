@@ -1009,16 +1009,15 @@ def _resolve_metric_origin(
                 ),
             )
             resolved_data_origin = None
-        except Exception:
-            if not fail_open_for_metric:
-                raise OriginScopeResolutionError("Origin scope resolution failed unexpectedly.")
+        except Exception as exc:
             logger.warning(
-                "Unexpected origin scope resolution failure; falling back to executor default data origin",
+                "Unexpected origin scope resolution failure"
+                + ("" if fail_open_for_metric else "; failing the request"),
                 exc_info=True,
                 extra=_origin_scope_log_context(
                     trace_id=trace_id,
                     event="origin_scope.metric_resolution.fail_open_unexpected",
-                    outcome="degraded",
+                    outcome="degraded" if fail_open_for_metric else "failed",
                     metric_code=metric.metric,
                     scope=scope_ref,
                     fail_open_for_metric=fail_open_for_metric,
@@ -1026,6 +1025,8 @@ def _resolve_metric_origin(
                     inferred_country_code=inferred_country_code,
                 ),
             )
+            if not fail_open_for_metric:
+                raise OriginScopeResolutionError("Origin scope resolution failed unexpectedly.") from exc
             resolved_data_origin = None
 
     return S.MetricSpec(
