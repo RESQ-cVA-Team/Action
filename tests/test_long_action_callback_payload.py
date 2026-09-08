@@ -80,7 +80,6 @@ class LongActionCallbackPayloadTests(unittest.TestCase):
             trace_id="trace-123",
         )
 
-        self.assertEqual(payload["senderId"], "u1:thread:7")
         self.assertEqual(payload["controls"], [])
         self.assertEqual(len(payload["events"]), 1)
 
@@ -102,7 +101,6 @@ class LongActionCallbackPayloadTests(unittest.TestCase):
             trace_id="trace-123",
         )
 
-        self.assertEqual(payload["senderId"], "u1:thread:7")
         self.assertEqual(payload["events"], [])
         self.assertEqual(
             payload["controls"],

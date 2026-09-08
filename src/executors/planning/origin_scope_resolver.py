@@ -248,7 +248,7 @@ def _raise_if_auth_session_error(exc: AnalyticsCenterError) -> None:
         )
 
 
-def _list_accessible_providers(user_sub: str, trace_id: str, country_code: Optional[str] = None) -> List[Dict[str, Any]]:
+def _list_accessible_providers(user_sub: str, job_id: Optional[str], trace_id: str, country_code: Optional[str] = None) -> List[Dict[str, Any]]:
     cached = _provider_cache_get(
         cache_type="accessible",
         user_sub=user_sub,
@@ -266,6 +266,7 @@ def _list_accessible_providers(user_sub: str, trace_id: str, country_code: Optio
         try:
             page = client.list_providers(
                 user_sub=user_sub,
+                job_id=job_id,
                 trace_id=trace_id,
                 country_code=country_code,
                 limit=limit,
@@ -279,6 +280,7 @@ def _list_accessible_providers(user_sub: str, trace_id: str, country_code: Optio
             try:
                 page = client.list_providers(
                     user_sub=user_sub,
+                    job_id=job_id,
                     trace_id=trace_id,
                     country_code=country_code,
                     limit=limit,
@@ -316,7 +318,7 @@ def _list_accessible_providers(user_sub: str, trace_id: str, country_code: Optio
     return trimmed
 
 
-def _list_all_providers_catalog(user_sub: str, trace_id: str, country_code: Optional[str] = None) -> List[Dict[str, Any]]:
+def _list_all_providers_catalog(user_sub: str, job_id: Optional[str], trace_id: str, country_code: Optional[str] = None) -> List[Dict[str, Any]]:
     cached = _provider_cache_get(
         cache_type="catalog",
         user_sub=user_sub,
@@ -334,6 +336,7 @@ def _list_all_providers_catalog(user_sub: str, trace_id: str, country_code: Opti
         try:
             page = client.list_providers(
                 user_sub=user_sub,
+                job_id=job_id,
                 trace_id=trace_id,
                 country_code=country_code,
                 limit=limit,
@@ -373,6 +376,7 @@ def _list_all_providers_catalog(user_sub: str, trace_id: str, country_code: Opti
 def _search_accessible_providers_by_name(
     requested_names: List[str],
     user_sub: str,
+    job_id: Optional[str],
     trace_id: str,
     country_code: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
@@ -418,6 +422,7 @@ def _search_accessible_providers_by_name(
         try:
             page = client.list_providers(
                 user_sub=user_sub,
+                job_id=job_id,
                 trace_id=trace_id,
                 country_code=country_code,
                 limit=limit,
@@ -509,7 +514,7 @@ def _format_name_list(names: List[str], max_items: int = 5) -> str:
     return ", ".join(quoted[:-1]) + f", and {quoted[-1]}"
 
 
-def _list_accessible_provider_groups(user_sub: str, trace_id: str, country_code: Optional[str] = None) -> List[Dict[str, Any]]:
+def _list_accessible_provider_groups(user_sub: str, job_id: Optional[str], trace_id: str, country_code: Optional[str] = None) -> List[Dict[str, Any]]:
     client = get_analytics_center_client()
     out: List[Dict[str, Any]] = []
     offset = 0
@@ -519,6 +524,7 @@ def _list_accessible_provider_groups(user_sub: str, trace_id: str, country_code:
         try:
             page = client.list_provider_groups(
                 user_sub=user_sub,
+                job_id=job_id,
                 trace_id=trace_id,
                 country=country_code,
                 limit=limit,
@@ -548,10 +554,10 @@ def _list_accessible_provider_groups(user_sub: str, trace_id: str, country_code:
     return out[:_MAX_PROVIDER_IDS]
 
 
-def _resolve_mine_scope(user_sub: str, trace_id: str) -> Optional[S.DataOriginSpec]:
+def _resolve_mine_scope(user_sub: str, job_id: Optional[str], trace_id: str) -> Optional[S.DataOriginSpec]:
     client = get_analytics_center_client()
     try:
-        scope = client.resolve_my_default_scope(user_sub=user_sub, trace_id=trace_id, raise_on_error=True)
+        scope = client.resolve_my_default_scope(user_sub=user_sub, job_id=job_id, trace_id=trace_id, raise_on_error=True)
     except AnalyticsCenterError as exc:
         _raise_if_auth_session_error(exc)
         return None
@@ -569,7 +575,7 @@ def _resolve_mine_scope(user_sub: str, trace_id: str) -> Optional[S.DataOriginSp
     return None
 
 
-def _resolve_provider_name(value: Any, user_sub: str, trace_id: str) -> S.DataOriginSpec:
+def _resolve_provider_name(value: Any, user_sub: str, job_id: Optional[str], trace_id: str) -> S.DataOriginSpec:
     requested_names = _requested_provider_names(value)
     if not requested_names:
         raise OriginScopeResolutionError(
@@ -580,12 +586,13 @@ def _resolve_provider_name(value: Any, user_sub: str, trace_id: str) -> S.DataOr
     providers = _search_accessible_providers_by_name(
         requested_names=requested_names,
         user_sub=user_sub,
+        job_id=job_id,
         trace_id=trace_id,
     )
     if not providers:
         # If we can still find the hospital in the global catalog, surface a
         # clear access-related message instead of a generic load failure.
-        catalog = _list_all_providers_catalog(user_sub=user_sub, trace_id=trace_id)
+        catalog = _list_all_providers_catalog(user_sub=user_sub, job_id=job_id, trace_id=trace_id)
         inaccessible_names: List[str] = []
         for requested in requested_names:
             normalized = _normalize_text(requested)
@@ -612,7 +619,7 @@ def _resolve_provider_name(value: Any, user_sub: str, trace_id: str) -> S.DataOr
         matches = _match_providers_by_name(providers, normalized)
         if not matches:
             if catalog is None:
-                catalog = _list_all_providers_catalog(user_sub=user_sub, trace_id=trace_id)
+                catalog = _list_all_providers_catalog(user_sub=user_sub, job_id=job_id, trace_id=trace_id)
             catalog_matches = _match_providers_by_name(catalog, normalized)
             if catalog_matches:
                 inaccessible_names.append(requested)
@@ -662,7 +669,7 @@ def _resolve_provider_name(value: Any, user_sub: str, trace_id: str) -> S.DataOr
     return S.DataOriginSpec(providerId=provider_ids)
 
 
-def _resolve_provider_group_name(value: Any, user_sub: str, trace_id: str) -> S.DataOriginSpec:
+def _resolve_provider_group_name(value: Any, user_sub: str, job_id: Optional[str], trace_id: str) -> S.DataOriginSpec:
     if not isinstance(value, str) or not value.strip():
         raise OriginScopeResolutionError(
             "I need a specific provider-group name to resolve scope.",
@@ -670,7 +677,7 @@ def _resolve_provider_group_name(value: Any, user_sub: str, trace_id: str) -> S.
         )
 
     normalized = _normalize_text(value)
-    groups = _list_accessible_provider_groups(user_sub=user_sub, trace_id=trace_id)
+    groups = _list_accessible_provider_groups(user_sub=user_sub, job_id=job_id, trace_id=trace_id)
     if not groups:
         raise OriginScopeResolutionError(
             "I could not load accessible provider groups to resolve the requested scope.",
@@ -714,7 +721,7 @@ def _resolve_provider_group_name(value: Any, user_sub: str, trace_id: str) -> S.
     return S.DataOriginSpec(providerGroupId=[group_id])
 
 
-def _resolve_country_scope(value: Any, country_code: Optional[str], user_sub: str, trace_id: str) -> S.DataOriginSpec:
+def _resolve_country_scope(value: Any, country_code: Optional[str], user_sub: str, job_id: Optional[str], trace_id: str) -> S.DataOriginSpec:
     client = get_analytics_center_client()
 
     raw_country = None
@@ -731,6 +738,7 @@ def _resolve_country_scope(value: Any, country_code: Optional[str], user_sub: st
 
     resolved_country = client.resolve_country_code(
         user_sub=user_sub,
+        job_id=job_id,
         country_input=raw_country,
         trace_id=trace_id,
         raise_on_error=False,
@@ -741,7 +749,7 @@ def _resolve_country_scope(value: Any, country_code: Optional[str], user_sub: st
             clarification_type="country_code",
         )
 
-    providers = _list_accessible_providers(user_sub=user_sub, trace_id=trace_id, country_code=resolved_country)
+    providers = _list_accessible_providers(user_sub=user_sub, job_id=job_id, trace_id=trace_id, country_code=resolved_country)
     provider_ids: List[int] = []
     for provider in providers:
         provider_id = _provider_id(provider)
@@ -752,11 +760,11 @@ def _resolve_country_scope(value: Any, country_code: Optional[str], user_sub: st
         # Try to surface which countries the user does have access to
         accessible_countries: List[str] = []
         try:
-            all_providers = _list_accessible_providers(user_sub=user_sub, trace_id=trace_id)
+            all_providers = _list_accessible_providers(user_sub=user_sub, job_id=job_id, trace_id=trace_id)
             seen: set[str] = set()
             for provider in all_providers:
                 country = _provider_country_code(provider)
-                resolved_c = client.resolve_country_code(user_sub=user_sub, country_input=country or "", trace_id=trace_id, raise_on_error=False) if country else None
+                resolved_c = client.resolve_country_code(user_sub=user_sub, job_id=job_id, country_input=country or "", trace_id=trace_id, raise_on_error=False) if country else None
                 if resolved_c and resolved_c not in seen:
                     seen.add(resolved_c)
                     accessible_countries.append(resolved_c)
@@ -777,12 +785,12 @@ def _resolve_country_scope(value: Any, country_code: Optional[str], user_sub: st
     return S.DataOriginSpec(providerId=provider_ids)
 
 
-def _infer_country_code_from_data_origin(data_origin: S.DataOriginSpec, user_sub: str, trace_id: str) -> Optional[str]:
+def _infer_country_code_from_data_origin(data_origin: S.DataOriginSpec, user_sub: str, job_id: Optional[str], trace_id: str) -> Optional[str]:
     client = get_analytics_center_client()
 
     provider_ids = list(cast(Optional[List[int]], getattr(data_origin, "provider_id", None)) or [])
     if provider_ids:
-        providers = _list_accessible_providers(user_sub=user_sub, trace_id=trace_id)
+        providers = _list_accessible_providers(user_sub=user_sub, job_id=job_id, trace_id=trace_id)
         by_id: Dict[int, Dict[str, Any]] = {}
         for provider in providers:
             pid = _provider_id(provider)
@@ -798,6 +806,7 @@ def _infer_country_code_from_data_origin(data_origin: S.DataOriginSpec, user_sub
                 continue
             resolved_country = client.resolve_country_code(
                 user_sub=user_sub,
+                job_id=job_id,
                 country_input=country,
                 trace_id=trace_id,
                 raise_on_error=False,
@@ -807,7 +816,7 @@ def _infer_country_code_from_data_origin(data_origin: S.DataOriginSpec, user_sub
 
     provider_group_ids = list(cast(Optional[List[int]], getattr(data_origin, "provider_group_id", None)) or [])
     if provider_group_ids:
-        groups = _list_accessible_provider_groups(user_sub=user_sub, trace_id=trace_id)
+        groups = _list_accessible_provider_groups(user_sub=user_sub, job_id=job_id, trace_id=trace_id)
         by_id_group: Dict[int, Dict[str, Any]] = {}
         for group in groups:
             gid = _provider_group_id(group)
@@ -823,6 +832,7 @@ def _infer_country_code_from_data_origin(data_origin: S.DataOriginSpec, user_sub
                 continue
             resolved_country = client.resolve_country_code(
                 user_sub=user_sub,
+                job_id=job_id,
                 country_input=country,
                 trace_id=trace_id,
                 raise_on_error=False,
@@ -833,16 +843,17 @@ def _infer_country_code_from_data_origin(data_origin: S.DataOriginSpec, user_sub
     return None
 
 
-def _infer_user_country_code(user_sub: str, trace_id: str) -> Optional[str]:
-    mine_scope = _resolve_mine_scope(user_sub=user_sub, trace_id=trace_id)
+def _infer_user_country_code(user_sub: str, job_id: Optional[str], trace_id: str) -> Optional[str]:
+    mine_scope = _resolve_mine_scope(user_sub=user_sub, job_id=job_id, trace_id=trace_id)
     if mine_scope is None:
         return None
-    return _infer_country_code_from_data_origin(data_origin=mine_scope, user_sub=user_sub, trace_id=trace_id)
+    return _infer_country_code_from_data_origin(data_origin=mine_scope, user_sub=user_sub, job_id=job_id, trace_id=trace_id)
 
 
 def _resolve_scope(
     scope: S.OriginScopeSpec,
     user_sub: str,
+    job_id: Optional[str],
     trace_id: str,
     inferred_country_code: Optional[str] = None,
 ) -> Optional[S.DataOriginSpec]:
@@ -850,7 +861,7 @@ def _resolve_scope(
     value = scope.value
 
     if scope_type == "mine":
-        resolved = _resolve_mine_scope(user_sub=user_sub, trace_id=trace_id)
+        resolved = _resolve_mine_scope(user_sub=user_sub, job_id=job_id, trace_id=trace_id)
         if resolved is None:
             raise OriginScopeResolutionError(
                 "I could not resolve your default hospital scope right now.",
@@ -873,7 +884,7 @@ def _resolve_scope(
         # as-is with no check that the caller can actually see that
         # provider -- any id the planner produced, from any source, granted
         # that provider's data outright.
-        accessible = _list_accessible_providers(user_sub=user_sub, trace_id=trace_id)
+        accessible = _list_accessible_providers(user_sub=user_sub, job_id=job_id, trace_id=trace_id)
         accessible_ids = {pid for pid in (_provider_id(p) for p in accessible) if pid is not None}
         if provider_id not in accessible_ids:
             raise OriginScopeResolutionError(
@@ -883,7 +894,7 @@ def _resolve_scope(
         return S.DataOriginSpec(providerId=[provider_id])
 
     if scope_type == "provider_name":
-        return _resolve_provider_name(value=value, user_sub=user_sub, trace_id=trace_id)
+        return _resolve_provider_name(value=value, user_sub=user_sub, job_id=job_id, trace_id=trace_id)
 
     if scope_type == "provider_group_id":
         if isinstance(value, int):
@@ -897,7 +908,7 @@ def _resolve_scope(
             )
         # Same gap as provider_id above -- a numeric group ID was accepted
         # with no check the caller can see that provider group.
-        accessible_groups = _list_accessible_provider_groups(user_sub=user_sub, trace_id=trace_id)
+        accessible_groups = _list_accessible_provider_groups(user_sub=user_sub, job_id=job_id, trace_id=trace_id)
         accessible_group_ids = {gid for gid in (_provider_group_id(g) for g in accessible_groups) if gid is not None}
         if group_id not in accessible_group_ids:
             raise OriginScopeResolutionError(
@@ -911,6 +922,7 @@ def _resolve_scope(
             value=value,
             country_code=scope.country_code or inferred_country_code,
             user_sub=user_sub,
+            job_id=job_id,
             trace_id=trace_id,
         )
 
@@ -919,11 +931,12 @@ def _resolve_scope(
             value=value,
             country_code=scope.country_code or inferred_country_code,
             user_sub=user_sub,
+            job_id=job_id,
             trace_id=trace_id,
         )
 
     if scope_type == "all_accessible":
-        providers = _list_accessible_providers(user_sub=user_sub, trace_id=trace_id)
+        providers = _list_accessible_providers(user_sub=user_sub, job_id=job_id, trace_id=trace_id)
         provider_ids: List[int] = []
         for provider in providers:
             provider_id = _provider_id(provider)
@@ -934,7 +947,7 @@ def _resolve_scope(
         return S.DataOriginSpec(providerId=provider_ids)
 
     if scope_type == "provider_group_name":
-        return _resolve_provider_group_name(value=value, user_sub=user_sub, trace_id=trace_id)
+        return _resolve_provider_group_name(value=value, user_sub=user_sub, job_id=job_id, trace_id=trace_id)
 
     raise OriginScopeResolutionError(
         f"Unsupported origin scope type: {scope_type}",
@@ -954,6 +967,7 @@ def _resolve_metric_origin(
     *,
     default_scope: Optional[S.OriginScopeSpec],
     user_sub: str,
+    job_id: Optional[str],
     trace_id: str,
     fail_open_for_default_scope: bool,
     inferred_country_code: Optional[str],
@@ -973,6 +987,7 @@ def _resolve_metric_origin(
             resolved_data_origin = _resolve_scope(
                 scope=scope_ref,
                 user_sub=user_sub,
+                job_id=job_id,
                 trace_id=trace_id,
                 inferred_country_code=inferred_country_code,
             )
@@ -1051,9 +1066,9 @@ def _plan_needs_country_inference(plan: S.AnalysisPlan) -> bool:
     return False
 
 
-def resolve_plan_metric_origins(plan: S.AnalysisPlan, user_sub: str, trace_id: str) -> S.AnalysisPlan:
+def resolve_plan_metric_origins(plan: S.AnalysisPlan, user_sub: str, job_id: Optional[str], trace_id: str) -> S.AnalysisPlan:
     default_scope = _default_scope_ref()
-    inferred_country_code = _infer_user_country_code(user_sub=user_sub, trace_id=trace_id) if _plan_needs_country_inference(plan) else None
+    inferred_country_code = _infer_user_country_code(user_sub=user_sub, job_id=job_id, trace_id=trace_id) if _plan_needs_country_inference(plan) else None
 
     charts = plan.charts or []
     resolved_charts: List[S.ChartSpec] = []
@@ -1064,6 +1079,7 @@ def resolve_plan_metric_origins(plan: S.AnalysisPlan, user_sub: str, trace_id: s
                 metric,
                 default_scope=default_scope,
                 user_sub=user_sub,
+                job_id=job_id,
                 trace_id=trace_id,
                 fail_open_for_default_scope=_FAIL_OPEN,
                 inferred_country_code=inferred_country_code,
@@ -1091,6 +1107,7 @@ def resolve_plan_metric_origins(plan: S.AnalysisPlan, user_sub: str, trace_id: s
                 metric,
                 default_scope=default_scope,
                 user_sub=user_sub,
+                job_id=job_id,
                 trace_id=trace_id,
                 fail_open_for_default_scope=False,
                 inferred_country_code=inferred_country_code,
