@@ -32,7 +32,9 @@ def _has_required_env() -> bool:
         "LLM_MODEL",
         "LLM_API_KEY",
         "RASA_PROXY_URL",
-        "ACTION_SERVER_TOKEN",
+        "KEYCLOAK_ISSUER",
+        "ACTION_SERVICE_CLIENT_ID",
+        "ACTION_SERVICE_CLIENT_SECRET",
         "RASA_PROXY_GRAPHQL_TARGET",
     ]
     return all(bool((os.getenv(key) or "").strip()) for key in required)
@@ -51,7 +53,6 @@ class ExternalApiE2ESmokeTests(unittest.TestCase):
     def _graph_client() -> GraphQLProxyClient:
         return GraphQLProxyClient(
             proxy_url=os.environ["RASA_PROXY_URL"],
-            action_server_token=os.environ["ACTION_SERVER_TOKEN"],
             target=os.environ.get("RASA_PROXY_GRAPHQL_TARGET") or "graphql",
         )
 
