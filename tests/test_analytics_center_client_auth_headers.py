@@ -24,6 +24,7 @@ class AnalyticsCenterClientAuthHeaderTests(unittest.TestCase):
             with patch.object(analytics_center_client.requests, "post", return_value=self._mock_response()) as post:
                 client._request_via_proxy(
                     user_sub="user-1",
+                    job_id="job-1",
                     path="/providers",
                     query={},
                     request_name="list_providers",
@@ -33,6 +34,9 @@ class AnalyticsCenterClientAuthHeaderTests(unittest.TestCase):
         headers = post.call_args.kwargs["headers"]
         self.assertEqual(headers["Authorization"], "Bearer fresh-keycloak-token")
         self.assertNotIn("x-action-server-token", headers)
+        body = post.call_args.kwargs["json"]
+        self.assertEqual(body["jobId"], "job-1")
+        self.assertNotIn("senderId", body)
 
     def test_raises_instead_of_sending_unauthenticated_request(self) -> None:
         client = self._make_client()
@@ -45,11 +49,29 @@ class AnalyticsCenterClientAuthHeaderTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     client._request_via_proxy(
                         user_sub="user-1",
+                        job_id="job-1",
                         path="/providers",
                         query={},
                         request_name="list_providers",
                         trace_id="trace-1",
                     )
+
+        post.assert_not_called()
+
+    def test_raises_when_job_id_is_missing(self) -> None:
+        """Synchronous/shell execution has no callback URL and therefore no
+        jobId -- this must fail loudly, not silently drop identity."""
+        client = self._make_client()
+        with patch.object(analytics_center_client.requests, "post") as post:
+            with self.assertRaises(analytics_center_client.AnalyticsCenterError):
+                client._request_via_proxy(
+                    user_sub="user-1",
+                    job_id=None,
+                    path="/providers",
+                    query={},
+                    request_name="list_providers",
+                    trace_id="trace-1",
+                )
 
         post.assert_not_called()
 

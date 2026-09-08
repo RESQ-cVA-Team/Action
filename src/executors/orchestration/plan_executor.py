@@ -1208,15 +1208,12 @@ async def execute_plan_async(
     )
 
     try:
-        # jobId is deliberately not threaded into origin-scope resolution here --
-        # that subsystem has its own separate, confirmed authorization gap
-        # (see SECURITY-TODO.md cluster 1) that this identity-hardening pass
-        # does not touch. Revisit once that's fixed.
         plan = await asyncio.wait_for(
             asyncio.to_thread(
                 resolve_plan_metric_origins,
                 plan=plan,
                 user_sub=user_sub,
+                job_id=job_id,
                 trace_id=trace_id_resolved,
             ),
             timeout=_ORIGIN_SCOPE_TIMEOUT_SECONDS,
