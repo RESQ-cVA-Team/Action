@@ -4,7 +4,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault("RASA_PROXY_URL", "http://localhost")
-os.environ.setdefault("ACTION_SERVER_TOKEN", "dummy")
 os.environ.setdefault("RASA_PROXY_GRAPHQL_TARGET", "http://localhost/graphql")
 
 from src.domain.langchain.schema import AnalysisPlan

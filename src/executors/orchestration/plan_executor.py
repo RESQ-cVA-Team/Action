@@ -90,7 +90,7 @@ _executor_sync_concurrency_raw = env_util.get_env("EXECUTOR_SYNC_MAX_CONCURRENCY
 _executor_sync_concurrency = _parse_positive_int_env("EXECUTOR_SYNC_MAX_CONCURRENCY", _executor_sync_concurrency_raw, 1)
 _EXECUTOR_SYNC_MAX_CONCURRENCY = _executor_sync_concurrency
 
-proxy_url, action_server_token = env_util.require_all_env("RASA_PROXY_URL", "ACTION_SERVER_TOKEN")
+proxy_url = env_util.require_any_env("RASA_PROXY_URL")
 graphql_target = env_util.require_any_env("RASA_PROXY_GRAPHQL_TARGET")
 
 _graphql_timeout_raw = env_util.get_env("EXECUTOR_GRAPHQL_TIMEOUT_SECONDS", default="30") or "30"
@@ -101,7 +101,6 @@ _ORIGIN_SCOPE_TIMEOUT_SECONDS = _parse_timeout_env("EXECUTOR_ORIGIN_SCOPE_TIMEOU
 
 client = GraphQLProxyClient(
     proxy_url=proxy_url,
-    action_server_token=action_server_token,
     target=graphql_target if isinstance(graphql_target, str) and graphql_target.strip() else "graphql",
     timeout_seconds=_graphql_timeout_seconds,
     connect_timeout_seconds=5,

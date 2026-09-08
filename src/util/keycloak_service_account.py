@@ -10,16 +10,12 @@ from . import env as env_util
 logger = logging.getLogger(__name__)
 
 # Phase 2 of the cross-service auth redesign: Action's own service identity
-# toward Webapp (currently just the static ACTION_SERVER_TOKEN/
-# LONG_TASK_CALLBACK_TOKEN shared secrets) becomes a real Keycloak
-# client-credentials token. Needs a dedicated Keycloak client with service
+# toward Webapp and CVaLab is a Keycloak client-credentials token -- the
+# static ACTION_SERVER_TOKEN/LONG_TASK_CALLBACK_TOKEN shared secrets this
+# replaced have been removed. Needs a dedicated Keycloak client with service
 # accounts enabled -- unlike Rasa's introspection piece, this can't reuse
 # Webapp's existing `cva` client (that one authenticates real users via the
 # authorization-code flow, not a service via client_credentials).
-#
-# Deliberately optional: is_configured() lets callers fall back to the
-# legacy static-token-only path when these env vars aren't set yet, so this
-# ships dark until the Keycloak client actually exists.
 _KEYCLOAK_ISSUER = env_util.get_env("KEYCLOAK_ISSUER")
 _CLIENT_ID = env_util.get_env("ACTION_SERVICE_CLIENT_ID")
 _CLIENT_SECRET = env_util.get_env("ACTION_SERVICE_CLIENT_SECRET")
@@ -43,9 +39,10 @@ def get_service_account_token() -> Optional[str]:
     """Fetch (and cache) a client-credentials access token for Action's own
     Keycloak service-account identity.
 
-    Returns None if not configured, or if the token request fails -- callers
-    should treat that as "fall back to the legacy static-token path", never
-    as a reason to skip auth entirely.
+    Returns None if not configured, or if the token request fails. Most
+    callers want get_service_account_token_or_raise() instead -- there's no
+    static-token fallback left to degrade to, so a missing token should
+    fail the request loudly, not send it unauthenticated.
     """
     if not is_configured():
         return None
@@ -82,3 +79,18 @@ def get_service_account_token() -> Optional[str]:
         _cached_token = token
         _cached_expires_at = time.monotonic() + max(_MIN_TTL_SECONDS, ttl - _REFRESH_SAFETY_SECONDS)
         return _cached_token
+
+
+def get_service_account_token_or_raise() -> str:
+    """Like get_service_account_token(), but raises instead of returning
+    None -- for the call sites that need to attach this as their only proof
+    of identity toward Webapp/CVaLab, where sending the request without it
+    would mean sending it unauthenticated.
+    """
+    token = get_service_account_token()
+    if not token:
+        raise RuntimeError(
+            "Could not obtain a Keycloak service-account token (check "
+            "KEYCLOAK_ISSUER/ACTION_SERVICE_CLIENT_ID/ACTION_SERVICE_CLIENT_SECRET)."
+        )
+    return token

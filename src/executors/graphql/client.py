@@ -10,7 +10,7 @@ import requests
 
 import src.domain.graphql.response as gqlr
 from src.util import env as env_util
-from src.util.keycloak_service_account import get_service_account_token
+from src.util.keycloak_service_account import get_service_account_token_or_raise
 from src.util.logging_utils import log_context
 
 
@@ -82,7 +82,6 @@ class GraphQLProxyClient:
     def __init__(
         self,
         proxy_url: str,
-        action_server_token: str,
         target: str = "graphql",
         path: str = "/api/graphql/aggregation",
         timeout_seconds: int = 30,
@@ -92,7 +91,6 @@ class GraphQLProxyClient:
         retry_backoff_seconds: float = 0.6,
     ):
         self.proxy_url = proxy_url
-        self.action_server_token = action_server_token
         self.target = target
         self.path = path
         self.timeout_seconds = max(1.0, float(timeout_seconds))
@@ -204,15 +202,9 @@ class GraphQLProxyClient:
         trace_label = self._require_trace_id(trace_id, "query")
         headers = {
             "Content-Type": "application/json",
-            # Kept unconditionally for backward compat during the rollout --
-            # see the Authorization header below for the real service
-            # identity, once Webapp's Keycloak service-account client exists.
-            "x-action-server-token": self.action_server_token,
+            "Authorization": f"Bearer {get_service_account_token_or_raise()}",
+            "x-trace-id": trace_label,
         }
-        headers["x-trace-id"] = trace_label
-        service_token = get_service_account_token()
-        if service_token:
-            headers["Authorization"] = f"Bearer {service_token}"
 
         proxy_payload: Dict[str, Any] = {
             # senderId carries conversation routing identity (for example thread
@@ -493,15 +485,9 @@ class GraphQLProxyClient:
         trace_label = self._require_trace_id(trace_id, "query_raw")
         headers = {
             "Content-Type": "application/json",
-            # Kept unconditionally for backward compat during the rollout --
-            # see the Authorization header below for the real service
-            # identity, once Webapp's Keycloak service-account client exists.
-            "x-action-server-token": self.action_server_token,
+            "Authorization": f"Bearer {get_service_account_token_or_raise()}",
+            "x-trace-id": trace_label,
         }
-        headers["x-trace-id"] = trace_label
-        service_token = get_service_account_token()
-        if service_token:
-            headers["Authorization"] = f"Bearer {service_token}"
 
         proxy_payload: Dict[str, Any] = {
             # senderId carries conversation routing identity (for example thread

@@ -6,7 +6,6 @@ from unittest.mock import patch
 from pydantic import ValidationError
 
 os.environ.setdefault("RASA_PROXY_URL", "http://localhost")
-os.environ.setdefault("ACTION_SERVER_TOKEN", "dummy")
 os.environ.setdefault("RASA_PROXY_GRAPHQL_TARGET", "http://localhost/graphql")
 
 from src.domain.dto.analytics.statistical_test import StatisticalTestResult
