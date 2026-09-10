@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 # Webapp's existing `cva` client (that one authenticates real users via the
 # authorization-code flow, not a service via client_credentials).
 _KEYCLOAK_ISSUER = env_util.get_env("KEYCLOAK_ISSUER")
-_CLIENT_ID = env_util.get_env("ACTION_SERVICE_CLIENT_ID")
-_CLIENT_SECRET = env_util.get_env("ACTION_SERVICE_CLIENT_SECRET")
+_CLIENT_ID = env_util.get_env("KEYCLOAK_CLIENT_ID")
+_CLIENT_SECRET = env_util.get_env("KEYCLOAK_CLIENT_SECRET")
 
 # Refresh a bit before actual expiry so a request in flight doesn't race a
 # token that expires mid-call.
@@ -91,6 +91,6 @@ def get_service_account_token_or_raise() -> str:
     if not token:
         raise RuntimeError(
             "Could not obtain a Keycloak service-account token (check "
-            "KEYCLOAK_ISSUER/ACTION_SERVICE_CLIENT_ID/ACTION_SERVICE_CLIENT_SECRET)."
+            "KEYCLOAK_ISSUER/KEYCLOAK_CLIENT_ID/KEYCLOAK_CLIENT_SECRET)."
         )
     return token
