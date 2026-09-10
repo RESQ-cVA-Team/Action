@@ -7,7 +7,16 @@ from src.domain.dto.charts.types import ChartAxis
 from src.domain.graphql.request import DataOrigin, MetricRequest
 from src.domain.graphql.ssot_enums import MetricType
 from src.domain.langchain import schema as S
-from src.executors.planning.ssot_metric_defaults import get_distribution_defaults, get_histogram_axes, is_enum_metric
+from src.executors.planning.ssot_metric_defaults import (
+    get_distribution_defaults,
+    get_histogram_axes,
+    is_enum_metric,
+    is_minutes_metric,
+    is_score_metric,
+    resolve_implicit_distribution_layout,
+    resolve_minutes_distribution_layout,
+    resolve_score_distribution_layout,
+)
 
 
 def _metric_scope_label(metric: S.MetricSpec) -> Optional[str]:
@@ -53,7 +62,22 @@ def _resolve_numeric_request_options(
 
     numeric_resolution = cast(Optional[S.NumericResolutionSpec], getattr(plan_chart, "numeric_resolution", None))
     if numeric_resolution is None:
-        return resolved_bins, resolved_lower, resolved_upper
+        if is_score_metric(metric_code):
+            implicit_layout = resolve_score_distribution_layout(
+                lower_bound=resolved_lower,
+                upper_bound=resolved_upper,
+            )
+        elif is_minutes_metric(metric_code):
+            implicit_layout = resolve_minutes_distribution_layout(
+                lower_bound=resolved_lower,
+                upper_bound=resolved_upper,
+            )
+        else:
+            implicit_layout = resolve_implicit_distribution_layout(
+                lower_bound=resolved_lower,
+                upper_bound=resolved_upper,
+            )
+        return implicit_layout.bin_count, int(implicit_layout.lower_bound), int(implicit_layout.upper_bound)
 
     value_domain = numeric_resolution.value_domain
     if value_domain is not None:
@@ -63,12 +87,33 @@ def _resolve_numeric_request_options(
             resolved_upper = int(value_domain.upper_bound)
 
     bucketing = numeric_resolution.bucketing
+    explicit_bucket_override = False
     if bucketing is not None:
         if bucketing.bucket_count is not None:
             resolved_bins = int(bucketing.bucket_count)
+            explicit_bucket_override = True
         elif bucketing.bucket_size is not None:
             span = max(1, int(resolved_upper) - int(resolved_lower))
             resolved_bins = max(1, int(math.ceil(span / int(bucketing.bucket_size))))
+            explicit_bucket_override = True
+
+    if not explicit_bucket_override:
+        if is_score_metric(metric_code):
+            implicit_layout = resolve_score_distribution_layout(
+                lower_bound=int(resolved_lower),
+                upper_bound=int(resolved_upper),
+            )
+        elif is_minutes_metric(metric_code):
+            implicit_layout = resolve_minutes_distribution_layout(
+                lower_bound=int(resolved_lower),
+                upper_bound=int(resolved_upper),
+            )
+        else:
+            implicit_layout = resolve_implicit_distribution_layout(
+                lower_bound=int(resolved_lower),
+                upper_bound=int(resolved_upper),
+            )
+        return implicit_layout.bin_count, int(implicit_layout.lower_bound), int(implicit_layout.upper_bound)
 
     return resolved_bins, int(resolved_lower), int(resolved_upper)
 

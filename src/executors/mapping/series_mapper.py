@@ -6,7 +6,11 @@ from typing import Any, Dict, List, Optional, cast
 
 from src.domain.dto.charts.types import ChartPoint, ChartSeries
 from src.domain.graphql.request import TimePeriod
-from src.executors.planning.ssot_metric_defaults import get_enum_labels
+from src.executors.planning.ssot_metric_defaults import (
+    build_distribution_bin_ranges,
+    format_distribution_point_label,
+    get_enum_labels,
+)
 from src.shared.ssot_loader import get_enum_option_label, get_metric_display_name
 
 
@@ -130,6 +134,20 @@ def _origin_label_from_kpi_group(kpi_group: Any) -> Optional[str]:
         return custom_group_name.strip()
 
     return None
+
+
+def _distribution_points_from_backend(metric_code: str, edges: List[Any], case_counts: List[Any]) -> List[ChartPoint]:
+    ranges = build_distribution_bin_ranges(edges)
+    points: List[ChartPoint] = []
+    for (start, end), frequency in zip(ranges, case_counts):
+        points.append(
+            ChartPoint(
+                x=start,
+                y=float(frequency),
+                label=format_distribution_point_label(metric_code, start, end),
+            )
+        )
+    return points
 
 
 def map_metrics_payload_to_series(
@@ -264,7 +282,7 @@ def map_metrics_payload_to_series(
             series_name = " — ".join(parts) if parts else metric_label_from_alias(metric_name)
 
             if kpi.kpi1.d1:
-                points = [ChartPoint(x=x, y=y) for x, y in zip(kpi.kpi1.d1.edges, kpi.kpi1.d1.case_count)]
+                points = _distribution_points_from_backend(metric_code, kpi.kpi1.d1.edges, kpi.kpi1.d1.case_count)
             else:
                 # Categorical (Enum) metric: labels and caseCount are parallel arrays,
                 # one entry per category (e.g. male/female/unknown), not a numeric histogram.
