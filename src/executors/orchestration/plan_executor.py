@@ -1255,6 +1255,11 @@ async def execute_plan_async(
     try:
         estimated_queries = estimate_query_count_for_plan(plan)
     except ValueError as exc:
+        logger.warning(
+            "Invalid plan semantics while estimating query count",
+            exc_info=True,
+            extra={"trace_id": trace_id_resolved},
+        )
         raise _invalid_plan_semantics_error(exc, trace_id=trace_id_resolved) from exc
     actual_queries = 0
     summary_batches: List[ExecutionBatchSummary] = []
@@ -1284,6 +1289,11 @@ async def execute_plan_async(
         try:
             compiled_grouping = compile_chart_grouping(planChart)
         except ValueError as exc:
+            logger.warning(
+                "Invalid plan semantics while compiling chart grouping",
+                exc_info=True,
+                extra={"trace_id": trace_id_resolved},
+            )
             raise _invalid_plan_semantics_error(exc, trace_id=trace_id_resolved) from exc
         dims: List[Dimension] = compiled_grouping.dimensions
 
