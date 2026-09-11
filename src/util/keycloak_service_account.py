@@ -20,6 +20,15 @@ _KEYCLOAK_ISSUER = env_util.get_env("KEYCLOAK_ISSUER")
 _CLIENT_ID = env_util.get_env("KEYCLOAK_CLIENT_ID")
 _CLIENT_SECRET = env_util.get_env("KEYCLOAK_CLIENT_SECRET")
 
+# Every real call path (GraphQL, analytics-center, long-task callbacks) goes
+# through this identity unconditionally -- there's no working mode that
+# doesn't need it (the "other Rasa channels" scenario this was once meant to
+# make optional for was never actually implemented; a chart request without
+# this configured just fails later anyway, at the GraphQL call). Fail at
+# import time instead of on the first request that needs real data.
+if not (_KEYCLOAK_ISSUER and _CLIENT_ID and _CLIENT_SECRET):
+    raise RuntimeError("KEYCLOAK_ISSUER, KEYCLOAK_CLIENT_ID and KEYCLOAK_CLIENT_SECRET are all required.")
+
 # Refresh a bit before actual expiry so a request in flight doesn't race a
 # token that expires mid-call.
 _REFRESH_SAFETY_SECONDS = 30.0
@@ -31,28 +40,21 @@ _cached_token: Optional[str] = None
 _cached_expires_at: float = 0.0
 
 
-def is_configured() -> bool:
-    return bool(_KEYCLOAK_ISSUER and _CLIENT_ID and _CLIENT_SECRET)
-
-
 def get_service_account_token() -> Optional[str]:
     """Fetch (and cache) a client-credentials access token for Action's own
     Keycloak service-account identity.
 
-    Returns None if not configured, or if the token request fails. Most
-    callers want get_service_account_token_or_raise() instead -- there's no
-    static-token fallback left to degrade to, so a missing token should
-    fail the request loudly, not send it unauthenticated.
+    Returns None if the token request fails. Most callers want
+    get_service_account_token_or_raise() instead -- there's no static-token
+    fallback left to degrade to, so a missing token should fail the request
+    loudly, not send it unauthenticated.
     """
-    if not is_configured():
-        return None
-
     global _cached_token, _cached_expires_at
     with _lock:
         if _cached_token and time.monotonic() < _cached_expires_at:
             return _cached_token
 
-        assert _KEYCLOAK_ISSUER and _CLIENT_ID and _CLIENT_SECRET  # narrowed by is_configured()
+        assert _KEYCLOAK_ISSUER and _CLIENT_ID and _CLIENT_SECRET  # guaranteed by the module-level check above
         try:
             resp = requests.post(
                 f"{_KEYCLOAK_ISSUER.rstrip('/')}/protocol/openid-connect/token",
