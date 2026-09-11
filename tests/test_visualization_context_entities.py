@@ -198,13 +198,13 @@ def test_merge_latest_with_thread_entities_keeps_latest_provider_group_ids() -> 
     assert merged["date"] == ["2024-01-01", "2026-12-31"]
 
 
-def test_canonicalize_ssot_entities_prefers_explicit_metric_from_question() -> None:
+def test_canonicalize_ssot_entities_does_not_override_extracted_metric_from_question() -> None:
     normalized = canonicalize_ssot_entities(
         {"chart_type": "LINE", "metric": "ICH_TREATMENT_TYPE"},
         question="Show me a line graph of decompressive craniectomy performed",
     )
 
-    assert normalized["metric"] == "CRANIECTOMY"
+    assert normalized["metric"] == "ICH_TREATMENT_TYPE"
 
 
 def test_fresh_generate_visualization_does_not_carry_forward_stale_hospital_scope() -> None:

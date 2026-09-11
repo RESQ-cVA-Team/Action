@@ -41,7 +41,7 @@ class RequestOrchestratorDeterministicStatPlanTests(unittest.TestCase):
         self.assertEqual(test.metrics[1].origin_scope.scope_type, "provider_name")
         self.assertEqual(test.metrics[1].origin_scope.value, "Copenhagen Hospital")
 
-    def test_prefers_explicit_metric_name_over_bad_nlu_metric_entity(self) -> None:
+    def test_does_not_override_metric_entity_from_question_text(self) -> None:
         entities = {
             "chart_type": ["LINE"],
             "metric": ["ICH_TREATMENT_TYPE"],
@@ -66,7 +66,7 @@ class RequestOrchestratorDeterministicStatPlanTests(unittest.TestCase):
         self.assertEqual(outcome.decision, "proceed")
         self.assertIsNotNone(llm_plan.call_args)
         assert llm_plan.call_args is not None
-        self.assertEqual(llm_plan.call_args.kwargs["entities"]["metric"], ["CRANIECTOMY"])
+        self.assertEqual(llm_plan.call_args.kwargs["entities"]["metric"], ["ICH_TREATMENT_TYPE"])
         self.assertEqual(entities["metric"], ["ICH_TREATMENT_TYPE"])
 
     def test_builds_deterministic_statistical_plan_for_provider_group_comparison(self) -> None:

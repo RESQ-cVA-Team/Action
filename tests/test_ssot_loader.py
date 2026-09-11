@@ -46,6 +46,30 @@ class SsotLoaderTests(unittest.TestCase):
         self.assertIn("descriptions", metadata["DTN"])
         self.assertTrue(metadata["DTN"]["descriptions"].get("en"))
 
+    def test_metric_text_lookup_prefers_canonical_key_over_synonym_collision(self) -> None:
+        items: List[Dict[str, Any]] = [
+            {
+                "canonical": "ICH_TREATMENT_TYPE",
+                "synonyms": {"en": ["ich treatment type"]},
+                "Enum": [
+                    {
+                        "key": "ich_treatment_craniectomy",
+                        "synonyms": {"en": ["craniectomy"]},
+                    }
+                ],
+            },
+            {
+                "canonical": "CRANIECTOMY",
+                "synonyms": {"en": ["decompressive craniectomy performed"]},
+            },
+        ]
+
+        ssot_loader.get_metric_text_lookup.cache_clear()
+        with mock.patch.object(ssot_loader, "_load_yaml", return_value=items):
+            lookup = ssot_loader.get_metric_text_lookup()
+
+        self.assertEqual(lookup["craniectomy"]["canonical"], "CRANIECTOMY")
+
     def tearDown(self) -> None:
         ssot_loader.get_metric_text_lookup.cache_clear()
         ssot_loader.get_metric_metadata.cache_clear()

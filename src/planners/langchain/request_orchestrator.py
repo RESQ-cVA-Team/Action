@@ -277,29 +277,18 @@ def _generate_plan_with_timeout(
 
 
 def _metric_candidates(question: str, limit: int = 8) -> List[str]:
+    _ = limit
     normalized = ssot_loader.normalize_metric_text_key(question)
     if not normalized:
         return []
 
     lookup = ssot_loader.get_metric_text_lookup()
-    if normalized in lookup:
-        entry = lookup[normalized]
+    entry = lookup.get(normalized)
+    if isinstance(entry, dict):
         canonical = entry.get("canonical")
         if isinstance(canonical, str) and canonical.strip():
             return [canonical.strip().upper()]
-
-    out: List[str] = []
-    for key, entry in lookup.items():
-        if normalized not in key and key not in normalized:
-            continue
-        canonical = entry.get("canonical")
-        if isinstance(canonical, str) and canonical.strip():
-            canonical_code = canonical.strip().upper()
-            if canonical_code not in out:
-                out.append(canonical_code)
-        if len(out) >= limit:
-            break
-    return out
+    return []
 
 
 def _chart_types() -> List[str]:
@@ -478,23 +467,8 @@ def _extract_metric_code(entities: Dict[str, Any]) -> Optional[str]:
 
 
 def _normalize_entities_for_question(question: str, entities: Dict[str, Any]) -> Dict[str, Any]:
-    normalized_entities = dict(entities or {})
-    metric_candidates = _metric_candidates(question or "")
-    if not metric_candidates:
-        return normalized_entities
-
-    current_metric = _extract_metric_code(normalized_entities)
-    if current_metric is not None and current_metric in metric_candidates:
-        return normalized_entities
-
-    top_candidate = metric_candidates[0]
-    metric_value = normalized_entities.get("metric")
-    if isinstance(metric_value, list):
-        normalized_entities["metric"] = [top_candidate]
-    else:
-        normalized_entities["metric"] = top_candidate
-
-    return normalized_entities
+    _ = question
+    return dict(entities or {})
 
 
 def _extract_date_bounds(entities: Dict[str, Any]) -> Optional[tuple[str, str]]:
@@ -1295,6 +1269,19 @@ def _decision_stage(
         clarification_options=clarification_options,
         missing_fields=missing_fields,
     )
+
+    # Deterministic safeguard: reason taxonomy is authoritative. If the model
+    # says missing_required_fields but emits reject, normalize to clarify.
+    reason_norm = outcome.reason.strip().lower().replace(" ", "_")
+    if outcome.decision == "reject" and reason_norm == "missing_required_fields":
+        outcome = VisualizationRequestOutcome(
+            decision="clarify",
+            reason=outcome.reason,
+            message=outcome.message,
+            clarification_type=outcome.clarification_type,
+            clarification_options=outcome.clarification_options,
+            missing_fields=outcome.missing_fields,
+        )
 
     # Deterministic safeguard: don't trust a missing_fields claim that
     # contradicts ENTITIES_JSON itself (see _drop_falsely_missing_fields).
