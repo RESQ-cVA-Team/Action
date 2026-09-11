@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import re
+from functools import lru_cache
 from typing import (
     Any,
     Dict,
@@ -13,8 +15,7 @@ from typing import (
 )
 
 from src.actions.i18n import translate
-from src.shared.ssot_loader import resolve_chart_type, resolve_sex, resolve_stroke_type
-from src.util import env as env_util
+from src.shared.ssot_loader import get_metric_text_lookup, normalize_metric_text_key, resolve_chart_type, resolve_sex, resolve_stroke_type
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,71 @@ _ENTITY_SSOT_RESOLVERS = {
 }
 
 
-def canonicalize_ssot_entities(entities: Dict[str, Any]) -> Dict[str, Any]:
+@lru_cache(maxsize=1)
+def _metric_canonicals() -> set[str]:
+    """Return SSOT metric canonical names for exact membership checks."""
+    lookup = get_metric_text_lookup()
+    if not isinstance(lookup, dict):
+        return set()
+
+    out: set[str] = set()
+    for entry_any in lookup.values():
+        if not isinstance(entry_any, dict):
+            continue
+        canonical_any = entry_any.get("canonical")
+        if isinstance(canonical_any, str) and canonical_any.strip():
+            out.add(canonical_any.strip().upper())
+    return out
+
+
+def _has_metric_request_context(text: str, start: Any) -> bool:
+    """Detect whether an entity span appears in explicit chart/metric phrasing."""
+    if not isinstance(text, str) or not text.strip():
+        return False
+    if not isinstance(start, int) or start < 0:
+        return False
+
+    prefix = text[:start].lower()
+    # Tight patterns to avoid reintroducing broad false positives.
+    return bool(re.search(r"(?:chart|graph|plot|visualization)\s+of\s*$", prefix))
+
+
+@lru_cache(maxsize=1)
+def _normalized_canonical_metric_keys() -> Dict[str, str]:
+    """Map normalized canonical-name text to a unique canonical metric code."""
+    winners: Dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for canonical in _metric_canonicals():
+        norm = normalize_metric_text_key(canonical)
+        if not norm:
+            continue
+        existing = winners.get(norm)
+        if existing is None:
+            winners[norm] = canonical
+            continue
+        if existing != canonical:
+            ambiguous.add(norm)
+    for norm in ambiguous:
+        winners.pop(norm, None)
+    return winners
+
+
+def _canonical_metric_from_exact_span(text: str, start: Any, end: Any) -> Optional[str]:
+    """Return canonical metric if span text exactly matches a canonical name."""
+    if not isinstance(text, str) or not isinstance(start, int) or not isinstance(end, int):
+        return None
+    if start < 0 or end <= start or end > len(text):
+        return None
+    raw = text[start:end].strip()
+    if not raw:
+        return None
+    norm = normalize_metric_text_key(raw)
+    if not norm:
+        return None
+    return _normalized_canonical_metric_keys().get(norm)
+
+
+def canonicalize_ssot_entities(entities: Dict[str, Any], question: Optional[str] = None) -> Dict[str, Any]:
     # Deterministic SSOT canonicalization only (no fallback inference).
     normalized: Dict[str, Any] = {}
     for key, value in entities.items():
@@ -128,6 +193,8 @@ def extract_entities_from_latest_message(
         return {}
 
     entities_list = cast(List[Any], entities_any)
+    question_text_any = latest_message.get("text")
+    question_text = question_text_any if isinstance(question_text_any, str) else ""
 
     # RegexEntityExtractor's SSOT-derived lookup tables match a literal word
     # anywhere it appears (e.g. "age" is a valid metric name AND a valid
@@ -147,11 +214,7 @@ def extract_entities_from_latest_message(
             continue
         ent = cast(Dict[str, Any], ent_any)
         extractors = ent.get("extractors")
-        extractor_names = (
-            {e.get("extractor") for e in extractors if isinstance(e, dict)}
-            if isinstance(extractors, list)
-            else set()
-        )
+        extractor_names = {e.get("extractor") for e in extractors if isinstance(e, dict)} if isinstance(extractors, list) else set()
         if "DIETClassifier" in extractor_names:
             span = (ent.get("start"), ent.get("end"))
             entity_type = ent.get("entity")
@@ -168,21 +231,31 @@ def extract_entities_from_latest_message(
             continue
 
         extractors = ent.get("extractors")
-        extractor_names = (
-            {e.get("extractor") for e in extractors if isinstance(e, dict)}
-            if isinstance(extractors, list)
-            else set()
-        )
+        extractor_names = {e.get("extractor") for e in extractors if isinstance(e, dict)} if isinstance(extractors, list) else set()
         span = (ent.get("start"), ent.get("end"))
         diet_label_for_span = diet_span_labels.get(span)
-        if (
-            "DIETClassifier" not in extractor_names
-            and diet_label_for_span is not None
-            and diet_label_for_span != key_any
-        ):
-            continue
-
         value = ent["value"]
+        if key_any == "metric" and isinstance(value, str):
+            exact_span_canonical = _canonical_metric_from_exact_span(question_text, ent.get("start"), ent.get("end"))
+            if exact_span_canonical is not None:
+                value = exact_span_canonical
+        if "DIETClassifier" not in extractor_names and diet_label_for_span is not None and diet_label_for_span != key_any:
+            # Keep the existing DIET-over-regex conflict rule by default, but
+            # preserve explicit chart-request metrics that are known SSOT
+            # canonicals (e.g. "line graph of HEMORRHAGIC_TRANSFORMATION").
+            if key_any != "metric" or not isinstance(value, str):
+                continue
+            metric_token = value.strip().upper()
+            if not metric_token:
+                continue
+            try:
+                if metric_token not in _metric_canonicals():
+                    continue
+            except Exception:
+                continue
+            if not _has_metric_request_context(question_text, ent.get("start")):
+                continue
+
         if key_any not in extracted:
             extracted[key_any] = value
             continue
@@ -504,6 +577,7 @@ def format_execution_summary(
     has no such confirmation elsewhere, so it keeps the default. May return
     an empty string (e.g. opening line suppressed and nothing else to add);
     callers should skip sending a message in that case."""
+
     def t(key: str, default: str, params: Optional[Dict[str, Any]] = None) -> str:
         return translate(key, language=language, params=params, default=default)
 

@@ -63,9 +63,7 @@ def _coerce_description_map(value: Any) -> Dict[str, str]:
 def _load_yaml(filename: str) -> List[Dict[str, Any]]:
     path = BASE_SSOT / filename
     if not path.exists():
-        raise SSOTLoadError(
-            f"Missing SSOT file: {path}. Base directory contents: {[p.name for p in BASE_SSOT.glob('*.yml')] if BASE_SSOT.exists() else 'N/A'}"
-        )
+        raise SSOTLoadError(f"Missing SSOT file: {path}. Base directory contents: {[p.name for p in BASE_SSOT.glob('*.yml')] if BASE_SSOT.exists() else 'N/A'}")
     with path.open("r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
     if not isinstance(raw, list):
@@ -236,9 +234,7 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
                         label = f.get("label")
                         if isinstance(key, str) and key:
                             flag_keys.append(key)
-                            flag_labels.append(
-                                label if isinstance(label, str) and label else key
-                            )
+                            flag_labels.append(label if isinstance(label, str) and label else key)
                     elif isinstance(f, str):
                         flag_keys.append(f)
                         flag_labels.append(f)
@@ -265,16 +261,12 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
                     syns = opt.get("synonyms")
                     if not (isinstance(key, str) and key):
                         continue
-                    if not (
-                        isinstance(syns, list) and syns and isinstance(syns[0], str)
-                    ):
+                    if not (isinstance(syns, list) and syns and isinstance(syns[0], str)):
                         # Fallback: fabricate a human label from key
                         human_label = key.replace("_", " ").title()
                         syns = [human_label]
                         opt["synonyms"] = syns
-                    option_map[key] = {
-                        k: v for k, v in opt.items() if k in ("synonyms", "value")
-                    }
+                    option_map[key] = {k: v for k, v in opt.items() if k in ("synonyms", "value")}
                     option_keys.append(key)
                     derived_labels.append(cast(str, syns[0]))
                 # Attach raw options map for downstream richer usage
@@ -311,9 +303,7 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
                     fabricated = key.replace("_", " ").title()
                     syns = [fabricated]
                     entry["synonyms"] = syns
-                option_map[key] = {
-                    k: v for k, v in entry.items() if k in ("synonyms", "value")
-                }
+                option_map[key] = {k: v for k, v in entry.items() if k in ("synonyms", "value")}
                 option_keys.append(key)
                 labels.append(cast(str, syns[0]))
             if option_keys:
@@ -406,6 +396,7 @@ def get_metric_text_lookup() -> Dict[str, Dict[str, Any]]:
 
     items = _load_yaml("MetricType.yml")
     lookup: Dict[str, Dict[str, Any]] = {}
+    records: List[tuple[str, List[str], Dict[str, Any]]] = []
 
     for item in items:
         canonical = item.get("canonical")
@@ -439,15 +430,25 @@ def get_metric_text_lookup() -> Dict[str, Dict[str, Any]]:
             "data_type": data_type,
             "unit": unit,
         }
+        records.append((canonical, synonyms, record))
 
-        # Register canonical and all synonyms under normalized text keys.
-        keys: List[str] = [canonical] + synonyms
-        for raw_key in keys:
+    # Pass 1: reserve normalized canonical names for every metric first.
+    # This avoids synonym collisions where a generic enum option label
+    # (e.g. "craniectomy") would otherwise shadow a real standalone metric
+    # canonical of the same name.
+    for canonical, _synonyms, record in records:
+        norm = normalize_metric_text_key(canonical)
+        if not norm:
+            continue
+        if norm not in lookup:
+            lookup[norm] = record
+
+    # Pass 2: add synonyms only for still-unclaimed keys.
+    for _canonical, synonyms, record in records:
+        for raw_key in synonyms:
             norm = normalize_metric_text_key(raw_key)
             if not norm:
                 continue
-            # Do not overwrite existing entries for the same normalized key;
-            # first definition wins to keep behavior deterministic.
             if norm not in lookup:
                 lookup[norm] = record
 
@@ -479,11 +480,7 @@ def validate_metric_metadata_complete(logger: Optional[Any] = None) -> List[str]
             continue
         code = canonical.strip()
         data_type = _ci_get(item, "data_type")
-        data_type_str = (
-            str(data_type).strip().lower()
-            if isinstance(data_type, (str, bytes))
-            else ""
-        )
+        data_type_str = str(data_type).strip().lower() if isinstance(data_type, (str, bytes)) else ""
 
         if data_type_str == "numeric":
             numeric_any = _ci_get(item, "numeric")
@@ -577,9 +574,7 @@ def validate_metric_metadata_complete(logger: Optional[Any] = None) -> List[str]
                 key = _ci_get(opt, "key")
                 syns = _ci_get(opt, "synonyms")
                 if not isinstance(key, str) or not key.strip():
-                    msg = (
-                        f"SSOT incomplete [ENUM]: {code} option #{idx + 1} missing key"
-                    )
+                    msg = f"SSOT incomplete [ENUM]: {code} option #{idx + 1} missing key"
                     warnings.append(msg)
                     active_logger.warning(msg)
                 else:

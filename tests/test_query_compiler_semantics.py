@@ -121,6 +121,25 @@ def test_compile_chart_grouping_year_grain_with_explicit_range() -> None:
     assert [p.end_date for p in periods] == ["2022-12-31", "2023-12-31", "2024-12-31", "2025-12-31"]
 
 
+def test_compile_chart_grouping_day_grain_falls_back_to_default_bounds() -> None:
+    """DAY grain should use default bounds when planner omits an explicit
+    window/range, mirroring MONTH/QUARTER/YEAR fallback behavior."""
+    chart = S.ChartSpec(
+        chart_type="LINE",
+        metrics=[S.MetricSpec(metric="DAY_2_TEMPERATURE_CHECKS")],
+        semantics=S.AnalysisSemanticsSpec(
+            intent="TREND",
+            measure=S.MeasureSemanticsSpec(type="MEDIAN"),
+            time=S.TimeSemanticsSpec(grain="DAY"),
+        ),
+    )
+
+    compiled = compile_chart_grouping(chart)
+    assert compiled.total_requests > 0
+    assert compiled.batches[0].batched_time_enabled is True
+    assert len(compiled.batches[0].batched_time_periods) > 0
+
+
 def test_compile_chart_grouping_rejects_unsupported_custom_split() -> None:
     chart = S.ChartSpec(
         chart_type="LINE",

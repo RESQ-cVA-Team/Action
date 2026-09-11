@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from typing import List, Optional, cast
 
 from src.domain.dto.charts.types import ChartAxis
@@ -61,14 +60,6 @@ def _resolve_numeric_request_options(
             resolved_lower = int(value_domain.lower_bound)
         if value_domain.upper_bound is not None:
             resolved_upper = int(value_domain.upper_bound)
-
-    bucketing = numeric_resolution.bucketing
-    if bucketing is not None:
-        if bucketing.bucket_count is not None:
-            resolved_bins = int(bucketing.bucket_count)
-        elif bucketing.bucket_size is not None:
-            span = max(1, int(resolved_upper) - int(resolved_lower))
-            resolved_bins = max(1, int(math.ceil(span / int(bucketing.bucket_size))))
 
     return resolved_bins, int(resolved_lower), int(resolved_upper)
 

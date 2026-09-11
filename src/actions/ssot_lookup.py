@@ -63,17 +63,7 @@ def resolve_metric_candidates(raw_value: str) -> List[str]:
         canonical = exact.get("canonical")
         if isinstance(canonical, str) and canonical.strip():
             return [canonical.strip().upper()]
-
-    matches: List[str] = []
-    for alias, record in lookup.items():
-        if normalized not in alias and alias not in normalized:
-            continue
-        canonical = record.get("canonical")
-        if isinstance(canonical, str) and canonical.strip():
-            candidate = canonical.strip().upper()
-            if candidate not in matches:
-                matches.append(candidate)
-    return matches
+    return []
 
 
 def resolve_catalog_candidates(filename: str, raw_value: str) -> List[str]:

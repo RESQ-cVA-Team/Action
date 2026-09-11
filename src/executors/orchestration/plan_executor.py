@@ -18,13 +18,13 @@ from src.domain.graphql.request import LogicalFilter as GQLLogicalFilter
 from src.domain.graphql.request import SexFilter as GQLSexFilter
 from src.domain.graphql.request import StrokeFilter as GQLStrokeFilter
 from src.domain.graphql.request import TimePeriod, default_time_bounds
+from src.domain.graphql.response import Metric
 from src.domain.langchain.schema import AnalysisPlan, StatisticalTestSpec
 from src.executors.graphql.client import GraphQLProxyClient
 from src.executors.mapping.chart_builder import build_chart_dto
 from src.executors.mapping.filter_mapper import to_gql_filter
 from src.executors.mapping.series_mapper import merge_series_by_name
 from src.executors.mapping.summary_builder import (
-    make_batch_summary,
     make_execution_summary,
 )
 from src.executors.planning.metric_request_factory import (
@@ -1063,6 +1063,7 @@ class ExecutionContext:
 class RequestExecutionResult:
     spec: RequestSpec
     series: List[ChartSeries]
+    metrics_payload: Optional[dict[str, Metric]] = None
 
 
 def _emit_progress(context: ExecutionContext, completed: int, total: int, prefix: str = "Fetching data") -> None:
@@ -1091,7 +1092,7 @@ async def _execute_request_spec(
     context: ExecutionContext,
     trace_id: str,
 ) -> RequestExecutionResult:
-    series = await run_graphql_request(
+    series, metrics_payload = await run_graphql_request(
         req=spec.req,
         label_parts=spec.label_parts,
         include_metric_alias=spec.include_metric_alias,
@@ -1110,7 +1111,7 @@ async def _execute_request_spec(
         query_cb=context.query_cb,
         is_filter_grouped=spec.is_filter_grouped,
     )
-    return RequestExecutionResult(spec=spec, series=series)
+    return RequestExecutionResult(spec=spec, series=series, metrics_payload=metrics_payload)
 
 
 async def _execute_specs_concurrent(
@@ -1324,33 +1325,6 @@ async def execute_plan_async(
             )
             total_requests = max(1, len(primary_specs))
             actual_queries += total_requests
-
-            summary_batches.append(
-                make_batch_summary(
-                    chart_title=f"{(planChart.chart_type or 'CHART').upper()} chart",
-                    chart_type=planChart.chart_type,
-                    server_groupby=gb_field,
-                    filter_dimensions=[d.kind.__name__ for d in filter_dims],
-                    batched_time_period_count=len(batched_time_periods) if batched_time_enabled else 0,
-                    query_count=total_requests,
-                )
-            )
-
-            if _EMIT_COMPILER_DIAGNOSTICS:
-                _emit_compiler_diagnostics(
-                    progress_cb,
-                    {
-                        "chart_title": f"{(planChart.chart_type or 'CHART').upper()} chart",
-                        "chart_type": planChart.chart_type,
-                        "server_groupby": gb_field,
-                        "batched_time_enabled": batched_time_enabled,
-                        "batched_time_period_count": len(batched_time_periods),
-                        "filter_dimensions": [d.kind.__name__ for d in filter_dims],
-                        "query_count_estimate": batch.request_count,
-                        "query_count_planned": total_requests,
-                    },
-                    trace_id=trace_id_resolved,
-                )
 
             request_results = await _execute_specs_concurrent(
                 specs=primary_specs,

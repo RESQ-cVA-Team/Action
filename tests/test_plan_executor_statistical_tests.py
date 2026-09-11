@@ -1,6 +1,7 @@
 import asyncio
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from pydantic import ValidationError
@@ -11,6 +12,7 @@ os.environ.setdefault("RASA_PROXY_GRAPHQL_TARGET", "http://localhost/graphql")
 from src.domain.dto.analytics.statistical_test import StatisticalTestResult
 from src.domain.dto.charts.types import ChartPoint, ChartSeries
 from src.domain.graphql.request import DataOrigin, GraphQLQueryRequest, TimePeriod
+from src.domain.graphql.response import Kpi1, Metric, MetricKpiGroup
 from src.domain.langchain.schema import (
     AnalysisPlan,
     AnalysisSemanticsSpec,
@@ -578,6 +580,129 @@ class PlanExecutorStatisticalTestTests(unittest.TestCase):
 
         self.assertEqual(err.exception.reason, "unauthorized_statistical_cohort")
         self.assertEqual(err.exception.code, "EXEC_STATS_UNAUTHORIZED_COHORT")
+
+    def test_execute_plan_async_rebuilds_bar_request_with_adaptive_bins(self) -> None:
+        chart = AnalysisPlan(
+            charts=[
+                ChartSpec(
+                    chart_type="BAR",
+                    metrics=[MetricSpec(metric="DTN")],
+                    numericResolution={"valueDomain": {"lowerBound": 0, "upperBound": 100}},
+                )
+            ]
+        )
+
+        initial_primary_spec = plan_executor.RequestSpec(
+            req=GraphQLQueryRequest(metrics=[], dataOrigin=DataOrigin(providerId=[1])),
+            label_parts=[],
+            include_metric_alias=False,
+            group_by_field=None,
+            add_time_period_labels=False,
+        )
+        preflight_spec = plan_executor.RequestSpec(
+            req=GraphQLQueryRequest(metrics=[], dataOrigin=DataOrigin(providerId=[1])),
+            label_parts=[],
+            include_metric_alias=False,
+            group_by_field=None,
+            add_time_period_labels=False,
+        )
+        final_primary_spec = plan_executor.RequestSpec(
+            req=GraphQLQueryRequest(metrics=[], dataOrigin=DataOrigin(providerId=[1])),
+            label_parts=[],
+            include_metric_alias=False,
+            group_by_field=None,
+            add_time_period_labels=False,
+        )
+
+        preflight_result = plan_executor.RequestExecutionResult(
+            spec=preflight_spec,
+            series=[],
+            metrics_payload={
+                "metric_DTN": Metric(
+                    kpiGroup=[
+                        MetricKpiGroup(
+                            kpi1=Kpi1(
+                                caseCount=[],
+                                cohortSize=64,
+                                interquartileRange=16.0,
+                            )
+                        )
+                    ]
+                )
+            },
+        )
+        final_result = plan_executor.RequestExecutionResult(
+            spec=final_primary_spec,
+            series=[ChartSeries(name="DTN", data=[ChartPoint(x=0.0, y=1.0)])],
+        )
+
+        build_metric_requests_calls = []
+
+        def _fake_build_metric_requests(*args, **kwargs):
+            build_metric_requests_calls.append(kwargs)
+            return ([], None, [None], [None])
+
+        build_primary_request_specs_calls = []
+
+        def _fake_build_primary_request_specs(*args, **kwargs):
+            build_primary_request_specs_calls.append(kwargs)
+            call_index = len(build_primary_request_specs_calls)
+            if call_index == 1:
+                return [initial_primary_spec]
+            if call_index == 2:
+                return [preflight_spec]
+            return [final_primary_spec]
+
+        execute_specs_calls = []
+
+        async def _fake_execute_specs_concurrent(**kwargs):
+            execute_specs_calls.append(kwargs)
+            if len(execute_specs_calls) == 1:
+                return [preflight_result]
+            return [final_result]
+
+        with (
+            patch.object(plan_executor, "resolve_plan_metric_origins", return_value=chart),
+            patch.object(plan_executor, "build_metric_requests", side_effect=_fake_build_metric_requests),
+            patch.object(
+                plan_executor,
+                "compile_chart_grouping",
+                return_value=CompiledChartGrouping(
+                    dimensions=[],
+                    batches=[
+                        CompiledBatch(
+                            server_groupby=None,
+                            filter_dims=[],
+                            combos_list=[tuple()],
+                            batched_time_enabled=False,
+                            batched_time_periods=[],
+                        )
+                    ],
+                ),
+            ),
+            patch.object(plan_executor, "build_primary_request_specs", side_effect=_fake_build_primary_request_specs),
+            patch.object(plan_executor, "_execute_specs_concurrent", side_effect=_fake_execute_specs_concurrent),
+            patch.object(plan_executor, "merge_series_by_name", side_effect=lambda series: series),
+            patch.object(plan_executor, "build_chart_dto", side_effect=lambda **kwargs: SimpleNamespace(series=kwargs["series"])),
+            patch.object(plan_executor, "estimate_query_count_for_plan", return_value=2),
+        ):
+            response = asyncio.run(
+                plan_executor.execute_plan_async(
+                    plan=chart,
+                    user_sub="user-1",
+                    trace_id="trace-1",
+                )
+            )
+
+        self.assertEqual(len(build_metric_requests_calls), 3)
+        self.assertEqual(build_metric_requests_calls[0].get("include_distribution"), False)
+        self.assertEqual(build_metric_requests_calls[1].get("include_distribution"), False)
+        self.assertEqual(build_metric_requests_calls[2].get("histogram_bin_count_override"), 13)
+        self.assertEqual(len(execute_specs_calls), 2)
+        self.assertEqual(execute_specs_calls[0]["progress_prefix"], "Estimating distribution bins")
+        self.assertEqual(execute_specs_calls[1]["progress_prefix"], "Fetching data")
+        self.assertEqual(len(response.charts), 1)
+        self.assertEqual(len(response.charts[0].series), 1)
 
 
 if __name__ == "__main__":

@@ -46,9 +46,7 @@ def _bool_values_from_categories(categories: Optional[List[str]]) -> Optional[Li
         elif token in {"false", "0", "no", "n"}:
             out.append(False)
         else:
-            raise ValueError(
-                f"Invalid BOOLEAN split category '{raw}'. Expected one of true/false, yes/no, 1/0"
-            )
+            raise ValueError(f"Invalid BOOLEAN split category '{raw}'. Expected one of true/false, yes/no, 1/0")
     return out
 
 
@@ -209,11 +207,7 @@ def _groupby_type_values() -> set[str]:
     # skips the per-category filter fan-out entirely.
     try:
         items = get_ssot_items("GroupByType.yml")
-        return {
-            str(item.get("canonical")).upper()
-            for item in items
-            if item.get("supported_by") == "api" and item.get("canonical")
-        }
+        return {str(item.get("canonical")).upper() for item in items if item.get("supported_by") == "api" and item.get("canonical")}
     except Exception:
         logger.debug(
             "Failed to enumerate server-supported group-by fields; using empty supported-field set",
@@ -294,9 +288,7 @@ class Dimension:
                     try:
                         return datetime.fromisoformat(text).date()
                     except Exception:
-                        raise ValueError(
-                            "Semantic time grouping requires ISO date values in window bounds"
-                        )
+                        raise ValueError("Semantic time grouping requires ISO date values in window bounds")
 
             window = time_spec.window
             grain = str(time_spec.grain).upper()
@@ -695,7 +687,7 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
         batched_time_spec = batched_time_dim.spec
         if isinstance(batched_time_spec, GroupByTime):
             grain = str(batched_time_spec.grain).upper()
-            if grain in ("MONTH", "QUARTER", "YEAR"):
+            if grain in ("DAY", "WEEK", "BIWEEK", "MONTH", "QUARTER", "YEAR"):
                 default_start, default_end = default_time_bounds()
                 fallback_dim = Dimension(
                     GroupByTime(
@@ -714,9 +706,7 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
     if batched_time_enabled and not batched_time_periods and batched_time_dim is not None:
         batched_time_spec = batched_time_dim.spec
         if isinstance(batched_time_spec, GroupByTime):
-            raise ValueError(
-                "Semantic time grouping requires explicit time window/range or date-filter bounds for retrieval compilation"
-            )
+            raise ValueError("Semantic time grouping requires explicit time window/range or date-filter bounds for retrieval compilation")
 
     # After batched_time_periods is built, constrain to DateFilter bounds if present
     if batched_time_enabled and batched_time_periods:
@@ -751,14 +741,10 @@ def compile_chart_grouping(chart: S.ChartSpec) -> CompiledChartGrouping:
     for d in filter_dims:
         cats = d.categories()
         if not cats:
-            raise ValueError(
-                f"Semantic split '{type(d.spec).__name__}' produced no categories for retrieval compilation"
-            )
+            raise ValueError(f"Semantic split '{type(d.spec).__name__}' produced no categories for retrieval compilation")
         sample_filter = d.filter_for(cats[0])
         if sample_filter is None:
-            raise ValueError(
-                f"Semantic split '{type(d.spec).__name__}' produced an invalid filter for retrieval compilation"
-            )
+            raise ValueError(f"Semantic split '{type(d.spec).__name__}' produced an invalid filter for retrieval compilation")
         effective_filter_dims.append(d)
         filter_categories.append(cats)
 

@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
 
+from src.actions.helpers.visualization import canonicalize_ssot_entities
+
 
 def _load_visualization_context_helpers():
     source_path = Path(__file__).resolve().parents[1] / "src" / "actions" / "actions" / "visualization_action.py"
@@ -22,6 +24,7 @@ def _load_visualization_context_helpers():
         "_find_latest_visualization_anchor_user_ordinal",
         "_is_awaiting_clarification_reply",
         "_should_carry_forward_visualization_context",
+        "canonicalize_ssot_entities",
     }
 
     required_assigns = {"_LATEST_ENTITY_PRECEDENCE_KEYS"}
@@ -30,12 +33,7 @@ def _load_visualization_context_helpers():
         node
         for node in module_ast.body
         if (isinstance(node, ast.FunctionDef) and node.name in required)
-        or (
-            isinstance(node, ast.Assign)
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-            and node.targets[0].id in required_assigns
-        )
+        or (isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and node.targets[0].id in required_assigns)
     ]
 
     isolated_module = ast.Module(body=selected, type_ignores=[])
@@ -198,6 +196,15 @@ def test_merge_latest_with_thread_entities_keeps_latest_provider_group_ids() -> 
 
     assert merged["group_id"] == ["provider group 279", "provider group 280"]
     assert merged["date"] == ["2024-01-01", "2026-12-31"]
+
+
+def test_canonicalize_ssot_entities_does_not_override_extracted_metric_from_question() -> None:
+    normalized = canonicalize_ssot_entities(
+        {"chart_type": "LINE", "metric": "ICH_TREATMENT_TYPE"},
+        question="Show me a line graph of decompressive craniectomy performed",
+    )
+
+    assert normalized["metric"] == "ICH_TREATMENT_TYPE"
 
 
 def test_fresh_generate_visualization_does_not_carry_forward_stale_hospital_scope() -> None:

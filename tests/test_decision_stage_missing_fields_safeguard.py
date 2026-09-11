@@ -122,6 +122,26 @@ class DecisionStageSafeguardTests(unittest.TestCase):
         self.assertEqual(outcome.decision, "clarify")
         self.assertEqual(outcome.missing_fields, ["chart_type"])
 
+    def test_coerces_reject_to_clarify_when_reason_is_missing_required_fields(self) -> None:
+        with patch(
+            "src.planners.langchain.request_orchestrator._invoke_chain",
+            return_value={
+                "decision": "reject",
+                "reason": "missing_required_fields",
+                "missing_fields": ["metric"],
+                "message": "What specific metric do you want to visualize?",
+            },
+        ):
+            outcome = _decision_stage(
+                question="show me a line graph",
+                entities={"chart_type": "LINE"},
+                language="en",
+            )
+
+        self.assertEqual(outcome.decision, "clarify")
+        self.assertEqual(outcome.reason, "missing_required_fields")
+        self.assertEqual(outcome.missing_fields, ["metric"])
+
 
 class DecisionStageOutOfScopeSafeguardTests(unittest.TestCase):
     def test_reclassifies_out_of_scope_reject_with_missing_chart_type_as_clarify(self) -> None:
