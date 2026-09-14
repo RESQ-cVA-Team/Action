@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 
 _ECHO_INTERNAL_ERRORS = env_util.env_flag("ACTIONS_ECHO_INTERNAL_ERRORS", default=False)
 _SHOW_EXECUTION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_EXECUTION_SUMMARY", default=True)
-_SHOW_NORMALIZATION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_NORMALIZATION_SUMMARY", default=True)
 _EMIT_QUERY_DEBUG = env_util.env_flag("ACTIONS_EMIT_QUERY_DEBUG", default=False)
 
 _executor_concurrency_raw = env_util.get_env("ACTIONS_EXECUTOR_MAX_CONCURRENCY", default="4") or "4"
@@ -171,14 +170,7 @@ class ActionGuidedGenerateVisualization(Action):  # pyright: ignore
                             dispatcher.utter_message(text=f"Note: {warning.strip()}")
 
                 if _SHOW_EXECUTION_SUMMARY and execution_summary is not None:
-                    dispatcher.utter_message(
-                        text=format_execution_summary(
-                            execution_summary,
-                            show_normalization=_SHOW_NORMALIZATION_SUMMARY,
-                            planner_diagnostics=None,
-                            language=language,
-                        )
-                    )
+                    dispatcher.utter_message(text=format_execution_summary(execution_summary, language=language))
                 else:
                     dispatcher.utter_message(text=translate("action.visualization.success_complete", language=language))
 

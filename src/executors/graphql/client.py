@@ -3,31 +3,15 @@ import logging
 import random
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Optional, TypedDict, cast
+from typing import Any, Dict, Mapping, Optional, cast
 from urllib.parse import urlsplit
 
 import requests
 
 import src.domain.graphql.response as gqlr
 from src.util import env as env_util
+from src.util.keycloak_service_account import get_service_account_token_or_raise
 from src.util.logging_utils import log_context
-
-
-class GraphQLPayload(TypedDict):
-    query: str
-    variables: Dict[str, Any]
-
-
-class ProxyHttpRequestPayload(TypedDict):
-    path: str
-    method: str
-    body: GraphQLPayload
-
-
-class ProxyRequestPayload(TypedDict):
-    senderId: str
-    target: str
-    request: ProxyHttpRequestPayload
 
 
 logger = logging.getLogger(__name__)
@@ -76,7 +60,6 @@ class GraphQLProxyClient:
     def __init__(
         self,
         proxy_url: str,
-        action_server_token: str,
         target: str = "graphql",
         path: str = "/api/graphql/aggregation",
         timeout_seconds: int = 30,
@@ -86,7 +69,6 @@ class GraphQLProxyClient:
         retry_backoff_seconds: float = 0.6,
     ):
         self.proxy_url = proxy_url
-        self.action_server_token = action_server_token
         self.target = target
         self.path = path
         self.timeout_seconds = max(1.0, float(timeout_seconds))
@@ -193,17 +175,23 @@ class GraphQLProxyClient:
         trace_id: str,
         variables: Optional[Dict[str, Any]] = None,
         raise_on_error: bool = False,
+        job_id: Optional[str] = None,
     ) -> gqlr.MetricsQueryResponse | None:
         trace_label = self._require_trace_id(trace_id, "query")
+        if not job_id:
+            raise GraphQLProxyError(
+                kind="missing_job_id",
+                message="A jobId is required to identify this request; none is available "
+                "in synchronous/shell execution mode.",
+            )
         headers = {
             "Content-Type": "application/json",
-            "x-action-server-token": self.action_server_token,
+            "Authorization": f"Bearer {get_service_account_token_or_raise()}",
+            "x-trace-id": trace_label,
         }
-        headers["x-trace-id"] = trace_label
 
-        proxy_payload: ProxyRequestPayload = {
-            # senderId carries conversation routing identity (for example thread scoping).
-            "senderId": user_sub,
+        proxy_payload: Dict[str, Any] = {
+            "jobId": job_id,
             "target": self.target,
             "request": {
                 "path": self.path,
@@ -467,6 +455,7 @@ class GraphQLProxyClient:
         trace_id: str,
         variables: Optional[Dict[str, Any]] = None,
         raise_on_error: bool = False,
+        job_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Execute a GraphQL query and return the raw JSON object.
 
@@ -474,15 +463,20 @@ class GraphQLProxyClient:
         as statistical test queries.
         """
         trace_label = self._require_trace_id(trace_id, "query_raw")
+        if not job_id:
+            raise GraphQLProxyError(
+                kind="missing_job_id",
+                message="A jobId is required to identify this request; none is available "
+                "in synchronous/shell execution mode.",
+            )
         headers = {
             "Content-Type": "application/json",
-            "x-action-server-token": self.action_server_token,
+            "Authorization": f"Bearer {get_service_account_token_or_raise()}",
+            "x-trace-id": trace_label,
         }
-        headers["x-trace-id"] = trace_label
 
-        proxy_payload: ProxyRequestPayload = {
-            # senderId carries conversation routing identity (for example thread scoping).
-            "senderId": user_sub,
+        proxy_payload: Dict[str, Any] = {
+            "jobId": job_id,
             "target": self.target,
             "request": {
                 "path": self.path,

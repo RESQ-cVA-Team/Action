@@ -28,7 +28,7 @@ def test_graphql(dispatcher: Any, tracker: Any, domain: Any, args: List[str], op
     """Run a minimal GraphQL smoke test via the proxy and report status."""
     logger = logging.getLogger(__name__)
     try:
-        proxy_url, action_server_token = env_util.require_all_env("RASA_PROXY_URL", "ACTION_SERVER_TOKEN")
+        proxy_url = env_util.require_any_env("RASA_PROXY_URL")
         user_sub = tracker.sender_id
         graphql_target = env_util.require_any_env("RASA_PROXY_GRAPHQL_TARGET")
         provider_ids: List[int] = [1]
@@ -53,7 +53,6 @@ def test_graphql(dispatcher: Any, tracker: Any, domain: Any, args: List[str], op
 
         client = GraphQLProxyClient(
             proxy_url=proxy_url,
-            action_server_token=action_server_token,
             target=graphql_target if isinstance(graphql_target, str) and graphql_target.strip() else "graphql",
         )
         trace_id = uuid4().hex

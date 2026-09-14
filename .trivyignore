@@ -1,0 +1,11 @@
+# These findings are pip's own internally-vendored copies of msgpack and
+# setuptools (pip/_vendor/vendor.txt), not packages this project installs
+# or imports. Confirmed via `pip show`: the actual installed msgpack and
+# setuptools are already current. pip itself is already at its latest
+# release (26.2.1) and that release is what ships these vendored versions --
+# there is no newer pip to bump to that vendors a fixed copy, and no way to
+# upgrade pip's private bundle independently of pip itself. Nothing in this
+# codebase imports pip's vendored copies; they're used only by pip's own
+# internal dependency resolution at install time.
+GHSA-6v7p-g79w-8964
+CVE-2025-47273

@@ -92,7 +92,7 @@ def _build_pagination_buttons(*, offset: int, limit: int, total_count: int, lang
         buttons.append(
             {
                 "title": translate("action.hospitals.previous_page_button", language=language),
-                "payload": f"list hospitals {previous_offset}",
+                "payload": f'/list_hospitals{{"offset": {previous_offset}}}',
             }
         )
 
@@ -101,7 +101,7 @@ def _build_pagination_buttons(*, offset: int, limit: int, total_count: int, lang
         buttons.append(
             {
                 "title": translate("action.hospitals.next_page_button", language=language),
-                "payload": f"list hospitals {next_offset}",
+                "payload": f'/list_hospitals{{"offset": {next_offset}}}',
             }
         )
 
@@ -262,7 +262,7 @@ class ActionListHospitals(Action):  # pyright: ignore
                     ),
                 )
                 language = resolve_language_from_tracker(tracker)
-                dispatcher.utter_message(text=f"❌ {friendly_hospital_error(exc, language=language)}")
+                dispatcher.utter_message(text=friendly_hospital_error(exc, language=language))
                 if _ECHO_INTERNAL_ERRORS:
                     dispatcher.utter_message(
                         text=translate(

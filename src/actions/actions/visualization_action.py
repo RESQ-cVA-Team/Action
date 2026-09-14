@@ -37,7 +37,6 @@ _LOG_USER_TEXT = env_util.env_flag("ACTIONS_LOG_USER_TEXT", default=False)
 _ECHO_INTERNAL_ERRORS = env_util.env_flag("ACTIONS_ECHO_INTERNAL_ERRORS", default=False)
 _SHOW_EXECUTION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_EXECUTION_SUMMARY", default=True)
 _DEFER_CALLBACK_HANDOFF = env_util.env_flag("LONG_ACTION_DEFER_CALLBACK_HANDOFF", default=False)
-_SHOW_NORMALIZATION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_NORMALIZATION_SUMMARY", default=True)
 _EMIT_QUERY_DEBUG = env_util.env_flag("ACTIONS_EMIT_QUERY_DEBUG", default=False)
 _VISUALIZATION_CONTINUATION_INTENTS = {
     "generate_visualization",
@@ -193,19 +192,6 @@ def _emit_next_metric_followup(
             },
         ],
     )
-
-
-def _collect_planner_diagnostics() -> Optional[Dict[str, Any]]:
-    # Diagnostics are optional and must never break request handling.
-    try:
-        from src.planners.langchain import pipeline
-
-        diagnostics_any = pipeline.get_plan_cache_diagnostics()
-        if isinstance(diagnostics_any, dict):
-            return cast(Dict[str, Any], diagnostics_any)
-    except Exception:
-        logger.debug("Planner diagnostics unavailable", exc_info=True)
-    return None
 
 
 def _collect_visualization_thread_messages(events: List[Dict[str, Any]], fallback_limit: int = 12) -> List[str]:
@@ -744,6 +730,7 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
         "user_message": ctx.text,
         "planner_question": planner_question,
         "user_sub": ctx.sender_id,
+        "webapp_job_id": ctx.webapp_job_id,
         "latest_meta": latest_meta,
         "latest_msg": latest_msg,
         "extracted_entities": extracted_entities,
@@ -756,7 +743,6 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
 
 _INTERNAL_TRACE_ID_KEY = "_visualization_trace_id"
 _INTERNAL_PREPARED_PLAN_KEY = "_visualization_prepared_plan"
-_INTERNAL_PLANNER_DIAGNOSTICS_KEY = "_visualization_planner_diagnostics"
 
 
 def _normalize_trace_id(value: Any) -> Optional[str]:
@@ -980,7 +966,6 @@ class ActionOneShotGenerateVisualization(LongAction):
                         )
 
                     ctx.tracker_snapshot[_INTERNAL_PREPARED_PLAN_KEY] = prepared_plan
-                    ctx.tracker_snapshot[_INTERNAL_PLANNER_DIAGNOSTICS_KEY] = _collect_planner_diagnostics()
                     return PreworkResult(
                         events=[SlotSet("awaiting_visualization_clarification", False)],
                         proceed=True,
@@ -1104,7 +1089,6 @@ class ActionOneShotGenerateVisualization(LongAction):
                     )
 
                 ctx.tracker_snapshot[_INTERNAL_PREPARED_PLAN_KEY] = prepared_plan
-                ctx.tracker_snapshot[_INTERNAL_PLANNER_DIAGNOSTICS_KEY] = _collect_planner_diagnostics()
 
                 ctx.say(
                     json_message={
@@ -1167,7 +1151,6 @@ class ActionOneShotGenerateVisualization(LongAction):
     async def work(self, ctx: LongActionContext) -> Any:
         completed_successfully = False
         execution_summary: Optional[Any] = None
-        planner_diagnostics: Optional[Dict[str, Any]] = None
         plan_obj: Optional[lang_schema.AnalysisPlan] = None
         trace_id = _ensure_context_trace_id(ctx)
         language = resolve_language(metadata=ctx.metadata, slots=ctx.slots)
@@ -1176,6 +1159,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                 request_ctx = _extract_request_context(ctx)
                 user_message = cast(str, request_ctx["user_message"])
                 user_sub = cast(str, request_ctx["user_sub"])
+                webapp_job_id = cast(Optional[str], request_ctx.get("webapp_job_id"))
                 language = cast(str, request_ctx.get("language") or "en")
 
                 if _LOG_USER_TEXT:
@@ -1220,11 +1204,9 @@ class ActionOneShotGenerateVisualization(LongAction):
                     ctx.enable_callback_mode()
 
                 prepared_any = ctx.tracker_snapshot.pop(_INTERNAL_PREPARED_PLAN_KEY, None)
-                diagnostics_any = ctx.tracker_snapshot.pop(_INTERNAL_PLANNER_DIAGNOSTICS_KEY, None)
 
                 if isinstance(prepared_any, lang_schema.AnalysisPlan):
                     plan_obj = prepared_any
-                    planner_diagnostics = cast(Optional[Dict[str, Any]], diagnostics_any) if isinstance(diagnostics_any, dict) else None
                     progress("Using prepared plan from prework")
                 else:
                     logger.warning(
@@ -1277,7 +1259,6 @@ class ActionOneShotGenerateVisualization(LongAction):
                     plan_obj = outcome.plan if isinstance(outcome.plan, lang_schema.AnalysisPlan) else None
                     if plan_obj is None:
                         raise RuntimeError("Orchestrator returned proceed without an analysis plan")
-                    planner_diagnostics = _collect_planner_diagnostics()
 
                 if plan_obj is not None:
                     empty_plan_message = _build_empty_plan_clarification(plan_obj, language)
@@ -1309,6 +1290,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         execute_plan_async(
                             plan_obj,
                             user_sub=user_sub,
+                            job_id=webapp_job_id,
                             max_concurrency=_EXECUTOR_MAX_CONCURRENCY,
                             progress_cb=progress,
                             summary_cb=on_summary,
@@ -1444,23 +1426,15 @@ class ActionOneShotGenerateVisualization(LongAction):
                         )
                     )
             finally:
-                if completed_successfully:
-                    if _SHOW_EXECUTION_SUMMARY and execution_summary is not None:
-                        ctx.say(
-                            text=format_execution_summary(
-                                execution_summary,
-                                show_normalization=_SHOW_NORMALIZATION_SUMMARY,
-                                planner_diagnostics=planner_diagnostics,
-                                language=language,
-                            )
-                        )
-                    else:
-                        ctx.say(
-                            text=translate(
-                                "action.visualization.success_complete",
-                                language=language,
-                            )
-                        )
+                # _build_confirmation_message already sent the "here's your
+                # X" confirmation above (unconditionally, right after
+                # completed_successfully is set) -- this only adds anything
+                # when there's a genuine caveat (skipped/failed stats) to
+                # report, never a second redundant "here's your chart".
+                if completed_successfully and _SHOW_EXECUTION_SUMMARY and execution_summary is not None:
+                    caveat = format_execution_summary(execution_summary, language=language, include_opening_line=False)
+                    if caveat:
+                        ctx.say(text=caveat)
                     if plan_obj is not None:
                         _emit_next_metric_followup(ctx=ctx, plan_obj=plan_obj, language=language)
                 ctx.done()

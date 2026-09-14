@@ -11,6 +11,7 @@ import requests
 
 from src.shared import ssot_loader
 from src.util import env as env_util
+from src.util.keycloak_service_account import get_service_account_token_or_raise
 from src.util.logging_utils import log_context
 
 logger = logging.getLogger(__name__)
@@ -63,7 +64,7 @@ class ProxyHttpRequestPayload(TypedDict):
 
 
 class ProxyRequestPayload(TypedDict):
-    senderId: str
+    jobId: str
     target: str
     request: ProxyHttpRequestPayload
 
@@ -95,14 +96,12 @@ class AnalyticsCenterClient:
     def __init__(
         self,
         proxy_url: str,
-        action_server_token: str,
         target: str = "analytics",
         timeout_seconds: int = 30,
         retry_attempts: int = 2,
         retry_backoff_seconds: float = 0.6,
     ):
         self.proxy_url = proxy_url
-        self.action_server_token = action_server_token
         self.target = target
         self.timeout_seconds = timeout_seconds
         self.retry_attempts = max(0, int(retry_attempts))
@@ -188,6 +187,7 @@ class AnalyticsCenterClient:
     def _request_via_proxy(
         self,
         user_sub: str,
+        job_id: Optional[str],
         path: str,
         query: Dict[str, Any],
         request_name: str,
@@ -195,15 +195,20 @@ class AnalyticsCenterClient:
         raise_on_error: bool = False,
     ) -> Optional[Dict[str, Any]]:
         trace_label = self._require_trace_id(trace_id, request_name)
+        if not job_id:
+            raise AnalyticsCenterError(
+                kind="missing_job_id",
+                message="A jobId is required to identify this request; none is available "
+                "in synchronous/shell execution mode.",
+            )
         headers = {
             "Content-Type": "application/json",
-            "x-action-server-token": self.action_server_token,
+            "Authorization": f"Bearer {get_service_account_token_or_raise()}",
+            "x-trace-id": trace_label,
         }
-        headers["x-trace-id"] = trace_label
 
         request_payload: ProxyRequestPayload = {
-            # senderId carries conversation routing identity (for example thread scoping).
-            "senderId": user_sub,
+            "jobId": job_id,
             "target": self.target,
             "request": {
                 "path": path,
@@ -426,6 +431,7 @@ class AnalyticsCenterClient:
     def list_providers(
         self,
         user_sub: str,
+        job_id: Optional[str],
         trace_id: str,
         limit: int = 50,
         offset: int = 0,
@@ -450,6 +456,7 @@ class AnalyticsCenterClient:
 
         payload_dict = self._request_via_proxy(
             user_sub=user_sub,
+            job_id=job_id,
             path="/api/rest/analytics-center/providers",
             query=query,
             request_name="list_providers",
@@ -509,6 +516,7 @@ class AnalyticsCenterClient:
     def list_provider_groups(
         self,
         user_sub: str,
+        job_id: Optional[str],
         trace_id: str,
         limit: int = 50,
         offset: int = 0,
@@ -524,6 +532,7 @@ class AnalyticsCenterClient:
 
         payload_dict = self._request_via_proxy(
             user_sub=user_sub,
+            job_id=job_id,
             path="/api/rest/analytics-center/provider-groups",
             query=query,
             request_name="list_provider_groups",
@@ -580,7 +589,7 @@ class AnalyticsCenterClient:
             )
             return None
 
-    def get_myself(self, user_sub: str, trace_id: str, raise_on_error: bool = False) -> Optional[Dict[str, Any]]:
+    def get_myself(self, user_sub: str, job_id: Optional[str], trace_id: str, raise_on_error: bool = False) -> Optional[Dict[str, Any]]:
         """Retrieve details for the current authenticated user.
 
         Mirrors analytics-center GET /myself.
@@ -588,6 +597,7 @@ class AnalyticsCenterClient:
 
         return self._request_via_proxy(
             user_sub=user_sub,
+            job_id=job_id,
             path="/api/rest/analytics-center/myself",
             query={},
             request_name="get_myself",
@@ -608,6 +618,7 @@ class AnalyticsCenterClient:
     def resolve_my_default_scope(
         self,
         user_sub: str,
+        job_id: Optional[str],
         trace_id: str,
         raise_on_error: bool = False,
     ) -> Optional[MineScopeResult]:
@@ -618,7 +629,7 @@ class AnalyticsCenterClient:
         - settings.currentProviderGroup.id
         """
 
-        myself = self.get_myself(user_sub=user_sub, trace_id=trace_id, raise_on_error=raise_on_error)
+        myself = self.get_myself(user_sub=user_sub, job_id=job_id, trace_id=trace_id, raise_on_error=raise_on_error)
         if not isinstance(myself, dict):
             return None
 
@@ -642,6 +653,7 @@ class AnalyticsCenterClient:
     def list_countries(
         self,
         user_sub: str,
+        job_id: Optional[str],
         trace_id: str,
         limit: int = 300,
         offset: int = 0,
@@ -657,6 +669,7 @@ class AnalyticsCenterClient:
 
         payload_dict = self._request_via_proxy(
             user_sub=user_sub,
+            job_id=job_id,
             path="/api/rest/analytics-center/countries",
             query=query,
             request_name="list_countries",
@@ -694,6 +707,7 @@ class AnalyticsCenterClient:
     def resolve_country_code(
         self,
         user_sub: str,
+        job_id: Optional[str],
         country_input: str,
         trace_id: str,
         raise_on_error: bool = False,
@@ -713,6 +727,7 @@ class AnalyticsCenterClient:
         normalized = raw.lower()
         countries_page = self.list_countries(
             user_sub=user_sub,
+            job_id=job_id,
             limit=300,
             offset=0,
             trace_id=trace_id,
@@ -736,11 +751,10 @@ class AnalyticsCenterClient:
 
 
 def get_analytics_center_client() -> AnalyticsCenterClient:
-    proxy_url, action_server_token = env_util.require_all_env("RASA_PROXY_URL", "ACTION_SERVER_TOKEN")
+    proxy_url = env_util.require_any_env("RASA_PROXY_URL")
     target = env_util.require_any_env("RASA_PROXY_ANALYTICS_TARGET")
     target_val = target if isinstance(target, str) and target.strip() else "analytics"
     return AnalyticsCenterClient(
         proxy_url=proxy_url,
-        action_server_token=action_server_token,
         target=target_val,
     )

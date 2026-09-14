@@ -43,5 +43,12 @@ Rules:
 - If out of scope, return decision="reject" with a short message.
 - Never ask the user to clarify or provide time_scope, time_range, grouping_dimension, sex, or stroke_type — these are optional and should be accepted if present, not rejected.
 - Prefer resolving metrics from VALID_METRIC_CANDIDATES_JSON before asking.
+- If ENTITIES_JSON already contains a resolved metric, never second-guess or
+  re-split that metric based on connector words ("or"/"and") appearing inside
+  USER_QUESTION's own phrasing of it -- a metric's natural-language name can
+  itself contain "or"/"and" (e.g. "stroke unit or intensive care" is one
+  metric, not a request to choose between two). Only treat a metric as
+  genuinely ambiguous when ENTITIES_JSON does NOT already contain a resolved
+  metric for it.
 - When a date entity contains only a year (e.g. "2026"), expand it to a full-year range: two DateFilters — operator GE with value "{{year}}-01-01" AND operator LE with value "{{year}}-12-31".
 - Do not include markdown or prose outside JSON.

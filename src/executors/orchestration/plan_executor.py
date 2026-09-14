@@ -12,12 +12,12 @@ from src.domain.dto.charts.types import ChartSeries
 from src.domain.dto.execution_summary import ExecutionBatchSummary, ExecutionSummary
 from src.domain.dto.response import VisualizationResponse
 from src.domain.graphql.request import BooleanFilter as GQLBooleanFilter
-from src.domain.graphql.request import DataOrigin, TimePeriod, default_time_bounds
 from src.domain.graphql.request import DateFilter as GQLDateFilter
 from src.domain.graphql.request import IntegerFilter as GQLIntegerFilter
 from src.domain.graphql.request import LogicalFilter as GQLLogicalFilter
 from src.domain.graphql.request import SexFilter as GQLSexFilter
 from src.domain.graphql.request import StrokeFilter as GQLStrokeFilter
+from src.domain.graphql.request import TimePeriod, default_time_bounds
 from src.domain.langchain.schema import AnalysisPlan, StatisticalTestSpec
 from src.executors.graphql.client import GraphQLProxyClient
 from src.executors.mapping.chart_builder import build_chart_dto
@@ -55,13 +55,9 @@ logger = logging.getLogger(__name__)
 # Privacy/safety defaults:
 # - Avoid logging raw GraphQL queries by default.
 _LOG_GRAPHQL_QUERY = env_util.env_flag("EXECUTOR_LOG_GRAPHQL_QUERY", default=False)
-_EMIT_COMPILER_DIAGNOSTICS = env_util.env_flag(
-    "EXECUTOR_EMIT_COMPILER_DIAGNOSTICS", default=False
-)
+_EMIT_COMPILER_DIAGNOSTICS = env_util.env_flag("EXECUTOR_EMIT_COMPILER_DIAGNOSTICS", default=False)
 _INCLUDE_GENERAL_STATS = env_util.env_flag("EXECUTOR_INCLUDE_GENERAL_STATS", default=True)
-_STRICT_MODE = env_util.env_flag(
-    "ANALYTICS_STRICT_MODE", default=False
-) or env_util.env_flag("EXECUTOR_STRICT_MODE", default=False)
+_STRICT_MODE = env_util.env_flag("ANALYTICS_STRICT_MODE", default=False) or env_util.env_flag("EXECUTOR_STRICT_MODE", default=False)
 
 
 def _parse_positive_int_env(name: str, raw_value: str, minimum: int) -> int:
@@ -85,47 +81,27 @@ def _parse_timeout_env(name: str, raw_value: str, minimum: int) -> int:
         raise ValueError(f"{name} must be >= {minimum}, got: {parsed}")
     return parsed
 
-_executor_default_concurrency_raw = (
-    env_util.get_env("EXECUTOR_DEFAULT_MAX_CONCURRENCY", default="4") or "4"
-)
-_executor_default_concurrency = _parse_positive_int_env(
-    "EXECUTOR_DEFAULT_MAX_CONCURRENCY", _executor_default_concurrency_raw, 1
-)
+
+_executor_default_concurrency_raw = env_util.get_env("EXECUTOR_DEFAULT_MAX_CONCURRENCY", default="4") or "4"
+_executor_default_concurrency = _parse_positive_int_env("EXECUTOR_DEFAULT_MAX_CONCURRENCY", _executor_default_concurrency_raw, 1)
 _EXECUTOR_DEFAULT_MAX_CONCURRENCY = _executor_default_concurrency
 
-_executor_sync_concurrency_raw = (
-    env_util.get_env("EXECUTOR_SYNC_MAX_CONCURRENCY", default="1") or "1"
-)
-_executor_sync_concurrency = _parse_positive_int_env(
-    "EXECUTOR_SYNC_MAX_CONCURRENCY", _executor_sync_concurrency_raw, 1
-)
+_executor_sync_concurrency_raw = env_util.get_env("EXECUTOR_SYNC_MAX_CONCURRENCY", default="1") or "1"
+_executor_sync_concurrency = _parse_positive_int_env("EXECUTOR_SYNC_MAX_CONCURRENCY", _executor_sync_concurrency_raw, 1)
 _EXECUTOR_SYNC_MAX_CONCURRENCY = _executor_sync_concurrency
 
-proxy_url, action_server_token = env_util.require_all_env(
-    "RASA_PROXY_URL", "ACTION_SERVER_TOKEN"
-)
+proxy_url = env_util.require_any_env("RASA_PROXY_URL")
 graphql_target = env_util.require_any_env("RASA_PROXY_GRAPHQL_TARGET")
 
-_graphql_timeout_raw = (
-    env_util.get_env("EXECUTOR_GRAPHQL_TIMEOUT_SECONDS", default="30") or "30"
-)
-_graphql_timeout_seconds = _parse_timeout_env(
-    "EXECUTOR_GRAPHQL_TIMEOUT_SECONDS", _graphql_timeout_raw, 5
-)
+_graphql_timeout_raw = env_util.get_env("EXECUTOR_GRAPHQL_TIMEOUT_SECONDS", default="30") or "30"
+_graphql_timeout_seconds = _parse_timeout_env("EXECUTOR_GRAPHQL_TIMEOUT_SECONDS", _graphql_timeout_raw, 5)
 
-_origin_scope_timeout_raw = (
-    env_util.get_env("EXECUTOR_ORIGIN_SCOPE_TIMEOUT_SECONDS", default="25") or "25"
-)
-_ORIGIN_SCOPE_TIMEOUT_SECONDS = _parse_timeout_env(
-    "EXECUTOR_ORIGIN_SCOPE_TIMEOUT_SECONDS", _origin_scope_timeout_raw, 5
-)
+_origin_scope_timeout_raw = env_util.get_env("EXECUTOR_ORIGIN_SCOPE_TIMEOUT_SECONDS", default="25") or "25"
+_ORIGIN_SCOPE_TIMEOUT_SECONDS = _parse_timeout_env("EXECUTOR_ORIGIN_SCOPE_TIMEOUT_SECONDS", _origin_scope_timeout_raw, 5)
 
 client = GraphQLProxyClient(
     proxy_url=proxy_url,
-    action_server_token=action_server_token,
-    target=graphql_target
-    if isinstance(graphql_target, str) and graphql_target.strip()
-    else "graphql",
+    target=graphql_target if isinstance(graphql_target, str) and graphql_target.strip() else "graphql",
     timeout_seconds=_graphql_timeout_seconds,
     connect_timeout_seconds=5,
     max_total_timeout_seconds=_graphql_timeout_seconds + 5,
@@ -250,18 +226,13 @@ def _serialize_case_filter_input(filter_obj: Optional[Any]) -> Optional[Dict[str
         }
 
     raise VisualizationExecutionError(
-        user_message=(
-            "I could not run the statistical test because one of the cohort filters "
-            "has an unsupported format. Please refine the request and try again."
-        ),
+        user_message=("I could not run the statistical test because one of the cohort filters has an unsupported format. Please refine the request and try again."),
         reason="invalid_statistical_filter",
         code="EXEC_STATS_INVALID_FILTER",
     )
 
 
-def _has_distinct_metric_cohorts(
-    metric_a: Optional[Any], metric_b: Optional[Any]
-) -> bool:
+def _has_distinct_metric_cohorts(metric_a: Optional[Any], metric_b: Optional[Any]) -> bool:
     if metric_a is None or metric_b is None:
         return False
 
@@ -289,9 +260,7 @@ def _has_distinct_metric_cohorts(
     label_a = getattr(metric_a_scope, "label", None)
     label_b = getattr(metric_b_scope, "label", None)
     if isinstance(label_a, str) and isinstance(label_b, str):
-        return bool(
-            label_a.strip() and label_b.strip() and label_a.strip() != label_b.strip()
-        )
+        return bool(label_a.strip() and label_b.strip() and label_a.strip() != label_b.strip())
 
     return False
 
@@ -301,10 +270,7 @@ def _translate_mann_whitney_metrics(metrics: List[Any], trace_id: str) -> List[s
     metric_values = [metric.metric for metric in metrics if metric.metric.strip()]
     if not metric_values:
         raise VisualizationExecutionError(
-            user_message=(
-                "I can run Mann-Whitney U only when a metric is explicitly provided. "
-                "Please specify the metric to compare."
-            ),
+            user_message=("I can run Mann-Whitney U only when a metric is explicitly provided. Please specify the metric to compare."),
             reason="missing_statistical_metric",
             code="EXEC_STATS_MISSING_METRIC",
             trace_id=trace_id,
@@ -323,10 +289,7 @@ def _translate_mann_whitney_metrics(metrics: List[Any], trace_id: str) -> List[s
             translated_metrics.append(gql_name)
     if ineligible:
         raise VisualizationExecutionError(
-            user_message=(
-                "I cannot run Mann-Whitney U for unsupported metric(s): "
-                f"{', '.join(ineligible)}. Please choose a supported metric."
-            ),
+            user_message=(f"I cannot run Mann-Whitney U for unsupported metric(s): {', '.join(ineligible)}. Please choose a supported metric."),
             reason="ineligible_statistical_metric",
             code="EXEC_STATS_INELIGIBLE_METRIC",
             trace_id=trace_id,
@@ -337,9 +300,7 @@ def _translate_mann_whitney_metrics(metrics: List[Any], trace_id: str) -> List[s
     return translated_metrics
 
 
-def _label_from_date_bounds(
-    start_date: Optional[str], end_date: Optional[str], fallback: str
-) -> str:
+def _label_from_date_bounds(start_date: Optional[str], end_date: Optional[str], fallback: str) -> str:
     if not start_date or not end_date:
         return fallback
     quarter_lookup = {
@@ -361,6 +322,7 @@ def _execute_mann_whitney_query(
     user_sub: str,
     trace_id: str,
     label_a: str,
+    job_id: Optional[str] = None,
     label_b: str,
     data_origin_payload_a: Dict[str, Any],
     data_origin_payload_b: Dict[str, Any],
@@ -400,6 +362,7 @@ query MannWhitney($metric: [StatisticsMetricEnum!]!, $cohortA: CohortFilterInput
     payload = client.query_raw(
         query_str=query,
         user_sub=user_sub,
+        job_id=job_id,
         variables=variables,
         trace_id=trace_id,
         raise_on_error=False,
@@ -421,9 +384,7 @@ query MannWhitney($metric: [StatisticsMetricEnum!]!, $cohortA: CohortFilterInput
         first_error = payload_errors[0]
         if isinstance(first_error, dict):
             first_error_dict = cast(Dict[str, Any], first_error)
-            error_message = str(
-                first_error_dict.get("message") or "GraphQL returned an error"
-            )
+            error_message = str(first_error_dict.get("message") or "GraphQL returned an error")
         else:
             error_message = str(first_error)
         return [
@@ -479,9 +440,7 @@ query MannWhitney($metric: [StatisticsMetricEnum!]!, $cohortA: CohortFilterInput
         u_stat_any = row.get("uStatistic")
         u_stat = float(u_stat_any) if isinstance(u_stat_any, (int, float)) else None
         significant_any = row.get("significant")
-        significant = (
-            bool(significant_any) if isinstance(significant_any, bool) else None
-        )
+        significant = bool(significant_any) if isinstance(significant_any, bool) else None
 
         cohort_a = cast(Dict[str, Any], row.get("cohortA") or {})
         cohort_b = cast(Dict[str, Any], row.get("cohortB") or {})
@@ -517,34 +476,21 @@ query MannWhitney($metric: [StatisticsMetricEnum!]!, $cohortA: CohortFilterInput
             reason="empty_statistical_cohort",
             clarification_type="analysis_plan",
             clarification_options=[],
-            user_message=(
-                "I could not find any providers in one or both cohorts for that Mann-Whitney U test. "
-                "Please choose different cohorts or a broader scope."
-            ),
+            user_message=("I could not find any providers in one or both cohorts for that Mann-Whitney U test. Please choose different cohorts or a broader scope."),
             trace_id=trace_id,
         )
 
     return out
 
 
-def _can_pair_temporal_mann_whitney_tests(
-    test_a: StatisticalTestSpec, test_b: StatisticalTestSpec
-) -> bool:
+def _can_pair_temporal_mann_whitney_tests(test_a: StatisticalTestSpec, test_b: StatisticalTestSpec) -> bool:
     if test_a.group_by is not None or test_b.group_by is not None:
         return False
     if test_a.filters is None or test_b.filters is None:
         return False
 
-    metrics_a = [
-        m.metric.strip().upper()
-        for m in (test_a.metrics or [])
-        if m.metric and m.metric.strip()
-    ]
-    metrics_b = [
-        m.metric.strip().upper()
-        for m in (test_b.metrics or [])
-        if m.metric and m.metric.strip()
-    ]
+    metrics_a = [m.metric.strip().upper() for m in (test_a.metrics or []) if m.metric and m.metric.strip()]
+    metrics_b = [m.metric.strip().upper() for m in (test_b.metrics or []) if m.metric and m.metric.strip()]
     if not metrics_a or not metrics_b:
         return False
     return metrics_a == metrics_b
@@ -555,31 +501,24 @@ def _execute_temporal_pair_mann_whitney(
     test_b: StatisticalTestSpec,
     user_sub: str,
     trace_id: str,
+    job_id: Optional[str] = None,
 ) -> List[StatisticalTestResult]:
     metrics = list(test_a.metrics or [])
     metric_values = _translate_mann_whitney_metrics(metrics, trace_id)
 
     metric_a = metrics[0] if len(metrics) > 0 else None
     metric_b = metrics[1] if len(metrics) > 1 else None
-    shared_origin = (
-        (metric_a.data_origin if metric_a is not None else None)
-        or (metric_b.data_origin if metric_b is not None else None)
-    )
+    shared_origin = (metric_a.data_origin if metric_a is not None else None) or (metric_b.data_origin if metric_b is not None else None)
     if shared_origin is None:
         raise VisualizationExecutionError(
-            user_message=(
-                "Please specify both cohorts explicitly for the Mann-Whitney U test, "
-                "including the hospitals or groups you want to compare."
-            ),
+            user_message=("Please specify both cohorts explicitly for the Mann-Whitney U test, including the hospitals or groups you want to compare."),
             reason="missing_statistical_cohorts",
             code="EXEC_STATS_MISSING_COHORTS",
             trace_id=trace_id,
             clarification_type="analysis_plan",
             clarification_options=[],
         )
-    data_origin_payload = cast(Any, shared_origin).model_dump(
-        by_alias=True, exclude_none=True
-    )
+    data_origin_payload = cast(Any, shared_origin).model_dump(by_alias=True, exclude_none=True)
 
     filter_a = to_gql_filter(test_a.filters)
     filter_b = to_gql_filter(test_b.filters)
@@ -589,16 +528,11 @@ def _execute_temporal_pair_mann_whitney(
     label_a = _label_from_date_bounds(start_a, end_a, "Cohort A")
     label_b = _label_from_date_bounds(start_b, end_b, "Cohort B")
 
-    shared_start_candidates = [
-        candidate for candidate in [start_a, start_b] if candidate
-    ]
+    shared_start_candidates = [candidate for candidate in [start_a, start_b] if candidate]
     shared_end_candidates = [candidate for candidate in [end_a, end_b] if candidate]
     if not shared_start_candidates or not shared_end_candidates:
         raise VisualizationExecutionError(
-            user_message=(
-                "Temporal Mann-Whitney U requires explicit start and end dates "
-                "for both cohorts."
-            ),
+            user_message=("Temporal Mann-Whitney U requires explicit start and end dates for both cohorts."),
             reason="missing_statistical_date_bounds",
             code="EXEC_STATS_MISSING_DATE_BOUNDS",
             trace_id=trace_id,
@@ -613,6 +547,7 @@ def _execute_temporal_pair_mann_whitney(
     results = _execute_mann_whitney_query(
         metric_values=metric_values,
         user_sub=user_sub,
+        job_id=job_id,
         trace_id=trace_id,
         label_a=label_a,
         label_b=label_b,
@@ -657,10 +592,7 @@ def _cohort_viability_status_for_result(result: StatisticalTestResult) -> Option
 def _ensure_mann_whitney_cohort_viability(results: List[StatisticalTestResult], trace_id: str) -> List[StatisticalTestResult]:
     if not results:
         raise VisualizationExecutionError(
-            user_message=(
-                "I could not find data in one or both cohorts for that Mann-Whitney U test. "
-                "Please choose different cohorts or broaden the date range."
-            ),
+            user_message=("I could not find data in one or both cohorts for that Mann-Whitney U test. Please choose different cohorts or broaden the date range."),
             reason="empty_statistical_cohort",
             code="EXEC_STATS_EMPTY_COHORT",
             trace_id=trace_id,
@@ -679,10 +611,7 @@ def _ensure_mann_whitney_cohort_viability(results: List[StatisticalTestResult], 
 
     if unauthorized and not has_viable_success:
         raise VisualizationExecutionError(
-            user_message=(
-                "I cannot access one or both selected cohorts for this Mann-Whitney U test. "
-                "Please choose cohorts you have permission to query."
-            ),
+            user_message=("I cannot access one or both selected cohorts for this Mann-Whitney U test. Please choose cohorts you have permission to query."),
             reason="unauthorized_statistical_cohort",
             code="EXEC_STATS_UNAUTHORIZED_COHORT",
             trace_id=trace_id,
@@ -692,10 +621,7 @@ def _ensure_mann_whitney_cohort_viability(results: List[StatisticalTestResult], 
 
     if not has_viable_success:
         raise VisualizationExecutionError(
-            user_message=(
-                "I could not find data in one or both selected cohorts for this Mann-Whitney U test. "
-                "Please broaden the date range or pick different cohorts."
-            ),
+            user_message=("I could not find data in one or both selected cohorts for this Mann-Whitney U test. Please broaden the date range or pick different cohorts."),
             reason="empty_statistical_cohort",
             code="EXEC_STATS_EMPTY_COHORT",
             trace_id=trace_id,
@@ -740,9 +666,7 @@ def _dedupe_statistical_results(
     return deduped
 
 
-def _execute_mann_whitney_test(
-    test: StatisticalTestSpec, user_sub: str, trace_id: str
-) -> List[StatisticalTestResult]:
+def _execute_mann_whitney_test(test: StatisticalTestSpec, user_sub: str, trace_id: str, job_id: Optional[str] = None) -> List[StatisticalTestResult]:
     base_filter = to_gql_filter(test.filters)
 
     metrics = test.metrics or []
@@ -769,24 +693,13 @@ def _execute_mann_whitney_test(
         origin_b = cast(Any, metric_b_origin)
         data_origin_payload_a = origin_a.model_dump(by_alias=True, exclude_none=True)
         data_origin_payload_b = origin_b.model_dump(by_alias=True, exclude_none=True)
-        if (
-            metric_a_scope is not None
-            and metric_a_scope.label
-            and metric_a_scope.label.strip()
-        ):
+        if metric_a_scope is not None and metric_a_scope.label and metric_a_scope.label.strip():
             label_a = metric_a_scope.label.strip()
-        if (
-            metric_b_scope is not None
-            and metric_b_scope.label
-            and metric_b_scope.label.strip()
-        ):
+        if metric_b_scope is not None and metric_b_scope.label and metric_b_scope.label.strip():
             label_b = metric_b_scope.label.strip()
     else:
         raise VisualizationExecutionError(
-            user_message=(
-                "Mann-Whitney U requires two explicit cohorts. Please provide "
-                "both cohort A and cohort B with distinct scopes."
-            ),
+            user_message=("Mann-Whitney U requires two explicit cohorts. Please provide both cohort A and cohort B with distinct scopes."),
             reason="missing_statistical_cohorts",
             code="EXEC_STATS_MISSING_COHORTS",
             trace_id=trace_id,
@@ -796,10 +709,7 @@ def _execute_mann_whitney_test(
 
     if data_origin_payload_a is None or data_origin_payload_b is None:
         raise VisualizationExecutionError(
-            user_message=(
-                "Please provide explicit cohort origins for both cohorts, such as "
-                "provider IDs or provider-group IDs."
-            ),
+            user_message=("Please provide explicit cohort origins for both cohorts, such as provider IDs or provider-group IDs."),
             reason="missing_statistical_cohorts",
             code="EXEC_STATS_MISSING_COHORTS",
             trace_id=trace_id,
@@ -816,6 +726,7 @@ def _execute_mann_whitney_test(
     results = _execute_mann_whitney_query(
         metric_values=metric_values,
         user_sub=user_sub,
+        job_id=job_id,
         trace_id=trace_id,
         label_a=label_a,
         label_b=label_b,
@@ -829,9 +740,7 @@ def _execute_mann_whitney_test(
     return _ensure_mann_whitney_cohort_viability(results, trace_id)
 
 
-def _execute_statistical_tests(
-    plan: AnalysisPlan, user_sub: str, trace_id: str
-) -> List[StatisticalTestResult]:
+def _execute_statistical_tests(plan: AnalysisPlan, user_sub: str, trace_id: str, job_id: Optional[str] = None) -> List[StatisticalTestResult]:
     tests = plan.statistical_tests or []
     results: List[StatisticalTestResult] = []
 
@@ -843,31 +752,22 @@ def _execute_statistical_tests(
             if index + 1 < len(tests):
                 next_test = tests[index + 1]
                 next_type = (next_test.test_type or "").upper().strip()
-                if (
-                    next_type == "MANN_WHITNEY_U_TEST"
-                    and _can_pair_temporal_mann_whitney_tests(test, next_test)
-                ):
+                if next_type == "MANN_WHITNEY_U_TEST" and _can_pair_temporal_mann_whitney_tests(test, next_test):
                     results.extend(
                         _execute_temporal_pair_mann_whitney(
                             test_a=test,
                             test_b=next_test,
                             user_sub=user_sub,
+                            job_id=job_id,
                             trace_id=trace_id,
                         )
                     )
                     index += 2
                     continue
-            results.extend(
-                _execute_mann_whitney_test(
-                    test=test, user_sub=user_sub, trace_id=trace_id
-                )
-            )
+            results.extend(_execute_mann_whitney_test(test=test, user_sub=user_sub, job_id=job_id, trace_id=trace_id))
         else:
             raise VisualizationExecutionError(
-                user_message=(
-                    "I cannot run the requested statistical test type yet. "
-                    "Please use a supported test type."
-                ),
+                user_message=("I cannot run the requested statistical test type yet. Please use a supported test type."),
                 reason="unsupported_statistical_test_type",
                 code="EXEC_STATS_UNSUPPORTED_TEST_TYPE",
                 trace_id=trace_id,
@@ -879,9 +779,7 @@ def _execute_statistical_tests(
     return results
 
 
-def _validate_statistical_tests_readiness(
-    plan: AnalysisPlan, trace_id: str
-) -> None:
+def _validate_statistical_tests_readiness(plan: AnalysisPlan, trace_id: str) -> None:
     tests = list(plan.statistical_tests or [])
     if not tests:
         return
@@ -897,20 +795,14 @@ def _validate_statistical_tests_readiness(
         if index + 1 < len(tests):
             next_test = tests[index + 1]
             next_type = (next_test.test_type or "").upper().strip()
-            if (
-                next_type == "MANN_WHITNEY_U_TEST"
-                and _can_pair_temporal_mann_whitney_tests(test, next_test)
-            ):
+            if next_type == "MANN_WHITNEY_U_TEST" and _can_pair_temporal_mann_whitney_tests(test, next_test):
                 index += 2
                 continue
 
         metrics = list(test.metrics or [])
         if len(metrics) < 2:
             raise VisualizationExecutionError(
-                user_message=(
-                    "I can run Mann-Whitney U only when you provide two explicit cohorts "
-                    "to compare. Please specify both cohort A and cohort B."
-                ),
+                user_message=("I can run Mann-Whitney U only when you provide two explicit cohorts to compare. Please specify both cohort A and cohort B."),
                 reason="missing_statistical_cohorts",
                 code="EXEC_STATS_MISSING_COHORTS",
                 trace_id=trace_id,
@@ -922,10 +814,7 @@ def _validate_statistical_tests_readiness(
         second = metrics[1]
         if not _has_distinct_metric_cohorts(first, second):
             raise VisualizationExecutionError(
-                user_message=(
-                    "Mann-Whitney U requires two distinct cohorts. Please provide "
-                    "different cohort filters or scopes for each comparison group."
-                ),
+                user_message=("Mann-Whitney U requires two distinct cohorts. Please provide different cohort filters or scopes for each comparison group."),
                 reason="missing_statistical_cohorts",
                 code="EXEC_STATS_MISSING_COHORTS",
                 trace_id=trace_id,
@@ -936,9 +825,7 @@ def _validate_statistical_tests_readiness(
         index += 1
 
 
-def _emit_compiler_diagnostics(
-    progress_cb: Optional[Callable[[str], None]], payload: Dict[str, Any], trace_id: str
-) -> None:
+def _emit_compiler_diagnostics(progress_cb: Optional[Callable[[str], None]], payload: Dict[str, Any], trace_id: str) -> None:
     log_context_fields: Dict[str, Any] = {
         "trace_id": trace_id,
         "event": "plan_executor.compiler_diagnostics",
@@ -951,9 +838,7 @@ def _emit_compiler_diagnostics(
         extra={"log_context": log_context_fields},
     )
     if progress_cb is not None:
-        progress_cb(
-            f"Compiler diagnostics: {json.dumps(payload, default=str, sort_keys=True)}"
-        )
+        progress_cb(f"Compiler diagnostics: {json.dumps(payload, default=str, sort_keys=True)}")
 
 
 class VisualizationExecutionError(RuntimeError):
@@ -993,13 +878,20 @@ class VisualizationExecutionError(RuntimeError):
         self.clarification_options = list(clarification_options or [])
 
 
-def _to_execution_error(
-    failure_reasons: List[str], trace_id: Optional[str] = None
-) -> VisualizationExecutionError:
-    reason_set = set(failure_reasons)
-    service_unavailable_count = sum(
-        1 for reason in failure_reasons if reason == "service_unavailable"
+def _invalid_plan_semantics_error(exc: Exception, trace_id: str) -> VisualizationExecutionError:
+    return VisualizationExecutionError(
+        user_message=("I could not apply the requested grouping for this chart. Please try grouping by stroke type, sex, age, NIHSS, or a time period."),
+        reason="invalid_plan_semantics",
+        code="EXEC_PLAN_INVALID_SEMANTICS",
+        trace_id=trace_id,
+        clarification_type="analysis_plan",
+        clarification_options=[],
     )
+
+
+def _to_execution_error(failure_reasons: List[str], trace_id: Optional[str] = None) -> VisualizationExecutionError:
+    reason_set = set(failure_reasons)
+    service_unavailable_count = sum(1 for reason in failure_reasons if reason == "service_unavailable")
     if "no_data" in reason_set:
         return VisualizationExecutionError(
             user_message="The analytics service returned no data for this visualization request. Try a wider date range or different filters.",
@@ -1017,9 +909,7 @@ def _to_execution_error(
     if "service_unavailable" in reason_set:
         if service_unavailable_count >= 2:
             return VisualizationExecutionError(
-                user_message=(
-                    "The analytics platform appears to be experiencing an outage right now (upstream service unavailable). Please try again in a moment."
-                ),
+                user_message=("The analytics platform appears to be experiencing an outage right now (upstream service unavailable). Please try again in a moment."),
                 reason="service_unavailable",
                 code="EXEC_SERVICE_UNAVAILABLE",
                 trace_id=trace_id,
@@ -1064,10 +954,7 @@ def _format_iso_date(value: str) -> str:
         parsed = datetime.fromisoformat(token.replace("Z", "+00:00"))
     except ValueError as exc:
         raise VisualizationExecutionError(
-            user_message=(
-                "I could not parse a required date for this request. "
-                "Please provide dates in ISO format (YYYY-MM-DD)."
-            ),
+            user_message=("I could not parse a required date for this request. Please provide dates in ISO format (YYYY-MM-DD)."),
             reason="invalid_time_period",
             code="EXEC_INVALID_TIME_PERIOD",
         ) from exc
@@ -1086,10 +973,7 @@ def _parse_iso_date(value: str) -> datetime:
         return datetime.fromisoformat(token.replace("Z", "+00:00"))
     except ValueError as exc:
         raise VisualizationExecutionError(
-            user_message=(
-                "I could not parse a required date for this request. "
-                "Please provide dates in ISO format (YYYY-MM-DD)."
-            ),
+            user_message=("I could not parse a required date for this request. Please provide dates in ISO format (YYYY-MM-DD)."),
             reason="invalid_time_period",
             code="EXEC_INVALID_TIME_PERIOD",
         ) from exc
@@ -1137,7 +1021,7 @@ def _sampled_period_from_specs(specs: List[RequestSpec]) -> Optional[str]:
     return None
 
 
-def execute_plan(plan: AnalysisPlan, user_sub: str) -> VisualizationResponse:
+def execute_plan(plan: AnalysisPlan, user_sub: str, job_id: Optional[str] = None) -> VisualizationResponse:
     """Sync wrapper that delegates to the async implementation with concurrency=1.
 
     - If no event loop is running, run the coroutine directly with asyncio.run.
@@ -1147,6 +1031,7 @@ def execute_plan(plan: AnalysisPlan, user_sub: str) -> VisualizationResponse:
     coro = execute_plan_async(
         plan,
         user_sub,
+        job_id=job_id,
         max_concurrency=_EXECUTOR_SYNC_MAX_CONCURRENCY,
         trace_id=trace_id,
     )
@@ -1167,6 +1052,7 @@ QueryDebugCallback = Callable[[Dict[str, Any]], None]
 @dataclass(frozen=True)
 class ExecutionContext:
     user_sub: str
+    job_id: Optional[str]
     semaphore: asyncio.Semaphore
     progress_cb: Optional[ProgressCallback]
     log_graphql_query: bool
@@ -1179,9 +1065,7 @@ class RequestExecutionResult:
     series: List[ChartSeries]
 
 
-def _emit_progress(
-    context: ExecutionContext, completed: int, total: int, prefix: str = "Fetching data"
-) -> None:
+def _emit_progress(context: ExecutionContext, completed: int, total: int, prefix: str = "Fetching data") -> None:
     if context.progress_cb is None:
         return
     if total > 0:
@@ -1217,6 +1101,7 @@ async def _execute_request_spec(
         request_failures=request_failures,
         client=client,
         user_sub=context.user_sub,
+        job_id=context.job_id,
         trace_id=trace_id,
         semaphore=context.semaphore,
         log_graphql_query=context.log_graphql_query,
@@ -1260,9 +1145,7 @@ async def _execute_specs_concurrent(
         result = await task
         results.append(result)
         completed += 1
-        _emit_progress(
-            context, completed=completed, total=total_requests, prefix=progress_prefix
-        )
+        _emit_progress(context, completed=completed, total=total_requests, prefix=progress_prefix)
 
     return results
 
@@ -1290,9 +1173,7 @@ async def _execute_specs_sequential(
         )
         results.append(result)
         completed += 1
-        _emit_progress(
-            context, completed=completed, total=total_requests, prefix=progress_prefix
-        )
+        _emit_progress(context, completed=completed, total=total_requests, prefix=progress_prefix)
 
     return results
 
@@ -1300,6 +1181,7 @@ async def _execute_specs_sequential(
 async def execute_plan_async(
     plan: AnalysisPlan,
     user_sub: str,
+    job_id: Optional[str] = None,
     max_concurrency: Optional[int] = None,
     progress_cb: Optional[ProgressCallback] = None,
     summary_cb: Optional[SummaryCallback] = None,
@@ -1331,16 +1213,14 @@ async def execute_plan_async(
                 resolve_plan_metric_origins,
                 plan=plan,
                 user_sub=user_sub,
+                job_id=job_id,
                 trace_id=trace_id_resolved,
             ),
             timeout=_ORIGIN_SCOPE_TIMEOUT_SECONDS,
         )
     except asyncio.TimeoutError as exc:
         raise VisualizationExecutionError(
-            user_message=(
-                "I could not resolve your hospital scope in time. "
-                "Please try again or specify both cohorts explicitly."
-            ),
+            user_message=("I could not resolve your hospital scope in time. Please try again or specify both cohorts explicitly."),
             reason="origin_scope_resolution_timeout",
             code="EXEC_ORIGIN_SCOPE_TIMEOUT",
             trace_id=trace_id_resolved,
@@ -1371,18 +1251,23 @@ async def execute_plan_async(
 
     plan_charts = coalesce(plan.charts, [])
     response: VisualizationResponse = VisualizationResponse(trace_id=trace_id_resolved)
-    estimated_queries = estimate_query_count_for_plan(plan)
+    try:
+        estimated_queries = estimate_query_count_for_plan(plan)
+    except ValueError as exc:
+        logger.warning(
+            "Invalid plan semantics while estimating query count",
+            exc_info=True,
+            extra={"trace_id": trace_id_resolved},
+        )
+        raise _invalid_plan_semantics_error(exc, trace_id=trace_id_resolved) from exc
     actual_queries = 0
     summary_batches: List[ExecutionBatchSummary] = []
 
-    resolved_concurrency = (
-        _EXECUTOR_DEFAULT_MAX_CONCURRENCY
-        if max_concurrency is None
-        else max(1, int(max_concurrency))
-    )
+    resolved_concurrency = _EXECUTOR_DEFAULT_MAX_CONCURRENCY if max_concurrency is None else max(1, int(max_concurrency))
     sem = asyncio.Semaphore(resolved_concurrency)
     execution_context = ExecutionContext(
         user_sub=user_sub,
+        job_id=job_id,
         semaphore=sem,
         progress_cb=progress_cb,
         log_graphql_query=_LOG_GRAPHQL_QUERY,
@@ -1398,11 +1283,17 @@ async def execute_plan_async(
                 "metric_count": len(planChart.metrics),
             },
         )
-        metric_requests, derived_axes, metric_data_origins, metric_scope_labels = (
-            build_metric_requests(plan_chart=planChart)
-        )
+        metric_requests, derived_axes, metric_data_origins, metric_scope_labels = build_metric_requests(plan_chart=planChart)
 
-        compiled_grouping = compile_chart_grouping(planChart)
+        try:
+            compiled_grouping = compile_chart_grouping(planChart)
+        except ValueError as exc:
+            logger.warning(
+                "Invalid plan semantics while compiling chart grouping",
+                exc_info=True,
+                extra={"trace_id": trace_id_resolved},
+            )
+            raise _invalid_plan_semantics_error(exc, trace_id=trace_id_resolved) from exc
         dims: List[Dimension] = compiled_grouping.dimensions
 
         for batch in compiled_grouping.batches:
@@ -1440,9 +1331,7 @@ async def execute_plan_async(
                     chart_type=planChart.chart_type,
                     server_groupby=gb_field,
                     filter_dimensions=[d.kind.__name__ for d in filter_dims],
-                    batched_time_period_count=len(batched_time_periods)
-                    if batched_time_enabled
-                    else 0,
+                    batched_time_period_count=len(batched_time_periods) if batched_time_enabled else 0,
                     query_count=total_requests,
                 )
             )
@@ -1481,16 +1370,10 @@ async def execute_plan_async(
             # one scope) is dropped rather than failing the entire chart -- the
             # other requested scopes still render. Only total failure (every
             # scope empty) is fatal; see the `if not all_series` check below.
-            empty_scope_labels = [
-                _request_scope_label(result.spec)
-                for result in request_results
-                if not result.series
-            ]
+            empty_scope_labels = [_request_scope_label(result.spec) for result in request_results if not result.series]
             if empty_scope_labels:
                 missing_labels = ", ".join(sorted(set(empty_scope_labels)))
-                request_warnings.append(
-                    f"No data returned for: {missing_labels}. This scope was omitted from the chart."
-                )
+                request_warnings.append(f"No data returned for: {missing_labels}. This scope was omitted from the chart.")
 
             for warning_msg in request_warnings:
                 if warning_msg not in response.warnings:
@@ -1529,9 +1412,7 @@ async def execute_plan_async(
                     },
                 )
                 if request_failures:
-                    raise _to_execution_error(
-                        request_failures, trace_id=trace_id_resolved
-                    )
+                    raise _to_execution_error(request_failures, trace_id=trace_id_resolved)
                 raise _to_execution_error(["no_data"], trace_id=trace_id_resolved)
             vis_chart = build_chart_dto(
                 plan_chart=planChart,
@@ -1546,13 +1427,7 @@ async def execute_plan_async(
         # Statistical tests issue backend requests outside chart batching; include
         # them in the summary count so stats-only plans are not reported as zero.
         actual_queries += len(plan.statistical_tests)
-        response.stats.extend(
-            _dedupe_statistical_results(
-                _execute_statistical_tests(
-                    plan=plan, user_sub=user_sub, trace_id=trace_id_resolved
-                )
-            )
-        )
+        response.stats.extend(_dedupe_statistical_results(_execute_statistical_tests(plan=plan, user_sub=user_sub, job_id=job_id, trace_id=trace_id_resolved)))
 
     stats_count = len(response.stats)
     stats_skipped = sum(1 for result in response.stats if result.status == "skipped")

@@ -3,6 +3,7 @@
 
 # Re-include root files we need
 !requirements.txt
+!requirements-dev.txt
 !Dockerfile
 !README.md
 !LICENSE

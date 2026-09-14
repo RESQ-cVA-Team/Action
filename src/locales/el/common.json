@@ -1,7 +1,7 @@
 {
   "action": {
     "common": {
-      "error_with_context": "❌ {message} (Κωδικός σφάλματος: {code}, Trace ID: {trace_id})"
+      "error_with_context": "{message}"
     },
     "visualization": {
       "clarify_default": "Χρειάζομαι λίγο περισσότερες λεπτομέρειες πριν δημιουργήσω την οπτικοποίηση.",
@@ -9,7 +9,7 @@
       "empty_plan_clarify": "Δεν μπόρεσα να συνθέσω εκτελέσιμο πλάνο ανάλυσης από αυτό το αίτημα. Ζητήστε γράφημα με μετρική και τύπο γραφήματος ή, για στατιστική σύγκριση, δώστε δύο ρητές ομάδες προς σύγκριση.",
       "reject_default": "Αυτό το αίτημα είναι εκτός της ροής οπτικοποίησης.",
       "non_visualization_intent": "Μπορώ να βοηθήσω με αιτήματα οπτικοποίησης. Ζητήστε να δημιουργηθεί ένα γράφημα ή να ενημερωθεί το τρέχον γράφημα.",
-      "success_complete": "✅ Η δημιουργία οπτικοποίησης ολοκληρώθηκε.",
+      "success_complete": "Ολοκληρώθηκε!",
       "internal_error_routing": "Σφάλμα δρομολόγησης αιτήματος οπτικοποίησης: {error}",
       "internal_error_generating": "Σφάλμα δημιουργίας οπτικοποίησης: {error}",
       "internal_error_guided": "Σφάλμα δημιουργίας καθοδηγούμενης οπτικοποίησης: {error}"
@@ -65,38 +65,16 @@
       "prompt_chart_type": "Δεν μπόρεσα να αντιστοιχίσω αυτόν τον τύπο γραφήματος. Εισάγετε έγκυρο τύπο γραφήματος ή παραλείψτε."
     },
     "summary": {
-      "complete": "✅ Η δημιουργία οπτικοποίησης ολοκληρώθηκε.",
-      "trace_id": "Trace ID: {trace_id}",
-      "plan_produced_one_chart": "Το πλάνο παρήγαγε 1 γράφημα.",
-      "plan_produced_many_charts": "Το πλάνο παρήγαγε {chart_count} γραφήματα.",
-      "plan_produced_one_stat": "Το πλάνο παρήγαγε 1 αποτέλεσμα στατιστικού τεστ.",
-      "plan_produced_many_stats": "Το πλάνο παρήγαγε {stats_count} αποτελέσματα στατιστικών τεστ.",
-      "stats_skipped": "Παραλείφθηκαν {stats_skipped} αποτέλεσμα(τα) στατιστικών τεστ.",
-      "stats_errors": "{stats_errors} αποτέλεσμα(τα) στατιστικών τεστ επέστρεψαν σφάλμα.",
-      "planner_cache_hit": "Cache planner: hit (επαναχρησιμοποίηση προηγούμενου πλάνου).",
-      "planner_cache_miss": "Cache planner: miss (δημιουργήθηκε νέο πλάνο).",
-      "queried_once": "Έκανα ένα ερώτημα στην υπηρεσία analytics.",
-      "queried_many": "Έκανα {actual} ερωτήματα στην υπηρεσία analytics.",
-      "planner_estimate": "Η εκτίμηση του planner ήταν {estimated} αίτημα(τα).",
-      "plan_normalization": "Κανονικοποίηση πλάνου:",
-      "charts_transition": "Γραφήματα: {charts_in} -> {charts_out}",
-      "detail_dropped_charts": "αφαιρέθηκαν {dropped_charts} κενό(ά) γράφημα(τα)",
-      "detail_metrics_transition": "μετρικές {metrics_in} -> {metrics_out}",
-      "detail_dropped_metrics": "αφαιρέθηκαν {dropped_metrics} κενή(ές) μετρική(ές)",
-      "detail_normalized_metric_codes": "κανονικοποιήθηκαν {metric_code_norm} κωδικοί μετρικών",
-      "detail_normalized_chart_types": "κανονικοποιήθηκαν {chart_type_norm} τύποι γραφημάτων",
-      "detail_applied_chart_fallback": "εφαρμόστηκαν {chart_type_fallback} fallback τύπου γραφήματος",
-      "detail_removed_groupby_duplicates": "αφαιρέθηκαν {deduped_groupby} διπλές εγγραφές group-by",
-      "detail_normalized_groupby_fields": "κανονικοποιήθηκαν {normalized_groupby_fields} πεδία canonical group-by",
-      "detail_dropped_groupby_fields": "αφαιρέθηκαν {dropped_groupby_fields} μη έγκυρα πεδία group-by",
-      "detail_cleaned_text_fields": "καθαρίστηκαν {normalized_text} πεδία κειμένου",
-      "no_structural_changes": "Δεν χρειάστηκαν δομικές αλλαγές.",
-      "what_i_queried": "Τι ερωτήματα έστειλα:",
-      "request_count": "{query_count} αίτημα(τα)",
-      "grouped_by": "ομαδοποίηση κατά {groupby}",
-      "across_periods": "σε {periods} χρονική(ές) περίοδο(ους)",
-      "split_by": "διαχωρισμός κατά {filters}",
-      "remaining_batches": "... και {remaining} ακόμα batch(es) ερωτημάτων"
+      "complete_chart_one": "Ορίστε το γράφημά σας.",
+      "complete_chart_many": "Ορίστε τα {chart_count} γραφήματά σας.",
+      "complete_stat_one": "Ορίστε τη στατιστική σας σύγκριση.",
+      "complete_stat_many": "Ορίστε τις {stats_count} στατιστικές συγκρίσεις σας.",
+      "complete_mixed": "Ορίστε το γράφημα και τη στατιστική σύγκριση.",
+      "complete_fallback": "Ολοκληρώθηκε!",
+      "stats_skipped_one": "Μία στατιστική δοκιμή παραλείφθηκε.",
+      "stats_skipped_many": "{stats_skipped} στατιστικές δοκιμές παραλείφθηκαν.",
+      "stats_errors_one": "Μία στατιστική δοκιμή δεν ολοκληρώθηκε.",
+      "stats_errors_many": "{stats_errors} στατιστικές δοκιμές δεν ολοκληρώθηκαν."
     }
   }
 }

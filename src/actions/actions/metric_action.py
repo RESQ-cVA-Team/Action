@@ -179,7 +179,7 @@ class ActionExplainMetric(Action):  # pyright: ignore
                     ),
                 )
                 language = resolve_language(tracker)
-                dispatcher.utter_message(text=f"❌ {friendly_metric_error(e, language=language)}")
+                dispatcher.utter_message(text=friendly_metric_error(e, language=language))
                 if _ECHO_INTERNAL_ERRORS:
                     dispatcher.utter_message(
                         text=translate(

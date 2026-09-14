@@ -14,10 +14,18 @@ class LongActionContext:
         sender_id: str,
         tracker_snapshot: Dict[str, Any],
         dispatcher: Optional[DispatcherLike] = None,
+        webapp_job_id: Optional[str] = None,
     ):
         self.sender_id = sender_id
         self.tracker_snapshot = tracker_snapshot
         self.dispatcher = dispatcher
+        # The identity-mapping jobId minted by Webapp for this callback (distinct
+        # from self._job_id below, which is Action's own internal lock/release
+        # correlation id) -- forwarded to GraphQLProxyClient calls so Webapp's
+        # rasa-proxy can resolve identity without trusting a caller-supplied
+        # senderId. None outside callback mode (e.g. synchronous/rasa-shell
+        # execution, which has no callback URL to extract it from).
+        self.webapp_job_id = webapp_job_id
         self._pending_events: List[Dict[str, Any]] = []
         # Optional progress callback used in callback mode to stream
         # individual messages back to the frontend as they are emitted.

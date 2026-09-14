@@ -1,0 +1,57 @@
+{
+  "category": "basic",
+  "user_utterance": "Show me a bar chart of imaging at first hospital",
+  "entities_detected": {
+    "chart_type": [
+      "BAR"
+    ],
+    "metric": [
+      "AA_IMAGING"
+    ],
+    "group_by": [
+      "HOSPITAL"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "BAR",
+        "semantics": {
+          "intent": "DISTRIBUTION",
+          "measure": {
+            "type": "DISTRIBUTION",
+            "percentile": null
+          },
+          "splits": null,
+          "time": null,
+          "x_axis": {
+            "role": "METRIC_VALUE",
+            "metric": "AA_IMAGING",
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": null
+          },
+          "y_axis": {
+            "role": "COUNT",
+            "metric": null,
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": null
+          }
+        },
+        "filters": null,
+        "metrics": [
+          {
+            "metric": "AA_IMAGING",
+            "data_origin": null,
+            "origin_scope": null
+          }
+        ],
+        "numeric_resolution": null
+      }
+    ],
+    "statistical_tests": null
+  }
+}

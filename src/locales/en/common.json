@@ -1,7 +1,7 @@
 {
   "action": {
     "common": {
-      "error_with_context": "❌ {message}"
+      "error_with_context": "{message}"
     },
     "visualization": {
       "clarify_default": "I need a bit more detail before I can generate a visualization.",
@@ -9,7 +9,7 @@
       "empty_plan_clarify": "I could not derive an executable analysis plan from that request. Please ask for a chart with metric and chart type, or for statistics provide two explicit cohorts to compare.",
       "reject_default": "This request is outside the visualization flow.",
       "non_visualization_intent": "I can help with visualization requests. Try asking to generate a chart, or ask to update the current chart.",
-      "success_complete": "✅ Visualization generation complete.",
+      "success_complete": "Done!",
       "internal_error_routing": "Error routing visualization request: {error}",
       "internal_error_generating": "Error generating visualization: {error}",
       "internal_error_guided": "Error generating guided visualization: {error}",
@@ -68,38 +68,16 @@
       "prompt_chart_type": "I couldn't match that chart type. Please enter a valid chart type or skip."
     },
     "summary": {
-      "complete": "✅ Visualization generation complete.",
-      "trace_id": "Trace ID: {trace_id}",
-      "plan_produced_one_chart": "Plan produced 1 chart.",
-      "plan_produced_many_charts": "Plan produced {chart_count} charts.",
-      "plan_produced_one_stat": "Plan produced 1 statistical test result.",
-      "plan_produced_many_stats": "Plan produced {stats_count} statistical test results.",
-      "stats_skipped": "Skipped {stats_skipped} statistical test result(s).",
-      "stats_errors": "{stats_errors} statistical test result(s) returned errors.",
-      "planner_cache_hit": "Planner cache: hit (reused a previously generated plan).",
-      "planner_cache_miss": "Planner cache: miss (generated a fresh plan).",
-      "queried_once": "I queried the analytics service once.",
-      "queried_many": "I queried the analytics service {actual} times.",
-      "planner_estimate": "Planner estimate was {estimated} request(s).",
-      "plan_normalization": "Plan normalization:",
-      "charts_transition": "Charts: {charts_in} -> {charts_out}",
-      "detail_dropped_charts": "dropped {dropped_charts} empty chart(s)",
-      "detail_metrics_transition": "metrics {metrics_in} -> {metrics_out}",
-      "detail_dropped_metrics": "dropped {dropped_metrics} empty metric(s)",
-      "detail_normalized_metric_codes": "normalized {metric_code_norm} metric code(s)",
-      "detail_normalized_chart_types": "normalized {chart_type_norm} chart type(s)",
-      "detail_applied_chart_fallback": "applied {chart_type_fallback} chart type fallback(s)",
-      "detail_removed_groupby_duplicates": "removed {deduped_groupby} duplicate group-by entries",
-      "detail_normalized_groupby_fields": "normalized {normalized_groupby_fields} canonical group-by field(s)",
-      "detail_dropped_groupby_fields": "dropped {dropped_groupby_fields} invalid group-by field(s)",
-      "detail_cleaned_text_fields": "cleaned {normalized_text} text field(s)",
-      "no_structural_changes": "No structural changes were needed.",
-      "what_i_queried": "What I queried:",
-      "request_count": "{query_count} request(s)",
-      "grouped_by": "grouped by {groupby}",
-      "across_periods": "across {periods} time period(s)",
-      "split_by": "split by {filters}",
-      "remaining_batches": "... and {remaining} more query batch(es)"
+      "complete_chart_one": "Here's your chart.",
+      "complete_chart_many": "Here are your {chart_count} charts.",
+      "complete_stat_one": "Here's your statistical comparison.",
+      "complete_stat_many": "Here are your {stats_count} statistical comparisons.",
+      "complete_mixed": "Here's your chart and statistical comparison.",
+      "complete_fallback": "Done!",
+      "stats_skipped_one": "One statistical test was skipped.",
+      "stats_skipped_many": "{stats_skipped} statistical tests were skipped.",
+      "stats_errors_one": "One statistical test couldn't be completed.",
+      "stats_errors_many": "{stats_errors} statistical tests couldn't be completed."
     }
   }
 }

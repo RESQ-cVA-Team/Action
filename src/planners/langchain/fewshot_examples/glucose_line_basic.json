@@ -1,0 +1,54 @@
+{
+  "category": "basic",
+  "user_utterance": "Show me a line graph of initial glucose",
+  "entities_detected": {
+    "metric": [
+      "GLUCOSE"
+    ],
+    "chart_type": [
+      "LINE"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "LINE",
+        "semantics": {
+          "intent": "DISTRIBUTION",
+          "measure": {
+            "type": "DISTRIBUTION",
+            "percentile": null
+          },
+          "splits": null,
+          "time": null,
+          "x_axis": {
+            "role": "METRIC_VALUE",
+            "metric": "GLUCOSE",
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": null
+          },
+          "y_axis": {
+            "role": "COUNT",
+            "metric": null,
+            "label": null,
+            "unit": null,
+            "aggregation": null,
+            "grain": null
+          }
+        },
+        "filters": null,
+        "metrics": [
+          {
+            "metric": "GLUCOSE",
+            "data_origin": null,
+            "origin_scope": null
+          }
+        ],
+        "numeric_resolution": null
+      }
+    ],
+    "statistical_tests": null
+  }
+}

@@ -40,7 +40,7 @@ def test_build_pagination_buttons_first_page_has_only_next() -> None:
 
     assert len(buttons) == 1
     assert buttons[0]["title"] == "Next"
-    assert buttons[0]["payload"] == "list hospitals 50"
+    assert buttons[0]["payload"] == '/list_hospitals{"offset": 50}'
 
 
 def test_build_pagination_buttons_middle_page_has_previous_and_next() -> None:
@@ -48,9 +48,9 @@ def test_build_pagination_buttons_middle_page_has_previous_and_next() -> None:
 
     assert len(buttons) == 2
     assert buttons[0]["title"] == "Previous"
-    assert buttons[0]["payload"] == "list hospitals 0"
+    assert buttons[0]["payload"] == '/list_hospitals{"offset": 0}'
     assert buttons[1]["title"] == "Next"
-    assert buttons[1]["payload"] == "list hospitals 100"
+    assert buttons[1]["payload"] == '/list_hospitals{"offset": 100}'
 
 
 def test_build_pagination_buttons_last_page_has_only_previous() -> None:
@@ -58,4 +58,4 @@ def test_build_pagination_buttons_last_page_has_only_previous() -> None:
 
     assert len(buttons) == 1
     assert buttons[0]["title"] == "Previous"
-    assert buttons[0]["payload"] == "list hospitals 50"
+    assert buttons[0]["payload"] == '/list_hospitals{"offset": 50}'

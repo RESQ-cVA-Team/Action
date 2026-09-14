@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, cast
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.domain.langchain.schema import TIME_INTERVALS, AnalysisPlan, AndFilter, ChartType, DataOriginSpec, DateFilter, MetricSpec, OriginScopeSpec, StatisticalTestSpec
+from src.domain.langchain.schema import TIME_INTERVALS, AnalysisPlan, AndFilter, ChartType, DataOriginSpec, DateFilter, MetricSpec, OriginScopeSpec, SplitSpec, StatisticalTestSpec
 from src.planners.langchain.llm_factory import create_chat_llm
 from src.planners.langchain.pipeline import (
     _PLANNER_REQUEST_TIMEOUT_SECONDS,
@@ -252,6 +252,7 @@ def _generate_plan_with_timeout(
     progress_cb: Optional[Callable[[str], None]] = None,
 ) -> AnalysisPlan:
     """Wrap generate_analysis_plan with timeout protection to prevent indefinite hangs."""
+
     def _call_plan_gen() -> AnalysisPlan:
         result = generate_analysis_plan(
             question=question,
@@ -265,16 +266,14 @@ def _generate_plan_with_timeout(
         if not isinstance(result, AnalysisPlan):
             raise RuntimeError(f"Expected AnalysisPlan but got {type(result).__name__}")
         return cast(AnalysisPlan, result)
-    
+
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_call_plan_gen)
         try:
             return future.result(timeout=_PLAN_GENERATION_TIMEOUT_SECONDS)
         except FuturesTimeoutError as exc:
             future.cancel()
-            raise TimeoutError(
-                f"Plan generation timed out after {_PLAN_GENERATION_TIMEOUT_SECONDS:.1f}s for question: {question[:50]}"
-            ) from exc
+            raise TimeoutError(f"Plan generation timed out after {_PLAN_GENERATION_TIMEOUT_SECONDS:.1f}s for question: {question[:50]}") from exc
 
 
 def _metric_candidates(question: str, limit: int = 8) -> List[str]:
@@ -408,11 +407,7 @@ def _drop_falsely_missing_fields(missing_fields: List[str], entities: Dict[str, 
     so this only overrides objectively-false claims, never a field that
     genuinely needs semantic judgment to consider satisfied.
     """
-    return [
-        field
-        for field in missing_fields
-        if not (field.strip().lower() in _SELF_VERIFIABLE_REQUIRED_FIELDS and _entity_present(entities, field.strip().lower()))
-    ]
+    return [field for field in missing_fields if not (field.strip().lower() in _SELF_VERIFIABLE_REQUIRED_FIELDS and _entity_present(entities, field.strip().lower()))]
 
 
 def _has_statistical_test_signal(question: str, entities: Dict[str, Any]) -> bool:
@@ -567,9 +562,30 @@ def _extract_iso_day_tokens(entities: Dict[str, Any]) -> List[str]:
 def _extract_period_tokens(entities: Dict[str, Any]) -> List[str]:
     tokens: List[str] = []
     month_names = (
-        "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE",
-        "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER",
-        "JAN", "FEB", "MAR", "APR", "JUN", "JUL", "AUG", "SEP", "SEPT", "OCT", "NOV", "DEC",
+        "JANUARY",
+        "FEBRUARY",
+        "MARCH",
+        "APRIL",
+        "MAY",
+        "JUNE",
+        "JULY",
+        "AUGUST",
+        "SEPTEMBER",
+        "OCTOBER",
+        "NOVEMBER",
+        "DECEMBER",
+        "JAN",
+        "FEB",
+        "MAR",
+        "APR",
+        "JUN",
+        "JUL",
+        "AUG",
+        "SEP",
+        "SEPT",
+        "OCT",
+        "NOV",
+        "DEC",
     )
     month_pattern = "(?:" + "|".join(month_names) + ")"
 
@@ -588,9 +604,15 @@ def _extract_period_tokens(entities: Dict[str, Any]) -> List[str]:
             tokens.append(token)
             continue
         if token in {
-            "THIS YEAR", "LAST YEAR", "PREVIOUS YEAR",
-            "THIS QUARTER", "LAST QUARTER", "PREVIOUS QUARTER",
-            "THIS MONTH", "LAST MONTH", "PREVIOUS MONTH",
+            "THIS YEAR",
+            "LAST YEAR",
+            "PREVIOUS YEAR",
+            "THIS QUARTER",
+            "LAST QUARTER",
+            "PREVIOUS QUARTER",
+            "THIS MONTH",
+            "LAST MONTH",
+            "PREVIOUS MONTH",
         }:
             tokens.append(token)
 
@@ -681,11 +703,7 @@ def _validate_statistical_test_support(question: str) -> Optional[VisualizationR
     return VisualizationRequestOutcome(
         decision="reject",
         reason="unsupported_statistical_test",
-        message=(
-            f"I can't run a {unsupported_name} test yet -- Mann-Whitney U is the only "
-            "statistical test currently supported. Ask me to compare two cohorts with "
-            "a Mann-Whitney U test instead."
-        ),
+        message=(f"I can't run a {unsupported_name} test yet -- Mann-Whitney U is the only statistical test currently supported. Ask me to compare two cohorts with a Mann-Whitney U test instead."),
         clarification_type=None,
         clarification_options=[],
         missing_fields=[],
@@ -695,6 +713,81 @@ def _validate_statistical_test_support(question: str) -> Optional[VisualizationR
 # Raw group_by entity values the NLU lookup table recognises that map directly onto a
 # SplitSpec split kind rather than a time grain or a GroupByType.yml canonical field.
 _DIRECT_SPLIT_KIND_GROUP_BY_TOKENS = {"STROKE_TYPE", "SEX_TYPE", "SEX", "AGE", "NIHSS"}
+_DIRECT_SPLIT_KIND_BY_CANONICAL_FIELD = {
+    "STROKE_TYPE": "STROKE_TYPE",
+    "SEX_TYPE": "SEX",
+    "SEX": "SEX",
+    "AGE": "AGE",
+    "NIHSS": "NIHSS",
+}
+
+_REDUNDANT_SELF_SPLIT_METRICS_BY_KIND = {
+    "STROKE_TYPE": {"STROKE_TYPE"},
+    "SEX": {"SEX_TYPE"},
+}
+
+
+def _normalize_plan_semantic_splits(plan: AnalysisPlan) -> AnalysisPlan:
+    """Normalize planner split semantics into compiler-supported forms.
+
+    The retrieval compiler expects direct split kinds (STROKE_TYPE/SEX/AGE/NIHSS)
+    for category fan-out. Some generated plans encode these as CANONICAL splits,
+    which are valid schema but can fail compilation at runtime.
+    """
+    charts = list(plan.charts or [])
+    if not charts:
+        return plan
+
+    for chart in charts:
+        semantics = chart.semantics
+        if semantics is None or not semantics.splits:
+            continue
+
+        metric_codes = {(metric.metric or "").strip().upper() for metric in chart.metrics or [] if isinstance(metric.metric, str) and metric.metric.strip()}
+
+        normalized_splits: List[SplitSpec] = []
+        changed = False
+        for split in semantics.splits:
+            kind = (split.kind or "").strip().upper()
+
+            # If the metric itself is already an enum distribution axis, splitting by
+            # that exact same axis creates a self-split that distorts chart shape.
+            if kind in _REDUNDANT_SELF_SPLIT_METRICS_BY_KIND:
+                redundant_metrics = _REDUNDANT_SELF_SPLIT_METRICS_BY_KIND[kind]
+                if any(metric in metric_codes for metric in redundant_metrics):
+                    changed = True
+                    continue
+
+            if kind != "CANONICAL":
+                normalized_splits.append(split)
+                continue
+
+            field = (split.field or "").strip().upper()
+            mapped_kind = _DIRECT_SPLIT_KIND_BY_CANONICAL_FIELD.get(field)
+            if mapped_kind is None and not field and "STROKE_TYPE" in metric_codes:
+                mapped_kind = "STROKE_TYPE"
+
+            if mapped_kind is None:
+                normalized_splits.append(split)
+                continue
+
+            redundant_metrics = _REDUNDANT_SELF_SPLIT_METRICS_BY_KIND.get(mapped_kind)
+            if redundant_metrics and any(metric in metric_codes for metric in redundant_metrics):
+                changed = True
+                continue
+
+            replacement = SplitSpec(
+                kind=mapped_kind,
+                categories=list(split.categories) if split.categories is not None else None,
+                buckets=list(split.buckets) if split.buckets is not None else None,
+            )
+            normalized_splits.append(replacement)
+            changed = True
+
+        if changed:
+            semantics.splits = normalized_splits or None
+
+    return plan
 
 
 @lru_cache(maxsize=1)
@@ -763,6 +856,14 @@ def _detect_unsupported_risk_factor_filter(question: str, entities: Dict[str, An
     metric_values = [m.upper() for m in _extract_string_list(entities.get("metric"))]
     if "RISK_FACTORS_TYPE" in metric_values:
         return None
+
+    # Valid standalone metrics can legitimately contain the VTE abbreviation in
+    # their canonical names (e.g. VTE_INTERVENTION_AIS). These must not be
+    # mistaken for a risk-factor filter phrase just because the word "vte" is
+    # present in the question.
+    for metric in metric_values:
+        if metric.startswith("VTE_"):
+            return None
 
     for term, label in _risk_factor_filter_terms().items():
         # Leading boundary only (not trailing), so a plural like "smokers"
@@ -846,9 +947,7 @@ def _validate_group_by_support(question: str, entities: Dict[str, Any]) -> Optio
         decision="clarify",
         reason="unsupported_group_by_dimension",
         message=(
-            f"I can't group or split a chart by {names} yet. I can group by stroke type, "
-            "sex, time period (month/quarter/year), EMS prenotification, first contact "
-            "place, IVT department, or INR mode."
+            f"I can't group or split a chart by {names} yet. I can group by stroke type, sex, time period (month/quarter/year), EMS prenotification, first contact place, IVT department, or INR mode."
         ),
         clarification_type="analysis_plan",
         clarification_options=[],
@@ -869,10 +968,7 @@ def _validate_statistical_entity_readiness(question: str, entities: Dict[str, An
         return VisualizationRequestOutcome(
             decision="clarify",
             reason="missing_provider_group_cohorts",
-            message=(
-                "Your request mentions provider groups, but I do not have two provider-group cohorts. "
-                "Please provide provider group A and provider group B explicitly."
-            ),
+            message=("Your request mentions provider groups, but I do not have two provider-group cohorts. Please provide provider group A and provider group B explicitly."),
             clarification_type="analysis_plan",
             clarification_options=[],
             missing_fields=["provider_group_id"],
@@ -882,10 +978,7 @@ def _validate_statistical_entity_readiness(question: str, entities: Dict[str, An
         return VisualizationRequestOutcome(
             decision="clarify",
             reason="missing_provider_cohorts",
-            message=(
-                "Your request mentions providers, but I do not have two provider cohorts. "
-                "Please provide provider A and provider B explicitly."
-            ),
+            message=("Your request mentions providers, but I do not have two provider cohorts. Please provide provider A and provider B explicitly."),
             clarification_type="analysis_plan",
             clarification_options=[],
             missing_fields=["provider_id"],
@@ -899,10 +992,7 @@ def _validate_statistical_entity_readiness(question: str, entities: Dict[str, An
         return VisualizationRequestOutcome(
             decision="clarify",
             reason="missing_statistical_cohorts",
-            message=(
-                "I can run this statistical test only with two explicit cohorts. "
-                "Please provide cohort A and cohort B (for example two providers or provider groups)."
-            ),
+            message=("I can run this statistical test only with two explicit cohorts. Please provide cohort A and cohort B (for example two providers or provider groups)."),
             clarification_type="analysis_plan",
             clarification_options=[],
             missing_fields=["statistical_cohorts"],
@@ -1103,10 +1193,7 @@ def _validate_statistical_plan_readiness(plan: AnalysisPlan) -> Optional[Visuali
             return VisualizationRequestOutcome(
                 decision="clarify",
                 reason="missing_statistical_cohorts",
-                message=(
-                    "I can run Mann-Whitney U only with two explicit cohorts. "
-                    "Please provide cohort A and cohort B to compare."
-                ),
+                message=("I can run Mann-Whitney U only with two explicit cohorts. Please provide cohort A and cohort B to compare."),
                 clarification_type="analysis_plan",
                 clarification_options=[],
                 missing_fields=["statistical_cohorts"],
@@ -1117,10 +1204,7 @@ def _validate_statistical_plan_readiness(plan: AnalysisPlan) -> Optional[Visuali
             return VisualizationRequestOutcome(
                 decision="clarify",
                 reason="missing_statistical_cohorts",
-                message=(
-                    "Mann-Whitney U requires two distinct cohorts. Please provide "
-                    "different cohort filters or scopes for each comparison group."
-                ),
+                message=("Mann-Whitney U requires two distinct cohorts. Please provide different cohort filters or scopes for each comparison group."),
                 clarification_type="analysis_plan",
                 clarification_options=[],
                 missing_fields=["statistical_cohorts"],
@@ -1230,11 +1314,7 @@ def _decision_stage(
     # waved through just because a metric happens to be present too -- that
     # was a real regression caught via CVaLab's webapp_negative_invalid_time_period
     # scenario during this fix's own testing.
-    if (
-        outcome.decision == "reject"
-        and "out_of_scope" in outcome.reason.strip().lower().replace(" ", "_")
-        and any(_entity_present(entities, key) for key in _SCOPE_PROVING_ENTITY_KEYS)
-    ):
+    if outcome.decision == "reject" and "out_of_scope" in outcome.reason.strip().lower().replace(" ", "_") and any(_entity_present(entities, key) for key in _SCOPE_PROVING_ENTITY_KEYS):
         still_missing = [field for field in ("metric", "chart_type") if not _entity_present(entities, field)]
         if still_missing:
             # The LLM's own message text ("This request is not related to...")
@@ -1261,11 +1341,7 @@ def _decision_stage(
             )
 
     # Deterministic safeguard: do not block statistical-test requests on chart_type.
-    if (
-        outcome.decision == "clarify"
-        and _is_missing_chart_type_only(outcome.missing_fields)
-        and _has_statistical_test_signal(question, entities)
-    ):
+    if outcome.decision == "clarify" and _is_missing_chart_type_only(outcome.missing_fields) and _has_statistical_test_signal(question, entities):
         return VisualizationRequestOutcome(
             decision="proceed",
             reason="statistical_test_without_chart_type",
@@ -1372,6 +1448,7 @@ def orchestrate_visualization_request(
             # from unrelated prior turns into the provider/provider-group checks.
             deterministic_plan = _build_deterministic_statistical_plan(question, entities)
             if deterministic_plan is not None:
+                deterministic_plan = _normalize_plan_semantic_splits(deterministic_plan)
                 stats_validation = _validate_statistical_plan_readiness(deterministic_plan)
                 if stats_validation is not None:
                     return stats_validation
@@ -1390,12 +1467,13 @@ def orchestrate_visualization_request(
                 trace_id=trace_id,
                 progress_cb=progress_cb,
             )
+            plan = _normalize_plan_semantic_splits(plan)
             logger.info("Plan generation completed successfully", extra={"plan_type": type(plan).__name__})
 
             logger.info("Starting validation of statistical plan readiness")
             stats_validation = _validate_statistical_plan_readiness(plan)
             logger.info("Statistical validation complete", extra={"validation_result": stats_validation is not None})
-            
+
             if stats_validation is not None:
                 logger.info("Returning statistical validation result")
                 return stats_validation
@@ -1451,9 +1529,7 @@ def orchestrate_visualization_request(
                 decision="clarify",
                 reason="orchestrator_failed",
                 message=(
-                    "I could not produce a valid statistical plan from that request. "
-                    "Please provide a metric, two explicit cohorts (for example two provider groups), "
-                    "and explicit date bounds."
+                    "I could not produce a valid statistical plan from that request. Please provide a metric, two explicit cohorts (for example two provider groups), and explicit date bounds."
                     if _has_statistical_test_signal(question, entities)
                     else "I need a bit more detail before I can continue."
                 ),
