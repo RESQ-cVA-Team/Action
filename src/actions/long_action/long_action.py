@@ -15,7 +15,7 @@ import requests
 from rasa_sdk import Action  # type: ignore
 
 from src.util import env as env_util
-from src.util.keycloak_service_account import get_service_account_token_or_raise, is_configured as _keycloak_service_account_configured
+from src.util.keycloak_service_account import get_service_account_token_or_raise
 from src.util.logging_utils import bind_current_context, log_context
 
 from . import long_action_registry as registry
@@ -139,10 +139,11 @@ def _get_callback_config(tracker: TrackerLike) -> Optional[str]:
     turn.
 
     The callback URL is taken from the incoming message metadata as
-    `metadata.callback_url`. If that is not present or empty, or Action's
-    Keycloak service-account identity (the only auth this callback now
-    sends) isn't configured, callback mode is considered unsupported for
-    this turn.
+    `metadata.callback_url`. If that is not present or empty, callback mode
+    is considered unsupported for this turn. Action's Keycloak service-
+    account identity (the only auth this callback sends) is unconditionally
+    required at import time -- see keycloak_service_account.py -- so it's
+    never a reason to fall back here.
     """
 
     callback_url: Optional[str] = None
@@ -155,20 +156,6 @@ def _get_callback_config(tracker: TrackerLike) -> Optional[str]:
             callback_url = url_val
 
     if not callback_url:
-        return None
-
-    if not _keycloak_service_account_configured():
-        logger.warning(
-            "Callback URL present but Action's Keycloak service-account identity is not "
-            "configured; falling back to synchronous execution",
-            extra={
-                "log_context": {
-                    "callback_endpoint": _callback_endpoint_label(callback_url),
-                    "callback_mode": False,
-                    "misconfiguration": True,
-                }
-            },
-        )
         return None
 
     callback_origin = _normalize_callback_origin(callback_url)

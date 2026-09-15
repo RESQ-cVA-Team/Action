@@ -33,8 +33,8 @@ def _has_required_env() -> bool:
         "LLM_API_KEY",
         "RASA_PROXY_URL",
         "KEYCLOAK_ISSUER",
-        "ACTION_SERVICE_CLIENT_ID",
-        "ACTION_SERVICE_CLIENT_SECRET",
+        "KEYCLOAK_CLIENT_ID",
+        "KEYCLOAK_CLIENT_SECRET",
         "RASA_PROXY_GRAPHQL_TARGET",
     ]
     return all(bool((os.getenv(key) or "").strip()) for key in required)

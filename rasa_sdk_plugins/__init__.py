@@ -39,12 +39,12 @@ def init_hooks(manager: pluggy.PluginManager) -> None:
 # otherwise trigger any action for any sender_id. This plugin hook is the
 # only place this codebase can extend the Sanic app rasa_sdk builds, so the
 # check is added here as request middleware rather than inside rasa_sdk.
-_ACTION_TOKEN = os.getenv("ACTION_TOKEN") or None
+_ACTION_AUTH_TOKEN = os.getenv("ACTION_AUTH_TOKEN") or None
 _ACTION_REQUIRE_AUTH_TOKEN = env_util.env_flag("ACTION_REQUIRE_AUTH_TOKEN", default=True)
-if _ACTION_REQUIRE_AUTH_TOKEN and not _ACTION_TOKEN:
+if _ACTION_REQUIRE_AUTH_TOKEN and not _ACTION_AUTH_TOKEN:
     raise RuntimeError(
-        "ACTION_TOKEN is required when ACTION_REQUIRE_AUTH_TOKEN is enabled. "
-        "Set ACTION_TOKEN or set ACTION_REQUIRE_AUTH_TOKEN=false only for local debugging."
+        "ACTION_AUTH_TOKEN is required when ACTION_REQUIRE_AUTH_TOKEN is enabled. "
+        "Set ACTION_AUTH_TOKEN or set ACTION_REQUIRE_AUTH_TOKEN=false only for local debugging."
     )
 
 
@@ -59,13 +59,13 @@ def attach_sanic_app_extensions(app: Sanic) -> None:
         # few-shot examples, no user data), but "anything reachable gets to
         # trigger it" is still worth closing off.
         is_gated = request.path == "/webhook" or request.path.startswith("/debug/")
-        if not is_gated or not _ACTION_TOKEN:
+        if not is_gated or not _ACTION_AUTH_TOKEN:
             return None
 
         query_token = request.args.get("token")
         auth_header = request.headers.get("Authorization", "")
         header_token = auth_header[7:] if auth_header.startswith("Bearer ") else None
-        if (query_token or header_token) != _ACTION_TOKEN:
+        if (query_token or header_token) != _ACTION_AUTH_TOKEN:
             return response.json({"error": "Unauthorized"}, status=401)
         return None
 
