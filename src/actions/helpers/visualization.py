@@ -114,7 +114,7 @@ def _canonical_metric_from_exact_span(text: str, start: Any, end: Any) -> Option
     return _normalized_canonical_metric_keys().get(norm)
 
 
-def canonicalize_ssot_entities(entities: Dict[str, Any], question: Optional[str] = None) -> Dict[str, Any]:
+def canonicalize_ssot_entities(entities: Dict[str, Any]) -> Dict[str, Any]:
     # Deterministic SSOT canonicalization only (no fallback inference).
     normalized: Dict[str, Any] = {}
     for key, value in entities.items():

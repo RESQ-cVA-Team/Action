@@ -201,7 +201,6 @@ def test_merge_latest_with_thread_entities_keeps_latest_provider_group_ids() -> 
 def test_canonicalize_ssot_entities_does_not_override_extracted_metric_from_question() -> None:
     normalized = canonicalize_ssot_entities(
         {"chart_type": "LINE", "metric": "ICH_TREATMENT_TYPE"},
-        question="Show me a line graph of decompressive craniectomy performed",
     )
 
     assert normalized["metric"] == "ICH_TREATMENT_TYPE"

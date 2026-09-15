@@ -545,11 +545,10 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                 events = tracker.events
                 intent_name = _extract_intent_name_from_user_event(latest_msg)
                 carry_forward = _should_carry_forward_visualization_context(intent_name, events)
-                latest_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg), question=user_message)
+                latest_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg))
                 if carry_forward:
                     extracted_entities = canonicalize_ssot_entities(
                         merge_latest_with_thread_entities(latest_entities, events, fallback_limit=fallback_limit),
-                        question=user_message,
                     )
                     conversation_history = _collect_visualization_thread_messages(events, fallback_limit=fallback_limit)
                 else:
@@ -698,11 +697,10 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
 
     intent_name = _extract_intent_name_from_user_event(latest_msg)
     carry_forward = _should_carry_forward_visualization_context(intent_name, events)
-    latest_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg), question=ctx.text)
+    latest_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg))
     if carry_forward:
         extracted_entities = canonicalize_ssot_entities(
             merge_latest_with_thread_entities(latest_entities, events, fallback_limit=12),
-            question=ctx.text,
         )
         conversation_history = _collect_visualization_thread_messages(events, fallback_limit=12)
         latest_plan_summary = _collect_latest_visualization_plan_summary(events)
