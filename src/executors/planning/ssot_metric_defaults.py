@@ -63,6 +63,47 @@ def _round_up_to_step(value: int, step: int) -> int:
     return int(math.ceil(value / step) * step)
 
 
+def _normalize_bounds_float(lower_bound: float, upper_bound: float) -> tuple[float, float]:
+    resolved_lower = float(lower_bound)
+    resolved_upper = float(upper_bound)
+    if resolved_lower > resolved_upper:
+        resolved_lower, resolved_upper = resolved_upper, resolved_lower
+    return resolved_lower, resolved_upper
+
+
+def _normalize_bounds_int(lower_bound: int, upper_bound: int) -> tuple[int, int]:
+    resolved_lower = int(lower_bound)
+    resolved_upper = int(upper_bound)
+    if resolved_lower > resolved_upper:
+        resolved_lower, resolved_upper = resolved_upper, resolved_lower
+    return resolved_lower, resolved_upper
+
+
+def _resolve_effective_bin_targets(
+    target_bins: int,
+    minimum_bins: int,
+    maximum_bins: int,
+) -> tuple[int, int, int]:
+    effective_minimum = max(1, minimum_bins)
+    effective_maximum = max(effective_minimum, maximum_bins)
+    effective_target = min(max(1, target_bins), effective_maximum)
+    effective_target = max(effective_target, effective_minimum)
+    return effective_minimum, effective_maximum, effective_target
+
+
+def _snap_integer_bounds_to_width(
+    lower_bound: int,
+    upper_bound: int,
+    width: int,
+) -> tuple[int, int, int]:
+    snapped_lower = int(math.floor(lower_bound / width) * width)
+    snapped_upper = int(math.ceil(upper_bound / width) * width)
+    if snapped_upper <= snapped_lower:
+        snapped_upper = snapped_lower + width
+    bin_count = max(1, int((snapped_upper - snapped_lower) / width))
+    return snapped_lower, snapped_upper, bin_count
+
+
 def _nice_bin_width_candidates(raw_width: float) -> list[float]:
     if raw_width <= 0:
         return [1.0]
@@ -126,10 +167,7 @@ def resolve_pretty_distribution_bins(
     that divide the selected span cleanly and produce stable labels like
     "30-40" or "0-2.5" instead of floating-point artifacts.
     """
-    resolved_lower = float(lower_bound)
-    resolved_upper = float(upper_bound)
-    if resolved_lower > resolved_upper:
-        resolved_lower, resolved_upper = resolved_upper, resolved_lower
+    resolved_lower, resolved_upper = _normalize_bounds_float(lower_bound, upper_bound)
 
     span = resolved_upper - resolved_lower
     if span <= 0:
@@ -140,10 +178,11 @@ def resolve_pretty_distribution_bins(
             bin_count=1,
         )
 
-    effective_minimum = max(1, minimum_bins)
-    effective_maximum = max(effective_minimum, maximum_bins)
-    effective_target = min(max(1, target_bins), effective_maximum)
-    effective_target = max(effective_target, effective_minimum)
+    effective_minimum, effective_maximum, effective_target = _resolve_effective_bin_targets(
+        target_bins=target_bins,
+        minimum_bins=minimum_bins,
+        maximum_bins=maximum_bins,
+    )
 
     raw_width = span / float(effective_target)
     candidates = _nice_bin_width_candidates(raw_width)
@@ -185,35 +224,110 @@ def format_distribution_bin_label(start: float, end: float) -> str:
     return f"{_format_decimal_label(float(start_decimal))}-{_format_decimal_label(float(end_decimal))}"
 
 
-def resolve_pretty_distribution_bin_count(
+def _score_integer_width_candidate(
+    lower_bound: int,
+    upper_bound: int,
+    span: int,
+    raw_width: float,
+    target_bins: int,
+    minimum_bins: int,
+    maximum_bins: int,
+    candidate_width: int,
+) -> tuple[float, float, float, float, float, int]:
+    if candidate_width <= 0:
+        return (float("inf"), float("inf"), float("inf"), float("inf"), float("inf"), candidate_width)
+
+    snapped_lower, snapped_upper, bin_count = _snap_integer_bounds_to_width(
+        lower_bound=lower_bound,
+        upper_bound=upper_bound,
+        width=candidate_width,
+    )
+
+    bucket_penalty = 0.0
+    if bin_count < minimum_bins:
+        bucket_penalty = float(minimum_bins - bin_count)
+    elif bin_count > maximum_bins:
+        bucket_penalty = float(bin_count - maximum_bins)
+
+    target_error = abs(bin_count - target_bins)
+    expansion_ratio = ((snapped_upper - snapped_lower) - span) / span if span > 0 else 0.0
+    nice_distance = _nearest_nice_width_distance(float(candidate_width))
+    width_distance = abs(float(candidate_width) - raw_width)
+    return (bucket_penalty, target_error, nice_distance, expansion_ratio, width_distance, candidate_width)
+
+
+def resolve_integer_distribution_bins(
     lower_bound: int,
     upper_bound: int,
     target_bins: int,
     minimum_bins: int = 6,
     maximum_bins: int = 16,
-) -> int:
-    """Return an implicit bin count that keeps the span on readable increments."""
-    resolved_lower = int(lower_bound)
-    resolved_upper = int(upper_bound)
-    if resolved_lower > resolved_upper:
-        resolved_lower, resolved_upper = resolved_upper, resolved_lower
+) -> PrettyDistributionBins:
+    """Return a whole-number-width layout near a target bin count.
+
+    Intended for metrics where whole-number bins are preferred (days, ml,
+    mmHg, mg/dl, etc.). The solver keeps width integral and selects a bin
+    count close to target while limiting over/under-resolution.
+    """
+    resolved_lower, resolved_upper = _normalize_bounds_int(lower_bound, upper_bound)
 
     span = max(0, resolved_upper - resolved_lower)
     if span <= 0:
-        return 1
+        return PrettyDistributionBins(
+            lower_bound=float(resolved_lower),
+            upper_bound=float(resolved_upper),
+            bin_width=1.0,
+            bin_count=1,
+        )
 
-    effective_minimum = max(1, minimum_bins)
-    effective_maximum = max(effective_minimum, maximum_bins)
-    effective_target = min(max(1, target_bins), effective_maximum)
-    effective_target = max(effective_target, effective_minimum)
+    effective_minimum, effective_maximum, effective_target = _resolve_effective_bin_targets(
+        target_bins=target_bins,
+        minimum_bins=minimum_bins,
+        maximum_bins=maximum_bins,
+    )
 
-    return min(
-        range(effective_minimum, effective_maximum + 1),
-        key=lambda count: (
-            _nearest_nice_width_distance(span / float(count)),
-            abs(count - effective_target),
-            abs((span / float(count)) - (span / float(effective_target))),
+    raw_width = span / float(effective_target)
+    candidate_widths: set[int] = set()
+
+    for count in range(1, (effective_maximum * 2) + 1):
+        width_from_count = max(1, int(round(span / float(count))))
+        for delta in (-2, -1, 0, 1, 2):
+            candidate = width_from_count + delta
+            if candidate >= 1:
+                candidate_widths.add(candidate)
+
+    for width in _nice_bin_width_candidates(raw_width):
+        rounded = int(round(width))
+        if rounded >= 1 and math.isclose(width, float(rounded), abs_tol=1e-9):
+            candidate_widths.add(rounded)
+
+    if not candidate_widths:
+        candidate_widths.add(1)
+
+    best_width = min(
+        candidate_widths,
+        key=lambda width: _score_integer_width_candidate(
+            lower_bound=resolved_lower,
+            upper_bound=resolved_upper,
+            span=span,
+            raw_width=raw_width,
+            target_bins=effective_target,
+            minimum_bins=effective_minimum,
+            maximum_bins=effective_maximum,
+            candidate_width=width,
         ),
+    )
+
+    snapped_lower, snapped_upper, bin_count = _snap_integer_bounds_to_width(
+        lower_bound=resolved_lower,
+        upper_bound=resolved_upper,
+        width=best_width,
+    )
+    return PrettyDistributionBins(
+        lower_bound=float(snapped_lower),
+        upper_bound=float(snapped_upper),
+        bin_width=float(best_width),
+        bin_count=bin_count,
     )
 
 
@@ -222,8 +336,11 @@ def resolve_implicit_distribution_layout(
     upper_bound: int,
     target_bins: int = _IMPLICIT_DISTRIBUTION_TARGET_BINS,
 ) -> PrettyDistributionBins:
-    """Return the snapped default layout used for implicit numeric distributions."""
-    return resolve_pretty_distribution_bins(
+    """Return the snapped default layout used for implicit numeric distributions.
+
+    Uses whole-number bucket widths and a fluid bin count close to the target.
+    """
+    return resolve_integer_distribution_bins(
         lower_bound=lower_bound,
         upper_bound=upper_bound,
         target_bins=target_bins,
@@ -237,10 +354,7 @@ def resolve_score_distribution_layout(
     upper_bound: int,
 ) -> PrettyDistributionBins:
     """Return a one-point-per-score layout for discrete score metrics."""
-    resolved_lower = int(lower_bound)
-    resolved_upper = int(upper_bound)
-    if resolved_lower > resolved_upper:
-        resolved_lower, resolved_upper = resolved_upper, resolved_lower
+    resolved_lower, resolved_upper = _normalize_bounds_int(lower_bound, upper_bound)
 
     bin_count = max(1, (resolved_upper - resolved_lower) + 1)
     return PrettyDistributionBins(
@@ -421,10 +535,7 @@ def resolve_minutes_distribution_layout(
     upper_bound: int,
 ) -> PrettyDistributionBins:
     """Return a fixed-width 5-minute layout for minute-unit metrics."""
-    resolved_lower = int(lower_bound)
-    resolved_upper = int(upper_bound)
-    if resolved_lower > resolved_upper:
-        resolved_lower, resolved_upper = resolved_upper, resolved_lower
+    resolved_lower, resolved_upper = _normalize_bounds_int(lower_bound, upper_bound)
 
     snapped_lower = _round_down_to_step(resolved_lower, _MINUTES_BIN_WIDTH)
     snapped_upper = _round_up_to_step(resolved_upper, _MINUTES_BIN_WIDTH)
@@ -440,9 +551,7 @@ def resolve_minutes_distribution_layout(
     )
 
 
-def get_histogram_axes(
-    metric_code: str, x_min: int, x_max: int
-) -> tuple[ChartAxis, ChartAxis]:
+def get_histogram_axes(metric_code: str, x_min: int, x_max: int) -> tuple[ChartAxis, ChartAxis]:
     """Return (x_axis, y_axis) for a histogram chart from SSOT metadata."""
     code = (metric_code or "").upper()
     meta = _mapping_to_dict(_METRIC_METADATA.get(code))

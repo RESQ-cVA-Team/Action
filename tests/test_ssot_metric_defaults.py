@@ -1,3 +1,4 @@
+import math
 import unittest
 
 from src.executors.planning.ssot_metric_defaults import (
@@ -42,9 +43,16 @@ class PrettyDistributionBinsTests(unittest.TestCase):
         bins = resolve_implicit_distribution_layout(0, 520)
 
         self.assertEqual(bins.lower_bound, 0.0)
-        self.assertEqual(bins.upper_bound, 525.0)
-        self.assertEqual(bins.bin_width, 25.0)
-        self.assertEqual(bins.bin_count, 21)
+        self.assertEqual(bins.upper_bound, 520.0)
+        self.assertEqual(bins.bin_width, 26.0)
+        self.assertEqual(bins.bin_count, 20)
+
+    def test_implicit_layout_uses_whole_number_width(self) -> None:
+        bins = resolve_implicit_distribution_layout(0, 365)
+
+        self.assertTrue(math.isclose(bins.bin_width, round(bins.bin_width), abs_tol=1e-9))
+        self.assertGreaterEqual(bins.bin_count, 14)
+        self.assertLessEqual(bins.bin_count, 26)
 
     def test_score_layout_uses_one_bin_per_score(self) -> None:
         bins = resolve_score_distribution_layout(0, 6)

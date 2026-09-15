@@ -1,3 +1,4 @@
+import math
 import unittest
 from typing import Any, cast
 
@@ -237,6 +238,18 @@ class MetricRequestFactoryTests(unittest.TestCase):
         self.assertEqual(distribution_options.bin_count, expected_layout.bin_count)
         self.assertEqual(distribution_options.lower_bound, int(expected_layout.lower_bound))
         self.assertEqual(distribution_options.upper_bound, int(expected_layout.upper_bound))
+
+    def test_non_score_implicit_defaults_use_whole_number_width_near_target_bins(self) -> None:
+        plan_chart = ChartSpec(chart_type="BAR", metrics=[MetricSpec(metric="HOSPITAL_STAY")])
+
+        metric_requests, _, _, _ = build_metric_requests(plan_chart=plan_chart)
+
+        request = metric_requests[0]
+        distribution_options = cast(DistributionOptions, request.distribution_options)
+        width = (distribution_options.upper_bound - distribution_options.lower_bound) / distribution_options.bin_count
+        self.assertTrue(math.isclose(width, round(width), abs_tol=1e-9))
+        self.assertGreaterEqual(distribution_options.bin_count, 14)
+        self.assertLessEqual(distribution_options.bin_count, 26)
 
 
 if __name__ == "__main__":
