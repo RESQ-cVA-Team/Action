@@ -410,6 +410,128 @@ class PlanExecutorStatisticalTestTests(unittest.TestCase):
 
         self.assertEqual(err.exception.reason, "no_data")
 
+    def test_execute_plan_async_skips_chart_when_trim_removes_all_points(self) -> None:
+        plan = AnalysisPlan(
+            charts=[
+                ChartSpec(
+                    chart_type="BAR",
+                    metrics=[MetricSpec(metric="SYSTOLIC_PRESSURE", data_origin=DataOriginSpec(providerId=[1]))],
+                ),
+                ChartSpec(
+                    chart_type="LINE",
+                    metrics=[MetricSpec(metric="DTN", data_origin=DataOriginSpec(providerId=[2]))],
+                ),
+            ]
+        )
+
+        zero_tail_result = plan_executor.RequestExecutionResult(
+            spec=plan_executor.RequestSpec(
+                req=GraphQLQueryRequest(metrics=[], dataOrigin=DataOrigin(providerId=[1])),
+                label_parts=[],
+                include_metric_alias=False,
+                group_by_field=None,
+                add_time_period_labels=False,
+                scope_label="Scope Zero",
+            ),
+            series=[
+                ChartSeries(
+                    name="SYSTOLIC_PRESSURE",
+                    data=[
+                        ChartPoint(x=30, y=0.0),
+                        ChartPoint(x=40, y=0.0),
+                    ],
+                )
+            ],
+        )
+        non_empty_result = plan_executor.RequestExecutionResult(
+            spec=plan_executor.RequestSpec(
+                req=GraphQLQueryRequest(metrics=[], dataOrigin=DataOrigin(providerId=[2])),
+                label_parts=[],
+                include_metric_alias=False,
+                group_by_field="DISCHARGE_DATE",
+                add_time_period_labels=True,
+                scope_label="Scope Trend",
+            ),
+            series=[
+                ChartSeries(
+                    name="DTN",
+                    data=[
+                        ChartPoint(x="2023-01", y=3.0),
+                        ChartPoint(x="2023-02", y=5.0),
+                    ],
+                )
+            ],
+        )
+
+        grouped = [
+            CompiledBatch(
+                server_groupby=None,
+                filter_dims=[],
+                combos_list=[tuple()],
+                batched_time_enabled=False,
+                batched_time_periods=[],
+            ),
+            CompiledBatch(
+                server_groupby="DISCHARGE_DATE",
+                filter_dims=[],
+                combos_list=[tuple()],
+                batched_time_enabled=True,
+                batched_time_periods=[],
+            ),
+        ]
+
+        spec_sets = [[zero_tail_result.spec], [non_empty_result.spec]]
+        result_sets = [[zero_tail_result], [non_empty_result]]
+
+        async def _fake_execute_specs_concurrent(**kwargs):
+            return result_sets.pop(0)
+
+        with (
+            patch.object(plan_executor, "resolve_plan_metric_origins", return_value=plan),
+            patch.object(
+                plan_executor,
+                "build_metric_requests",
+                side_effect=[
+                    ([], None, [None], [None]),
+                    ([], None, [None], [None]),
+                ],
+            ),
+            patch.object(
+                plan_executor,
+                "compile_chart_grouping",
+                side_effect=[
+                    CompiledChartGrouping(dimensions=[], batches=[grouped[0]]),
+                    CompiledChartGrouping(dimensions=[], batches=[grouped[1]]),
+                ],
+            ),
+            patch.object(
+                plan_executor,
+                "build_primary_request_specs",
+                side_effect=spec_sets,
+            ),
+            patch.object(
+                plan_executor,
+                "_execute_specs_concurrent",
+                side_effect=_fake_execute_specs_concurrent,
+            ),
+            patch.object(
+                plan_executor,
+                "estimate_query_count_for_plan",
+                return_value=2,
+            ),
+        ):
+            response = asyncio.run(
+                plan_executor.execute_plan_async(
+                    plan=plan,
+                    user_sub="user-1",
+                    trace_id="trace-1",
+                )
+            )
+
+        self.assertEqual(len(response.charts), 1)
+        self.assertEqual(response.charts[0].type.value, "LINE")
+        self.assertTrue(any("chart was omitted" in warning for warning in response.warnings), response.warnings)
+
     def test_execute_temporal_pair_mann_whitney_returns_query_results(self) -> None:
         test_a = StatisticalTestSpec(
             test_type="MANN_WHITNEY_U_TEST",

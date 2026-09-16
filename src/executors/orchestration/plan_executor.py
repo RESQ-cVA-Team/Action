@@ -20,7 +20,7 @@ from src.domain.graphql.request import StrokeFilter as GQLStrokeFilter
 from src.domain.graphql.request import TimePeriod, default_time_bounds
 from src.domain.langchain.schema import AnalysisPlan, StatisticalTestSpec
 from src.executors.graphql.client import GraphQLProxyClient
-from src.executors.mapping.chart_builder import build_chart_dto
+from src.executors.mapping.chart_builder import build_chart_dto, trim_numeric_chart_zero_tails
 from src.executors.mapping.filter_mapper import to_gql_filter
 from src.executors.mapping.series_mapper import merge_series_by_name
 from src.executors.mapping.summary_builder import (
@@ -1414,12 +1414,40 @@ async def execute_plan_async(
                 if request_failures:
                     raise _to_execution_error(request_failures, trace_id=trace_id_resolved)
                 raise _to_execution_error(["no_data"], trace_id=trace_id_resolved)
+
+            trim_result = trim_numeric_chart_zero_tails(
+                plan_chart=planChart,
+                dimensions=dims,
+                series=all_series,
+            )
+            all_series = trim_result.series
+
+            if trim_result.dropped_series_names:
+                dropped_series = ", ".join(sorted(set(trim_result.dropped_series_names)))
+                warning_text = (
+                    f"Zero-edge trimming removed empty series for {planChart.chart_type or 'chart'}: "
+                    f"{dropped_series}."
+                )
+                if warning_text not in response.warnings:
+                    response.warnings.append(warning_text)
+
+            if not all_series:
+                warning_text = (
+                    f"No data remained for {planChart.chart_type or 'chart'} after trimming leading and trailing zero tails; "
+                    "the chart was omitted. Try a wider date range or different filters."
+                )
+                if warning_text not in response.warnings:
+                    response.warnings.append(warning_text)
+                continue
+
             vis_chart = build_chart_dto(
                 plan_chart=planChart,
                 dimensions=dims,
                 series=all_series,
                 derived_axes=derived_axes,
                 sampled_period_override=sampled_period_override,
+                histogram_original_bin_count=trim_result.histogram_original_bin_count,
+                apply_numeric_tail_trim=False,
             )
             response.charts.append(vis_chart)
 
