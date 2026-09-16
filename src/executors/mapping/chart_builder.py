@@ -22,6 +22,7 @@ from src.domain.langchain.schema import (
     GroupByTime,
 )
 from src.executors.planning.query_compiler import Dimension
+from src.executors.planning.ssot_metric_defaults import build_distribution_bin_ranges
 from src.shared.ssot_loader import (
     get_canonical_display_name,
     get_metric_display_name,
@@ -63,21 +64,11 @@ def _quantile(sorted_values: List[float], q: float) -> float:
 
 
 def _histogram_bin_width_from_points(points: List[Any]) -> float:
-    if len(points) < 2:
+    ranges = build_distribution_bin_ranges([point.x for point in points])
+    if not ranges:
         return 0.0
-
-    deltas: List[float] = []
-    previous = _coerce_float(points[0].x)
-    for point in points[1:]:
-        current = _coerce_float(point.x)
-        delta = current - previous
-        if delta > 0:
-            deltas.append(delta)
-        previous = current
-
-    if not deltas:
-        return 0.0
-    return deltas[-1]
+    start, end = ranges[-1]
+    return max(0.0, end - start)
 
 
 def _dimension_label(dimension: Dimension) -> Optional[str]:
@@ -496,13 +487,9 @@ def build_chart_dto(
         bins: List[HistogramBin] = []
         source = series[0].data if series else []
         if source:
+            ranges = build_distribution_bin_ranges([point.x for point in source])
             inferred_width = _histogram_bin_width_from_points(source)
-            for idx, point in enumerate(source):
-                start = _coerce_float(point.x)
-                if idx + 1 < len(source):
-                    end = _coerce_float(source[idx + 1].x)
-                else:
-                    end = start + inferred_width if inferred_width > 0 else start
+            for point, (start, end) in zip(source, ranges):
                 freq = _coerce_float(point.y)
                 bins.append(HistogramBin(range_start=start, range_end=end, frequency=freq))
         return Histogram(
