@@ -1,7 +1,6 @@
 import asyncio
 import os
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from pydantic import ValidationError
@@ -12,7 +11,6 @@ os.environ.setdefault("RASA_PROXY_GRAPHQL_TARGET", "http://localhost/graphql")
 from src.domain.dto.analytics.statistical_test import StatisticalTestResult
 from src.domain.dto.charts.types import ChartPoint, ChartSeries
 from src.domain.graphql.request import DataOrigin, GraphQLQueryRequest, TimePeriod
-from src.domain.graphql.response import Kpi1, Metric, MetricKpiGroup
 from src.domain.langchain.schema import (
     AnalysisPlan,
     AnalysisSemanticsSpec,
