@@ -844,6 +844,40 @@ def _flatten_synonym_block(value: Any) -> List[str]:
     return out
 
 
+def _question_mentions_requested_metric_text(question: str, entities: Dict[str, Any]) -> bool:
+    question_norm = ssot_loader.normalize_metric_text_key(question or "")
+    if not question_norm:
+        return False
+
+    lookup = ssot_loader.get_metric_text_lookup()
+    for metric in _extract_string_list(entities.get("metric")):
+        metric_norm = ssot_loader.normalize_metric_text_key(metric)
+        if not metric_norm:
+            continue
+
+        entry = lookup.get(metric_norm)
+        if entry is None:
+            continue
+
+        candidates: List[str] = []
+        canonical = entry.get("canonical")
+        if isinstance(canonical, str) and canonical.strip():
+            candidates.append(canonical.strip())
+
+        for synonym in cast(List[Any], entry.get("synonyms") or []):
+            if isinstance(synonym, str) and synonym.strip():
+                candidates.append(synonym.strip())
+
+        for candidate in candidates:
+            candidate_norm = ssot_loader.normalize_metric_text_key(candidate)
+            if not candidate_norm:
+                continue
+            if re.search(r"(?<!\\w)" + re.escape(candidate_norm) + r"(?!\\w)", question_norm):
+                return True
+
+    return False
+
+
 def _detect_unsupported_risk_factor_filter(question: str, entities: Dict[str, Any]) -> Optional[str]:
     question_norm = (question or "").strip().lower()
     if not question_norm:
@@ -864,6 +898,12 @@ def _detect_unsupported_risk_factor_filter(question: str, entities: Dict[str, An
     for metric in metric_values:
         if metric.startswith("VTE_"):
             return None
+
+    # If the question already names the requested metric in SSOT text, don't
+    # treat overlapping risk-factor words inside that metric name/synonym as a
+    # filter phrase.
+    if _question_mentions_requested_metric_text(question, entities):
+        return None
 
     for term, label in _risk_factor_filter_terms().items():
         # Leading boundary only (not trailing), so a plural like "smokers"
