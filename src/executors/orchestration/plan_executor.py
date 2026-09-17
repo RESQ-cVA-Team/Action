@@ -1424,17 +1424,13 @@ async def execute_plan_async(
 
             if trim_result.dropped_series_names:
                 dropped_series = ", ".join(sorted(set(trim_result.dropped_series_names)))
-                warning_text = (
-                    f"Zero-edge trimming removed empty series for {planChart.chart_type or 'chart'}: "
-                    f"{dropped_series}."
-                )
+                warning_text = f"Zero-edge trimming removed empty series for {planChart.chart_type or 'chart'}: {dropped_series}."
                 if warning_text not in response.warnings:
                     response.warnings.append(warning_text)
 
             if not all_series:
                 warning_text = (
-                    f"No data remained for {planChart.chart_type or 'chart'} after trimming leading and trailing zero tails; "
-                    "the chart was omitted. Try a wider date range or different filters."
+                    f"No data remained for {planChart.chart_type or 'chart'} after trimming leading and trailing zero tails; the chart was omitted. Try a wider date range or different filters."
                 )
                 if warning_text not in response.warnings:
                     response.warnings.append(warning_text)
@@ -1447,6 +1443,7 @@ async def execute_plan_async(
                 derived_axes=derived_axes,
                 sampled_period_override=sampled_period_override,
                 histogram_original_bin_count=trim_result.histogram_original_bin_count,
+                histogram_original_bin_width=trim_result.histogram_original_bin_width,
                 apply_numeric_tail_trim=False,
             )
             response.charts.append(vis_chart)

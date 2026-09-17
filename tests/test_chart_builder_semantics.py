@@ -185,6 +185,41 @@ class ChartBuilderSemanticsTests(unittest.TestCase):
         self.assertEqual(dto.data, [])
         self.assertEqual(dto.bin_count, 3)
 
+    def test_histogram_single_surviving_bin_preserves_original_bin_width_and_range(self) -> None:
+        chart = S.ChartSpec(
+            chart_type="HISTOGRAM",
+            metrics=[S.MetricSpec(metric="DTN")],
+            semantics=S.AnalysisSemanticsSpec(
+                intent="DISTRIBUTION",
+                measure=S.MeasureSemanticsSpec(type="DISTRIBUTION"),
+            ),
+        )
+
+        dto = build_chart_dto(
+            plan_chart=chart,
+            dimensions=[],
+            series=[
+                ChartSeries(
+                    name="DTN",
+                    data=[
+                        ChartPoint.model_construct(x=0, y=0),
+                        ChartPoint.model_construct(x=3, y=0),
+                        ChartPoint.model_construct(x=6, y=9),
+                        ChartPoint.model_construct(x=9, y=0),
+                        ChartPoint.model_construct(x=12, y=0),
+                    ],
+                )
+            ],
+            derived_axes=None,
+        )
+
+        self.assertEqual(dto.bin_count, 5)
+        self.assertEqual(dto.bin_width, 3.0)
+        self.assertEqual(len(dto.data), 1)
+        self.assertEqual(dto.data[0].range_start, 6.0)
+        self.assertEqual(dto.data[0].range_end, 9.0)
+        self.assertEqual(dto.data[0].frequency, 9.0)
+
     def test_bar_distribution_trims_zero_edges(self) -> None:
         chart = S.ChartSpec(
             chart_type="BAR",

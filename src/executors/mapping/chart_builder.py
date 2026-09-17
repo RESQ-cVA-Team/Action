@@ -40,6 +40,7 @@ class NumericTailTrimResult:
     series: List[ChartSeries]
     dropped_series_names: List[str]
     histogram_original_bin_count: Optional[int]
+    histogram_original_bin_width: Optional[float]
 
 
 def _coerce_float(value: object) -> float:
@@ -114,9 +115,11 @@ def trim_numeric_chart_zero_tails(
             series=series,
             dropped_series_names=[],
             histogram_original_bin_count=None,
+            histogram_original_bin_width=None,
         )
 
     histogram_original_bin_count = len(series[0].data) if chart_type_upper == ChartType.HISTOGRAM.value and series else None
+    histogram_original_bin_width = _histogram_bin_width_from_points(series[0].data) if chart_type_upper == ChartType.HISTOGRAM.value and series else None
     trimmed_series: List[ChartSeries] = []
     dropped_series_names: List[str] = []
 
@@ -138,6 +141,7 @@ def trim_numeric_chart_zero_tails(
         series=trimmed_series,
         dropped_series_names=dropped_series_names,
         histogram_original_bin_count=histogram_original_bin_count,
+        histogram_original_bin_width=histogram_original_bin_width,
     )
 
 
@@ -499,6 +503,7 @@ def build_chart_dto(
     derived_axes: Optional[tuple[ChartAxis, ChartAxis]],
     sampled_period_override: Optional[str] = None,
     histogram_original_bin_count: Optional[int] = None,
+    histogram_original_bin_width: Optional[float] = None,
     apply_numeric_tail_trim: bool = True,
 ) -> ChartDTO:
     title_text = _derive_title(plan_chart, dimensions, sampled_period_override=sampled_period_override)
@@ -510,6 +515,8 @@ def build_chart_dto(
         series_to_render = trim_result.series
         if histogram_original_bin_count is None:
             histogram_original_bin_count = trim_result.histogram_original_bin_count
+        if histogram_original_bin_width is None:
+            histogram_original_bin_width = trim_result.histogram_original_bin_width
 
     x_axis: Optional[ChartAxis] = None
     y_axis: Optional[ChartAxis] = None
@@ -566,12 +573,29 @@ def build_chart_dto(
         bins: List[HistogramBin] = []
         source = series_to_render[0].data if series_to_render else []
         original_bin_count = histogram_original_bin_count if histogram_original_bin_count is not None else len(source)
+        inferred_width: Optional[float] = None
         if source:
-            ranges = build_distribution_bin_ranges([point.x for point in source])
-            inferred_width = _histogram_bin_width_from_points(source)
-            for point, (start, end) in zip(source, ranges):
-                freq = _coerce_float(point.y)
-                bins.append(HistogramBin(range_start=start, range_end=end, frequency=freq))
+            inferred_width = histogram_original_bin_width
+            if inferred_width is None:
+                inferred_width = _histogram_bin_width_from_points(source)
+
+            if len(source) == 1:
+                point = source[0]
+                range_start, range_end = build_distribution_bin_ranges([point.x])[0]
+                if inferred_width > 0.0:
+                    range_end = range_start + inferred_width
+                bins.append(
+                    HistogramBin(
+                        range_start=range_start,
+                        range_end=range_end,
+                        frequency=_coerce_float(point.y),
+                    )
+                )
+            else:
+                ranges = build_distribution_bin_ranges([point.x for point in source])
+                for point, (start, end) in zip(source, ranges):
+                    freq = _coerce_float(point.y)
+                    bins.append(HistogramBin(range_start=start, range_end=end, frequency=freq))
         return Histogram(
             metadata=metadata,
             data=bins,
