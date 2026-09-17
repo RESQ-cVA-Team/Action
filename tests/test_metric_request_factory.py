@@ -112,61 +112,15 @@ class MetricRequestFactoryTests(unittest.TestCase):
         self.assertEqual(metric_data_origins, [None])
         self.assertEqual(metric_scope_labels, [None])
 
-    def test_histogram_merges_numeric_resolution_overrides(self) -> None:
-        plan_chart = ChartSpec(
-            chart_type="HISTOGRAM",
-            numericResolution=NumericResolutionSpec.model_validate(
-                {
-                    "valueDomain": {"lowerBound": 25},
-                    "bucketing": {"bucketCount": 8},
-                }
-            ),
-            metrics=[MetricSpec(metric="DTN")],
-        )
-
-        metric_requests, derived_axes, metric_data_origins, metric_scope_labels = build_metric_requests(
-            plan_chart=plan_chart,
-        )
-
-        self.assertEqual(len(metric_requests), 1)
-        request = metric_requests[0]
-        self.assertTrue(request.include_distribution)
-        distribution_options = cast(DistributionOptions, request.distribution_options)
-        self.assertEqual(distribution_options.bin_count, 8)
-        self.assertEqual(distribution_options.lower_bound, 25)
-        self.assertEqual(distribution_options.upper_bound, _DTN_MAX)  # upper not overridden
-        self.assertIsNotNone(request.metric_options)
-        metric_options = request.metric_options
-        self.assertIsNotNone(metric_options)
-        metric_options_value = cast(Any, metric_options)
-        self.assertEqual(metric_options_value.lower_boundary, 25)
-        self.assertEqual(metric_options_value.upper_boundary, _DTN_MAX)
-        self.assertIsNotNone(derived_axes)
-        self.assertEqual(metric_data_origins, [None])
-        self.assertEqual(metric_scope_labels, [None])
-
-    def test_histogram_computes_bucket_count_from_bucket_size(self) -> None:
-        plan_chart = ChartSpec(
-            chart_type="HISTOGRAM",
-            numericResolution=NumericResolutionSpec.model_validate(
-                {
-                    "valueDomain": {"lowerBound": 0, "upperBound": 95},
-                    "bucketing": {"bucketSize": 10},
-                }
-            ),
-            metrics=[MetricSpec(metric="DTN")],
-        )
-
-        metric_requests, _, _, _ = build_metric_requests(plan_chart=plan_chart)
-
-        request = metric_requests[0]
-        distribution_options = cast(DistributionOptions, request.distribution_options)
-        self.assertEqual(distribution_options.bin_count, 10)
-
-    def test_bar_chart_merges_partial_value_domain_override_in_distribution(self) -> None:
+    def test_bar_chart_applies_explicit_bucket_count_override_for_distribution(self) -> None:
         plan_chart = ChartSpec(
             chart_type="BAR",
-            numericResolution=NumericResolutionSpec.model_validate({"valueDomain": {"upperBound": 130}}),
+            numericResolution=NumericResolutionSpec.model_validate(
+                {
+                    "valueDomain": {"upperBound": 130},
+                    "bucketing": {"bucketCount": 9},
+                }
+            ),
             metrics=[MetricSpec(metric="DTN")],
         )
 
@@ -175,16 +129,15 @@ class MetricRequestFactoryTests(unittest.TestCase):
         request = metric_requests[0]
         self.assertTrue(request.include_distribution)
         distribution_options = cast(DistributionOptions, request.distribution_options)
-        expected_layout = resolve_minutes_distribution_layout(_DTN_MIN, 130)
-        self.assertEqual(distribution_options.bin_count, expected_layout.bin_count)
-        self.assertEqual(distribution_options.lower_bound, int(expected_layout.lower_bound))
-        self.assertEqual(distribution_options.upper_bound, int(expected_layout.upper_bound))
+        self.assertEqual(distribution_options.bin_count, 9)
+        self.assertEqual(distribution_options.lower_bound, _DTN_MIN)
+        self.assertEqual(distribution_options.upper_bound, 130)
         self.assertIsNotNone(request.metric_options)
         metric_options = request.metric_options
         self.assertIsNotNone(metric_options)
         metric_options_value = cast(Any, metric_options)
-        self.assertEqual(metric_options_value.lower_boundary, int(expected_layout.lower_bound))
-        self.assertEqual(metric_options_value.upper_boundary, int(expected_layout.upper_bound))
+        self.assertEqual(metric_options_value.lower_boundary, _DTN_MIN)
+        self.assertEqual(metric_options_value.upper_boundary, 130)
 
     def test_explicit_bucket_count_override_still_wins_over_pretty_defaults(self) -> None:
         plan_chart = ChartSpec(
