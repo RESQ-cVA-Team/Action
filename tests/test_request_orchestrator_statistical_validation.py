@@ -87,6 +87,15 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
             "atrial fibrillation",
         )
 
+    def test_still_rejects_unrelated_risk_factor_when_metric_synonym_is_present(self) -> None:
+        self.assertEqual(
+            _detect_unsupported_risk_factor_filter(
+                "Show me anticoagulants for atrial fibrillation at discharge in patients with diabetes",
+                {"metric": ["DISCHARGE_ANTICOAGULANTS_AFIB"]},
+            ),
+            "diabetes",
+        )
+
     def test_clarifies_when_statistical_entities_do_not_define_two_cohorts(self) -> None:
         with patch(
             "src.planners.langchain.request_orchestrator._decision_stage",
