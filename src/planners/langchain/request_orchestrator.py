@@ -837,6 +837,57 @@ def _flatten_synonym_block(value: Any) -> List[str]:
     return out
 
 
+def _requested_metric_text_spans(question: str, entities: Dict[str, Any]) -> List[tuple[int, int]]:
+    question_text = (question or "").strip().lower()
+    if not question_text:
+        return []
+
+    lookup = ssot_loader.get_metric_text_lookup()
+    spans: List[tuple[int, int]] = []
+
+    for metric in _extract_string_list(entities.get("metric")):
+        metric_norm = ssot_loader.normalize_metric_text_key(metric)
+        if not metric_norm:
+            continue
+
+        entry = lookup.get(metric_norm)
+        if entry is None:
+            continue
+
+        candidates: List[str] = []
+        canonical = entry.get("canonical")
+        if isinstance(canonical, str) and canonical.strip():
+            candidates.append(canonical.strip())
+
+        for synonym in cast(List[Any], entry.get("synonyms") or []):
+            if isinstance(synonym, str) and synonym.strip():
+                candidates.append(synonym.strip())
+
+        for candidate in candidates:
+            candidate_norm = ssot_loader.normalize_metric_text_key(candidate)
+            if not candidate_norm:
+                continue
+            parts = [re.escape(token) for token in candidate_norm.split() if token]
+            if not parts:
+                continue
+            pattern = re.compile(r"(?<!\w)" + r"\W+".join(parts) + r"(?!\w)")
+            for match in pattern.finditer(question_text):
+                spans.append(match.span())
+
+    unique_spans: List[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+    for span in spans:
+        if span in seen:
+            continue
+        seen.add(span)
+        unique_spans.append(span)
+    return unique_spans
+
+
+def _span_overlaps(span_a: tuple[int, int], span_b: tuple[int, int]) -> bool:
+    return span_a[0] < span_b[1] and span_b[0] < span_a[1]
+
+
 def _detect_unsupported_risk_factor_filter(question: str, entities: Dict[str, Any]) -> Optional[str]:
     question_norm = (question or "").strip().lower()
     if not question_norm:
@@ -858,13 +909,27 @@ def _detect_unsupported_risk_factor_filter(question: str, entities: Dict[str, An
         if metric.startswith("VTE_"):
             return None
 
+    protected_metric_spans = _requested_metric_text_spans(question, entities)
+
     for term, label in _risk_factor_filter_terms().items():
         # Leading boundary only (not trailing), so a plural like "smokers"
         # still matches the SSOT term "smoker". Best-effort, not exhaustive --
         # this is a fast path; anything it misses still falls through to the
         # slower LLM plan-generation path, which fails safely via
         # _build_empty_plan_clarification.
-        if re.search(r"\b" + re.escape(term), question_norm):
+        matches = list(re.finditer(r"\b" + re.escape(term), question_norm))
+        if not matches:
+            continue
+
+        has_non_metric_occurrence = False
+        for match in matches:
+            term_span = match.span()
+            if any(_span_overlaps(term_span, metric_span) for metric_span in protected_metric_spans):
+                continue
+            has_non_metric_occurrence = True
+            break
+
+        if has_non_metric_occurrence:
             return label
     return None
 
