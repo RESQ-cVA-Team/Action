@@ -122,34 +122,68 @@ jobs:
           import sys
           from pathlib import Path
 
+          # A fix existing upstream doesn't mean it's installable here -- a
+          # pin elsewhere in requirements.txt can put it out of reach. Each
+          # entry needs its own reason and a way to notice when it stops
+          # applying, so this only ever silences the exact (package, id)
+          # pair named, never the package as a whole.
+          ACKNOWLEDGED = {
+            ("sanic", "CVE-2026-85078"): (
+              "fix is 24.12.1+; rasa-sdk==3.14.2 pins sanic<23.0, and no "
+              "rasa-sdk release between 3.14.2 and 3.20.0 raises that "
+              "ceiling (3.20.0 jumps straight to sanic>=25.12, its own "
+              "larger upgrade). Revisit on the next rasa-sdk bump."
+            ),
+          }
+
           payload = json.loads(Path(sys.argv[1]).read_text())
           actionable = []
           unfixed = []
+          acknowledged = []
 
           for dependency in payload.get("dependencies", []):
             name = dependency.get("name", "<unknown>")
             version = dependency.get("version", "<unknown>")
             for vulnerability in dependency.get("vulns", []):
               fix_versions = vulnerability.get("fix_versions") or []
+              vuln_id = vulnerability.get("id", "<unknown>")
               entry = {
                 "name": name,
                 "version": version,
-                "id": vulnerability.get("id", "<unknown>"),
+                "id": vuln_id,
                 "fix_versions": fix_versions,
               }
-              (actionable if fix_versions else unfixed).append(entry)
+              reason = ACKNOWLEDGED.get((name, vuln_id))
+              if reason:
+                entry["reason"] = reason
+                acknowledged.append(entry)
+              elif fix_versions:
+                actionable.append(entry)
+              else:
+                unfixed.append(entry)
 
           # Report every vulnerability found -- including ones with no fix
-          # yet -- so they stay visible instead of being silently dropped.
-          # Only the fixable ones (below) fail the build.
+          # yet, and ones acknowledged below -- so they stay visible instead
+          # of being silently dropped. Only the fixable, unacknowledged ones
+          # (below) fail the build.
           if unfixed:
             print("Python vulnerabilities with no known fix yet (report only, does not fail the build):")
             for vulnerability in unfixed:
               print(f"- {vulnerability['name']} {vulnerability['version']}: {vulnerability['id']}")
             print()
 
+          if acknowledged:
+            print("Python vulnerabilities with a fix that isn't installable here yet (report only, does not fail the build):")
+            for vulnerability in acknowledged:
+              fixes = ", ".join(vulnerability["fix_versions"])
+              print(
+                f"- {vulnerability['name']} {vulnerability['version']}: "
+                f"{vulnerability['id']} -> {fixes} ({vulnerability['reason']})"
+              )
+            print()
+
           if not actionable:
-            print("No Python vulnerabilities with known fixes found.")
+            print("No actionable Python vulnerabilities found.")
             sys.exit(0)
 
           print("Python vulnerabilities with known fixes:")
