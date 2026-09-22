@@ -957,7 +957,7 @@ def _resolve_scope(
 
 def _default_scope_ref() -> Optional[S.OriginScopeSpec]:
     token = (_DEFAULT_SCOPE_TYPE or "").strip().lower().replace("-", "_").replace(" ", "_")
-    if token in {"", "none", "executor_default", "legacy_default"}:
+    if token in {"", "none"}:
         return None
     return S.OriginScopeSpec(scopeType=token)
 
