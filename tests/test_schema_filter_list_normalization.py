@@ -1,6 +1,7 @@
 import unittest
 
 from src.domain.langchain.schema import AnalysisPlan, ChartSpec, StatisticalTestSpec
+from src.planners.langchain.request_orchestrator import _split_mixed_unit_charts
 
 
 class FilterListNormalizationTests(unittest.TestCase):
@@ -91,3 +92,59 @@ class FilterListNormalizationTests(unittest.TestCase):
         )
         self.assertEqual(plan.charts[0].filters.value, "MALE")
         self.assertEqual(plan.charts[1].filters.value, "FEMALE")
+
+    def test_same_unit_multi_metric_chart_stays_conjoined(self) -> None:
+        plan = AnalysisPlan.model_validate(
+            {
+                "charts": [
+                    {
+                        "chart_type": "LINE",
+                        "semantics": {"intent": "TREND", "measure": {"type": "MEAN"}},
+                        "metrics": [{"metric": "DTN"}, {"metric": "DTG"}],
+                    }
+                ]
+            }
+        )
+
+        split_plan = _split_mixed_unit_charts(plan)
+
+        self.assertEqual(len(split_plan.charts), 1)
+        self.assertEqual([m.metric for m in split_plan.charts[0].metrics], ["DTN", "DTG"])
+
+    def test_mixed_unit_multi_metric_chart_splits_into_separate_charts(self) -> None:
+        plan = AnalysisPlan.model_validate(
+            {
+                "charts": [
+                    {
+                        "chart_type": "LINE",
+                        "semantics": {"intent": "TREND", "measure": {"type": "MEAN"}},
+                        "metrics": [{"metric": "DTN"}, {"metric": "SYSTOLIC_PRESSURE"}],
+                    }
+                ]
+            }
+        )
+
+        split_plan = _split_mixed_unit_charts(plan)
+
+        self.assertEqual(len(split_plan.charts), 2)
+        self.assertEqual([m.metric for m in split_plan.charts[0].metrics], ["DTN"])
+        self.assertEqual([m.metric for m in split_plan.charts[1].metrics], ["SYSTOLIC_PRESSURE"])
+
+    def test_numeric_and_enum_metric_chart_splits_into_separate_charts(self) -> None:
+        plan = AnalysisPlan.model_validate(
+            {
+                "charts": [
+                    {
+                        "chart_type": "LINE",
+                        "semantics": {"intent": "TREND", "measure": {"type": "MEAN"}},
+                        "metrics": [{"metric": "DTN"}, {"metric": "SEX"}],
+                    }
+                ]
+            }
+        )
+
+        split_plan = _split_mixed_unit_charts(plan)
+
+        self.assertEqual(len(split_plan.charts), 2)
+        self.assertEqual([m.metric for m in split_plan.charts[0].metrics], ["DTN"])
+        self.assertEqual([m.metric for m in split_plan.charts[1].metrics], ["SEX"])
