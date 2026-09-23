@@ -46,6 +46,7 @@ from src.executors.planning.request_plan import (
 from src.executors.transport.request_runner import run_graphql_request
 from src.shared.ssot_loader import (
     get_statistics_metric_enum_map,
+    resolve_groupby_canonical,
 )
 from src.util import env as env_util
 from src.util.coalesce import coalesce
@@ -889,6 +890,43 @@ def _invalid_plan_semantics_error(exc: Exception, trace_id: str) -> Visualizatio
     )
 
 
+def _sanitize_chart_semantics_for_execution(plan_chart: Any, trace_id: str) -> None:
+    semantics = getattr(plan_chart, "semantics", None)
+    if semantics is None:
+        return
+
+    splits_any = getattr(semantics, "splits", None)
+    if not isinstance(splits_any, list) or not splits_any:
+        return
+
+    normalized_splits: List[Any] = []
+    dropped_invalid_canonical = 0
+    for split in splits_any:
+        kind_any = getattr(split, "kind", None)
+        kind = kind_any.strip().upper() if isinstance(kind_any, str) else ""
+        field_any = getattr(split, "field", None)
+        field = field_any.strip().upper() if isinstance(field_any, str) else ""
+        if kind == "CANONICAL":
+            if not field:
+                dropped_invalid_canonical += 1
+                continue
+            if resolve_groupby_canonical(field) is None:
+                dropped_invalid_canonical += 1
+                continue
+        normalized_splits.append(split)
+
+    if dropped_invalid_canonical > 0:
+        semantics.splits = normalized_splits or None
+        logger.info(
+            "[plan_executor] dropped invalid CANONICAL split(s) before execution",
+            extra={
+                "trace_id": trace_id,
+                "dropped_splits": dropped_invalid_canonical,
+                "chart_type": getattr(plan_chart, "chart_type", None),
+            },
+        )
+
+
 def _to_execution_error(failure_reasons: List[str], trace_id: Optional[str] = None) -> VisualizationExecutionError:
     reason_set = set(failure_reasons)
     service_unavailable_count = sum(1 for reason in failure_reasons if reason == "service_unavailable")
@@ -1251,6 +1289,9 @@ async def execute_plan_async(
     _validate_statistical_tests_readiness(plan=plan, trace_id=trace_id_resolved)
 
     plan_charts = coalesce(plan.charts, [])
+    for plan_chart in plan_charts:
+        _sanitize_chart_semantics_for_execution(plan_chart, trace_id=trace_id_resolved)
+
     response: VisualizationResponse = VisualizationResponse(trace_id=trace_id_resolved)
     try:
         estimated_queries = estimate_query_count_for_plan(plan)

@@ -17,6 +17,7 @@ def _load_helpers():
     required = {
         "_is_missing_temporal_bounds_error",
         "_build_empty_plan_clarification",
+        "_build_metric_clarification_prompt",
     }
     selected = [
         node for node in module_ast.body if isinstance(node, ast.FunctionDef) and node.name in required
@@ -26,9 +27,31 @@ def _load_helpers():
 
     namespace = {
         "lang_schema": S,
+        "Dict": __import__("typing").Dict,
+        "List": __import__("typing").List,
         "Optional": __import__("typing").Optional,
         # Translation passthrough for isolated tests.
-        "translate": lambda _key, language=None, default=None, params=None: default,
+        "translate": lambda _key, language=None, default=None, params=None: (
+            default if default is not None else f"Which metric did you mean: {params['options']}?"
+        ),
+        "ssot_loader": type(
+            "_StubSsotLoader",
+            (),
+            {
+                "get_metric_metadata": staticmethod(
+                    lambda: {
+                        "DTN": {"display_name": "Door-to-needle time"},
+                        "DTG": {"display_name": "Door-to-groin time"},
+                    }
+                ),
+                "get_metric_display_name": staticmethod(
+                    lambda code: {
+                        "DTN": "Door-to-needle time",
+                        "DTG": "Door-to-groin time",
+                    }[code]
+                ),
+            },
+        ),
     }
     exec(compile(isolated_module, filename=str(source_path), mode="exec"), namespace)
     return namespace
@@ -73,6 +96,33 @@ class VisualizationActionClarificationHelpersTests(unittest.TestCase):
         )
 
         self.assertIsNone(builder(non_empty, "en"))
+
+    def test_metric_clarification_prompt_uses_display_names_and_canonical_payloads(self) -> None:
+        ns = _load_helpers()
+        builder = ns["_build_metric_clarification_prompt"]
+
+        message, buttons = builder("metric", ["DTN", "DTG"], "en", "fallback")
+
+        self.assertEqual(message, "Which metric did you mean: Door-to-needle time, Door-to-groin time?")
+        self.assertEqual(
+            buttons,
+            [
+                {"title": "Door-to-needle time", "payload": '/clarify_visualization{"metric":"DTN"}'},
+                {"title": "Door-to-groin time", "payload": '/clarify_visualization{"metric":"DTG"}'},
+            ],
+        )
+
+    def test_metric_clarification_prompt_falls_back_for_non_metric_or_unknown_options(self) -> None:
+        ns = _load_helpers()
+        builder = ns["_build_metric_clarification_prompt"]
+
+        message, buttons = builder("metric", ["DTN", "UNKNOWN"], "en", "fallback")
+        self.assertEqual(message, "fallback")
+        self.assertEqual(buttons, [])
+
+        message, buttons = builder("analysis_plan", ["DTN", "DTG"], "en", "fallback")
+        self.assertEqual(message, "fallback")
+        self.assertEqual(buttons, [])
 
 
 if __name__ == "__main__":
