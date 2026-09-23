@@ -9,10 +9,8 @@ from . import env as env_util
 
 logger = logging.getLogger(__name__)
 
-# Phase 2 of the cross-service auth redesign: Action's own service identity
-# toward Webapp and CVaLab is a Keycloak client-credentials token -- the
-# static ACTION_SERVER_TOKEN/LONG_TASK_CALLBACK_TOKEN shared secrets this
-# replaced have been removed. Needs a dedicated Keycloak client with service
+# Action's own service identity toward Webapp and CVaLab is a Keycloak
+# client-credentials token. Needs a dedicated Keycloak client with service
 # accounts enabled -- unlike Rasa's introspection piece, this can't reuse
 # Webapp's existing `cva` client (that one authenticates real users via the
 # authorization-code flow, not a service via client_credentials).

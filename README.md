@@ -14,8 +14,7 @@ Run instructions for:
 ## Required Environment Variables
 
 - `RASA_PROXY_URL` (example: `http://webapp:3000/api/rasa-proxy`)
-- `ACTION_SERVER_TOKEN` (must match Webapp)
-- `LONG_TASK_CALLBACK_TOKEN` (must match Webapp)
+- `KEYCLOAK_ISSUER`, `KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET` (Action's own Keycloak service-account client; its token authenticates Action to Webapp, and introspects the user token Rasa forwards on `/webhook`)
 - `RASA_PROXY_GRAPHQL_TARGET` (typically `graphql`)
 - `RASA_PROXY_ANALYTICS_TARGET` (typically `analytics`)
 - `LLM_PROVIDER`
@@ -55,8 +54,9 @@ Run example:
 ```bash
 docker run --rm -p 5055:5055 \
   -e RASA_PROXY_URL=http://webapp:3000/api/rasa-proxy \
-  -e ACTION_SERVER_TOKEN=<shared-action-token> \
-  -e LONG_TASK_CALLBACK_TOKEN=<shared-callback-token> \
+  -e KEYCLOAK_ISSUER=<issuer-url> \
+  -e KEYCLOAK_CLIENT_ID=<service-account-client-id> \
+  -e KEYCLOAK_CLIENT_SECRET=<service-account-client-secret> \
   -e RASA_PROXY_GRAPHQL_TARGET=graphql \
   -e RASA_PROXY_ANALYTICS_TARGET=analytics \
   -e LLM_PROVIDER=openai \
