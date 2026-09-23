@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 from datetime import datetime, timezone
@@ -7,7 +8,7 @@ import pluggy
 from sanic import Sanic, response
 from sanic.response import HTTPResponse
 
-from src.util import env as env_util
+from src.util.keycloak_introspection import introspect_token_sync, sender_sub
 
 hookimpl = pluggy.HookimplMarker("rasa_sdk")
 
@@ -33,40 +34,36 @@ def init_hooks(manager: pluggy.PluginManager) -> None:
 
 
 # rasa_sdk 3.14.2's own /webhook route (registered in rasa_sdk.endpoint,
-# outside this codebase) has no built-in authentication of any kind --
-# older rasa_sdk versions had a --auth-token/ACTION_TOKEN CLI mechanism, but
-# it does not exist in this version. Anything that can reach this port could
-# otherwise trigger any action for any sender_id. This plugin hook is the
-# only place this codebase can extend the Sanic app rasa_sdk builds, so the
-# check is added here as request middleware rather than inside rasa_sdk.
-_ACTION_AUTH_TOKEN = os.getenv("ACTION_AUTH_TOKEN") or None
-_ACTION_REQUIRE_AUTH_TOKEN = env_util.env_flag("ACTION_REQUIRE_AUTH_TOKEN", default=True)
-if _ACTION_REQUIRE_AUTH_TOKEN and not _ACTION_AUTH_TOKEN:
-    raise RuntimeError(
-        "ACTION_AUTH_TOKEN is required when ACTION_REQUIRE_AUTH_TOKEN is enabled. "
-        "Set ACTION_AUTH_TOKEN or set ACTION_REQUIRE_AUTH_TOKEN=false only for local debugging."
-    )
-
-
+# outside this codebase) has no built-in authentication of any kind, so
+# anything that can reach this port could otherwise trigger any action for
+# any sender_id. This plugin hook is the only place this codebase can extend
+# the Sanic app rasa_sdk builds, so the check is request middleware here.
+# Rasa forwards the calling user's Keycloak access token; it is verified by
+# introspection and must belong to the sender the action runs for.
 @hookimpl
 def attach_sanic_app_extensions(app: Sanic) -> None:
     @app.on_request
-    async def _require_action_token(request) -> Optional[HTTPResponse]:
-        # /health must stay open for container health checks; /version and
-        # /actions stay open too (no sensitive data, needed for tooling).
-        # /debug/* reuses the same service token as the action-invocation
-        # endpoint -- it's a lower-sensitivity surface (local, static
-        # few-shot examples, no user data), but "anything reachable gets to
-        # trigger it" is still worth closing off.
-        is_gated = request.path == "/webhook" or request.path.startswith("/debug/")
-        if not is_gated or not _ACTION_AUTH_TOKEN:
+    async def _require_user_token(request) -> Optional[HTTPResponse]:
+        # /health, /version and /actions stay open (container health checks,
+        # tooling, no sensitive data).
+        is_webhook = request.path == "/webhook"
+        if not (is_webhook or request.path.startswith("/debug/")):
             return None
 
-        query_token = request.args.get("token")
         auth_header = request.headers.get("Authorization", "")
-        header_token = auth_header[7:] if auth_header.startswith("Bearer ") else None
-        if (query_token or header_token) != _ACTION_AUTH_TOKEN:
+        token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
+        verified_sub = await asyncio.to_thread(introspect_token_sync, token) if token else None
+        if not verified_sub:
             return response.json({"error": "Unauthorized"}, status=401)
+
+        if is_webhook:
+            body = request.json if isinstance(request.json, dict) else {}
+            tracker = body.get("tracker")
+            senders = [body.get("sender_id"), tracker.get("sender_id") if isinstance(tracker, dict) else None]
+            if not isinstance(senders[0], str) or any(s is not None and not isinstance(s, str) for s in senders):
+                return response.json({"error": "Missing sender_id"}, status=400)
+            if any(s is not None and sender_sub(s) != verified_sub for s in senders):
+                return response.json({"error": "Forbidden: token subject does not match the sender"}, status=403)
         return None
 
     @app.get("/version")
