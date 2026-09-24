@@ -1,8 +1,8 @@
 from src.actions.helpers.visualization import extract_entities_from_latest_message
 
 
-def _message(entities):
-    return {"entities": entities}
+def _message(entities, text: str = ""):
+    return {"entities": entities, "text": text}
 
 
 def test_repeated_identical_entity_value_stays_a_scalar() -> None:
@@ -134,3 +134,92 @@ def test_regex_only_entity_kept_when_diet_agrees_or_is_silent() -> None:
 
     assert entities["metric"] == "DTN"
     assert entities["limit"] == "10"
+
+
+def test_metric_preserved_when_diet_conflicts_on_same_span_in_chart_context() -> None:
+    text = "show me a line chart of HEMORRHAGIC_TRANSFORMATION"
+    start = text.index("HEMORRHAGIC_TRANSFORMATION")
+    end = start + len("HEMORRHAGIC_TRANSFORMATION")
+    entities = extract_entities_from_latest_message(
+        _message(
+            [
+                {
+                    "entity": "chart_type",
+                    "value": "LINE",
+                    "start": 10,
+                    "end": 14,
+                    "extractors": [{"extractor": "RegexEntityExtractor"}],
+                },
+                {
+                    "entity": "stroke_type",
+                    "value": "HEMORRHAGIC_TRANSFORMATION",
+                    "start": start,
+                    "end": end,
+                    "extractors": [{"extractor": "DIETClassifier"}],
+                },
+                {
+                    "entity": "metric",
+                    "value": "HEMORRHAGIC_TRANSFORMATION",
+                    "start": start,
+                    "end": end,
+                    "extractors": [{"extractor": "RegexEntityExtractor"}],
+                },
+            ],
+            text=text,
+        )
+    )
+
+    assert entities["metric"] == "HEMORRHAGIC_TRANSFORMATION"
+    assert entities["stroke_type"] == "HEMORRHAGIC_TRANSFORMATION"
+
+
+def test_intraventricular_hemorrhage_metric_preserved_in_chart_context() -> None:
+    text = "line graph of INTRAVENTICULAR_HEMORRHAGE"
+    start = text.index("INTRAVENTICULAR_HEMORRHAGE")
+    end = start + len("INTRAVENTICULAR_HEMORRHAGE")
+    entities = extract_entities_from_latest_message(
+        _message(
+            [
+                {
+                    "entity": "stroke_type",
+                    "value": "INTRAVENTICULAR_HEMORRHAGE",
+                    "start": start,
+                    "end": end,
+                    "extractors": [{"extractor": "DIETClassifier"}],
+                },
+                {
+                    "entity": "metric",
+                    "value": "INTRAVENTICULAR_HEMORRHAGE",
+                    "start": start,
+                    "end": end,
+                    "extractors": [{"extractor": "RegexEntityExtractor"}],
+                },
+            ],
+            text=text,
+        )
+    )
+
+    assert entities["metric"] == "INTRAVENTICULAR_HEMORRHAGE"
+
+
+def test_metric_value_is_remapped_from_parent_metric_when_span_matches_exact_canonical() -> None:
+    text = "show me a line chart of CRANIECTOMY"
+    start = text.index("CRANIECTOMY")
+    end = start + len("CRANIECTOMY")
+
+    entities = extract_entities_from_latest_message(
+        _message(
+            [
+                {
+                    "entity": "metric",
+                    "value": "ICH_TREATMENT_TYPE",
+                    "start": start,
+                    "end": end,
+                    "extractors": [{"extractor": "RegexEntityExtractor"}],
+                }
+            ],
+            text=text,
+        )
+    )
+
+    assert entities["metric"] == "CRANIECTOMY"

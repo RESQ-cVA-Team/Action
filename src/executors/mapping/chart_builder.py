@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, List, Optional, cast
 
@@ -22,6 +23,7 @@ from src.domain.langchain.schema import (
     GroupByTime,
 )
 from src.executors.planning.query_compiler import Dimension
+from src.executors.planning.ssot_metric_defaults import build_distribution_bin_ranges
 from src.shared.ssot_loader import (
     get_canonical_display_name,
     get_metric_display_name,
@@ -31,6 +33,14 @@ from src.shared.ssot_loader import (
 
 logger = logging.getLogger(__name__)
 _METRIC_METADATA = get_metric_metadata()
+
+
+@dataclass(frozen=True)
+class NumericTailTrimResult:
+    series: List[ChartSeries]
+    dropped_series_names: List[str]
+    histogram_original_bin_count: Optional[int]
+    histogram_original_bin_width: Optional[float]
 
 
 def _coerce_float(value: object) -> float:
@@ -63,21 +73,76 @@ def _quantile(sorted_values: List[float], q: float) -> float:
 
 
 def _histogram_bin_width_from_points(points: List[Any]) -> float:
-    if len(points) < 2:
+    ranges = build_distribution_bin_ranges([point.x for point in points])
+    if not ranges:
         return 0.0
+    start, end = ranges[-1]
+    return max(0.0, end - start)
 
-    deltas: List[float] = []
-    previous = _coerce_float(points[0].x)
-    for point in points[1:]:
-        current = _coerce_float(point.x)
-        delta = current - previous
-        if delta > 0:
-            deltas.append(delta)
-        previous = current
 
-    if not deltas:
-        return 0.0
-    return deltas[-1]
+def _trim_zero_edge_points(points: List[ChartPoint]) -> List[ChartPoint]:
+    start_index = 0
+    end_index = len(points) - 1
+
+    while start_index <= end_index:
+        y_value = _coerce_float(points[start_index].y)
+        if y_value != 0.0:
+            break
+        start_index += 1
+
+    while end_index >= start_index:
+        y_value = _coerce_float(points[end_index].y)
+        if y_value != 0.0:
+            break
+        end_index -= 1
+
+    return points[start_index : end_index + 1]
+
+
+def trim_numeric_chart_zero_tails(
+    plan_chart: S.ChartSpec,
+    dimensions: List[Dimension],
+    series: List[ChartSeries],
+) -> NumericTailTrimResult:
+    chart_type_upper = (plan_chart.chart_type or "").upper()
+    should_trim = chart_type_upper == ChartType.HISTOGRAM.value or _uses_distribution_axes(
+        chart_type_upper=chart_type_upper,
+        dimensions=dimensions,
+        series=series,
+    )
+    if not should_trim:
+        return NumericTailTrimResult(
+            series=series,
+            dropped_series_names=[],
+            histogram_original_bin_count=None,
+            histogram_original_bin_width=None,
+        )
+
+    histogram_original_bin_count = len(series[0].data) if chart_type_upper == ChartType.HISTOGRAM.value and series else None
+    histogram_original_bin_width = _histogram_bin_width_from_points(series[0].data) if chart_type_upper == ChartType.HISTOGRAM.value and series else None
+    trimmed_series: List[ChartSeries] = []
+    dropped_series_names: List[str] = []
+
+    for chart_series in series:
+        trimmed_points = _trim_zero_edge_points(chart_series.data)
+        if not trimmed_points:
+            dropped_series_names.append(chart_series.name)
+            continue
+        trimmed_series.append(
+            ChartSeries(
+                name=chart_series.name,
+                data=trimmed_points,
+                color=chart_series.color,
+                style=chart_series.style,
+            )
+        )
+
+    return NumericTailTrimResult(
+        series=trimmed_series,
+        dropped_series_names=dropped_series_names,
+        histogram_original_bin_count=histogram_original_bin_count,
+        histogram_original_bin_width=histogram_original_bin_width,
+    )
 
 
 def _dimension_label(dimension: Dimension) -> Optional[str]:
@@ -437,9 +502,21 @@ def build_chart_dto(
     series: List[ChartSeries],
     derived_axes: Optional[tuple[ChartAxis, ChartAxis]],
     sampled_period_override: Optional[str] = None,
+    histogram_original_bin_count: Optional[int] = None,
+    histogram_original_bin_width: Optional[float] = None,
+    apply_numeric_tail_trim: bool = True,
 ) -> ChartDTO:
     title_text = _derive_title(plan_chart, dimensions, sampled_period_override=sampled_period_override)
     chart_type_upper = (plan_chart.chart_type or "").upper()
+
+    series_to_render = series
+    if apply_numeric_tail_trim:
+        trim_result = trim_numeric_chart_zero_tails(plan_chart=plan_chart, dimensions=dimensions, series=series)
+        series_to_render = trim_result.series
+        if histogram_original_bin_count is None:
+            histogram_original_bin_count = trim_result.histogram_original_bin_count
+        if histogram_original_bin_width is None:
+            histogram_original_bin_width = trim_result.histogram_original_bin_width
 
     x_axis: Optional[ChartAxis] = None
     y_axis: Optional[ChartAxis] = None
@@ -450,7 +527,7 @@ def build_chart_dto(
             plan_chart=plan_chart,
             dimensions=dimensions,
             chart_type_upper=chart_type_upper,
-            series=series,
+            series=series_to_render,
         )
 
     metadata = ChartMetadata(
@@ -461,24 +538,24 @@ def build_chart_dto(
 
     if chart_type_upper == ChartType.LINE.value:
         has_time_grouping = any(isinstance(dimension.spec, GroupByTime) for dimension in dimensions)
-        return LineChart(metadata=metadata, series=series, smooth=not has_time_grouping)
+        return LineChart(metadata=metadata, series=series_to_render, smooth=not has_time_grouping)
     if chart_type_upper == ChartType.BAR.value:
-        return BarChart(metadata=metadata, series=series)
+        return BarChart(metadata=metadata, series=series_to_render)
     if chart_type_upper == ChartType.SCATTER.value:
-        return ScatterPlot(metadata=metadata, series=series)
+        return ScatterPlot(metadata=metadata, series=series_to_render)
     if chart_type_upper == ChartType.AREA.value:
-        return union.AreaChart(metadata=metadata, series=series)
+        return union.AreaChart(metadata=metadata, series=series_to_render)
     if chart_type_upper == ChartType.RADAR.value:
         axis_labels: List[str] = []
-        for s in series:
+        for s in series_to_render:
             for p in s.data:
                 x_label = str(p.x)
                 if x_label not in axis_labels:
                     axis_labels.append(x_label)
-        return RadarChart(metadata=metadata, series=series, axes=axis_labels)
+        return RadarChart(metadata=metadata, series=series_to_render, axes=axis_labels)
     if chart_type_upper == ChartType.PIE.value:
         totals: dict[str, float] = {}
-        for s in series:
+        for s in series_to_render:
             for p in s.data:
                 key = str(p.x)
                 y = _coerce_float(p.y)
@@ -487,32 +564,46 @@ def build_chart_dto(
         return PieChart(metadata=metadata, data=slices)
     if chart_type_upper == ChartType.WATERFALL.value:
         steps: List[WaterfallStep] = []
-        source = series[0].data if series else []
+        source = series_to_render[0].data if series_to_render else []
         for p in source:
             y = _coerce_float(p.y)
             steps.append(WaterfallStep(label=str(p.x), value=y, is_positive=y >= 0))
         return WaterfallChart(metadata=metadata, data=steps)
     if chart_type_upper == ChartType.HISTOGRAM.value:
         bins: List[HistogramBin] = []
-        source = series[0].data if series else []
+        source = series_to_render[0].data if series_to_render else []
+        original_bin_count = histogram_original_bin_count if histogram_original_bin_count is not None else len(source)
+        inferred_width: Optional[float] = None
         if source:
-            inferred_width = _histogram_bin_width_from_points(source)
-            for idx, point in enumerate(source):
-                start = _coerce_float(point.x)
-                if idx + 1 < len(source):
-                    end = _coerce_float(source[idx + 1].x)
-                else:
-                    end = start + inferred_width if inferred_width > 0 else start
-                freq = _coerce_float(point.y)
-                bins.append(HistogramBin(range_start=start, range_end=end, frequency=freq))
+            inferred_width = histogram_original_bin_width
+            if inferred_width is None:
+                inferred_width = _histogram_bin_width_from_points(source)
+
+            if len(source) == 1:
+                point = source[0]
+                range_start, range_end = build_distribution_bin_ranges([point.x])[0]
+                if inferred_width > 0.0:
+                    range_end = range_start + inferred_width
+                bins.append(
+                    HistogramBin(
+                        range_start=range_start,
+                        range_end=range_end,
+                        frequency=_coerce_float(point.y),
+                    )
+                )
+            else:
+                ranges = build_distribution_bin_ranges([point.x for point in source])
+                for point, (start, end) in zip(source, ranges):
+                    freq = _coerce_float(point.y)
+                    bins.append(HistogramBin(range_start=start, range_end=end, frequency=freq))
         return Histogram(
             metadata=metadata,
             data=bins,
-            bin_count=max(1, len(bins)),
+            bin_count=max(1, original_bin_count),
             bin_width=inferred_width if source else None,
         )
     if chart_type_upper == ChartType.BOX.value:
-        values = sorted(_flatten_y_values(series))
+        values = sorted(_flatten_y_values(series_to_render))
         if not values:
             return BoxPlot(metadata=metadata, data=[])
         q1 = _quantile(values, 0.25)
