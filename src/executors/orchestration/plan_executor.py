@@ -890,14 +890,14 @@ def _invalid_plan_semantics_error(exc: Exception, trace_id: str) -> Visualizatio
     )
 
 
-def _sanitize_chart_semantics_for_execution(plan_chart: Any, trace_id: str) -> None:
+def _sanitize_chart_semantics_for_execution(plan_chart: Any, trace_id: str) -> int:
     semantics = getattr(plan_chart, "semantics", None)
     if semantics is None:
-        return
+        return 0
 
     splits_any = getattr(semantics, "splits", None)
     if not isinstance(splits_any, list) or not splits_any:
-        return
+        return 0
 
     normalized_splits: List[Any] = []
     dropped_invalid_canonical = 0
@@ -925,6 +925,7 @@ def _sanitize_chart_semantics_for_execution(plan_chart: Any, trace_id: str) -> N
                 "chart_type": getattr(plan_chart, "chart_type", None),
             },
         )
+    return dropped_invalid_canonical
 
 
 def _to_execution_error(failure_reasons: List[str], trace_id: Optional[str] = None) -> VisualizationExecutionError:
@@ -1285,14 +1286,21 @@ async def execute_plan_async(
         },
     )
 
+    response: VisualizationResponse = VisualizationResponse(trace_id=trace_id_resolved)
     normalization_summary = None
     _validate_statistical_tests_readiness(plan=plan, trace_id=trace_id_resolved)
 
     plan_charts = coalesce(plan.charts, [])
     for plan_chart in plan_charts:
-        _sanitize_chart_semantics_for_execution(plan_chart, trace_id=trace_id_resolved)
+        dropped_splits = _sanitize_chart_semantics_for_execution(plan_chart, trace_id=trace_id_resolved)
+        if dropped_splits > 0:
+            warning_text = (
+                "One or more requested grouping fields were invalid and were ignored. "
+                "The chart was rendered without those groupings."
+            )
+            if warning_text not in response.warnings:
+                response.warnings.append(warning_text)
 
-    response: VisualizationResponse = VisualizationResponse(trace_id=trace_id_resolved)
     try:
         estimated_queries = estimate_query_count_for_plan(plan)
     except ValueError as exc:

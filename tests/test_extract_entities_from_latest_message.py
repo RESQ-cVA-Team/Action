@@ -207,6 +207,40 @@ def test_regex_only_nested_metric_span_is_dropped_when_diet_metric_contains_it()
     assert entities["metric"] == "THROMBOLYSIS_DRUG_DOSE"
 
 
+def test_regex_only_wider_metric_span_is_dropped_when_it_contains_diet_metric() -> None:
+    text = "Show me a line graph of ivt dose"
+    entities = extract_entities_from_latest_message(
+        _message(
+            [
+                {
+                    "entity": "chart_type",
+                    "value": "LINE",
+                    "start": 10,
+                    "end": 14,
+                    "extractors": [{"extractor": "DIETClassifier"}, {"extractor": "RegexEntityExtractor"}],
+                },
+                {
+                    "entity": "metric",
+                    "value": "THROMBOLYSIS",
+                    "start": 24,
+                    "end": 27,
+                    "extractors": [{"extractor": "DIETClassifier"}],
+                },
+                {
+                    "entity": "metric",
+                    "value": "THROMBOLYSIS_DRUG_DOSE",
+                    "start": 24,
+                    "end": 32,
+                    "extractors": [{"extractor": "RegexEntityExtractor"}],
+                },
+            ],
+            text=text,
+        )
+    )
+
+    assert entities["metric"] == "THROMBOLYSIS"
+
+
 def test_intraventricular_hemorrhage_metric_preserved_in_chart_context() -> None:
     text = "line graph of INTRAVENTICULAR_HEMORRHAGE"
     start = text.index("INTRAVENTICULAR_HEMORRHAGE")

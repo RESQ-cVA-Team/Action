@@ -160,6 +160,10 @@ class PlanExecutorStatisticalTestTests(unittest.TestCase):
             )
 
         self.assertEqual(response.trace_id, "trace-1")
+        self.assertIn(
+            "One or more requested grouping fields were invalid and were ignored. The chart was rendered without those groupings.",
+            response.warnings,
+        )
 
     def test_to_execution_error_messages_include_actionable_guidance(self) -> None:
         graphql_error = plan_executor._to_execution_error(["graphql_error"], trace_id="trace-1")

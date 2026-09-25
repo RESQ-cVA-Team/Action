@@ -43,6 +43,14 @@ class I18nTests(unittest.TestCase):
 
         self.assertEqual(resolve_language_from_tracker(tracker), "el")
 
+    def test_metric_choice_clarify_key_exists_in_all_supported_catalogs(self) -> None:
+        key = "action.visualization.metric_choice_clarify"
+        for language in i18n.SUPPORTED_LANGUAGES:
+            catalog = i18n._load_catalog(language)
+            value = i18n._lookup_catalog(catalog, key)
+            self.assertIsInstance(value, str)
+            self.assertTrue(value)
+
 
 if __name__ == "__main__":
     unittest.main()

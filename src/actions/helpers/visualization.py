@@ -251,7 +251,14 @@ def extract_entities_from_latest_message(
             if exact_span_canonical is not None:
                 value = exact_span_canonical
         if key_any == "metric" and "DIETClassifier" not in extractor_names:
-            if any(_span_contains(metric_span, span) and metric_span != span for metric_span in diet_metric_spans):
+            if any(
+                (
+                    _span_contains(metric_span, span)
+                    or _span_contains(span, metric_span)
+                )
+                and metric_span != span
+                for metric_span in diet_metric_spans
+            ):
                 continue
         if "DIETClassifier" not in extractor_names and diet_label_for_span is not None and diet_label_for_span != key_any:
             # Keep the existing DIET-over-regex conflict rule by default, but
