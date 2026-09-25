@@ -29,6 +29,52 @@ from src.executors.planning.query_compiler import CompiledBatch, CompiledChartGr
 
 
 class PlanExecutorStatisticalTestTests(unittest.TestCase):
+    def test_sanitize_chart_semantics_drops_empty_canonical_split(self) -> None:
+        split = SplitSpec.model_construct(  # type: ignore[arg-type]
+            kind="CANONICAL",
+            field=None,
+            categories=None,
+            buckets=None,
+        )
+        chart = ChartSpec(
+            chart_type="LINE",
+            metrics=[MetricSpec(metric="HOSPITALIZED_IN")],
+            semantics=AnalysisSemanticsSpec(
+                intent="DISTRIBUTION",
+                measure=MeasureSemanticsSpec(type="DISTRIBUTION"),
+                splits=None,
+            ),
+        )
+        assert chart.semantics is not None
+        chart.semantics.splits = [split]
+
+        plan_executor._sanitize_chart_semantics_for_execution(chart, trace_id="trace-1")
+
+        self.assertIsNone(chart.semantics.splits)
+
+    def test_sanitize_chart_semantics_drops_unsupported_canonical_field(self) -> None:
+        split = SplitSpec.model_construct(  # type: ignore[arg-type]
+            kind="CANONICAL",
+            field="FIRST_DAY_BED_TYPE",
+            categories=None,
+            buckets=None,
+        )
+        chart = ChartSpec(
+            chart_type="LINE",
+            metrics=[MetricSpec(metric="HOSPITALIZED_IN")],
+            semantics=AnalysisSemanticsSpec(
+                intent="DISTRIBUTION",
+                measure=MeasureSemanticsSpec(type="DISTRIBUTION"),
+                splits=None,
+            ),
+        )
+        assert chart.semantics is not None
+        chart.semantics.splits = [split]
+
+        plan_executor._sanitize_chart_semantics_for_execution(chart, trace_id="trace-1")
+
+        self.assertIsNone(chart.semantics.splits)
+
     def test_execute_plan_async_maps_invalid_split_semantics_to_structured_error(self) -> None:
         plan = AnalysisPlan(
             charts=[
@@ -56,6 +102,68 @@ class PlanExecutorStatisticalTestTests(unittest.TestCase):
 
         self.assertEqual(err.exception.reason, "invalid_plan_semantics")
         self.assertEqual(err.exception.code, "EXEC_PLAN_INVALID_SEMANTICS")
+
+    def test_execute_plan_async_sanitizes_empty_canonical_split_before_estimation(self) -> None:
+        split = SplitSpec.model_construct(  # type: ignore[arg-type]
+            kind="CANONICAL",
+            field=None,
+            categories=None,
+            buckets=None,
+        )
+        plan = AnalysisPlan(
+            charts=[
+                ChartSpec(
+                    chart_type="LINE",
+                    metrics=[MetricSpec(metric="HOSPITALIZED_IN")],
+                    semantics=AnalysisSemanticsSpec(
+                        intent="DISTRIBUTION",
+                        measure=MeasureSemanticsSpec(type="DISTRIBUTION"),
+                        splits=None,
+                    ),
+                )
+            ]
+        )
+        assert plan.charts[0].semantics is not None
+        plan.charts[0].semantics.splits = [split]
+
+        async def _fake_execute_specs_concurrent(**kwargs):
+            return []
+
+        def _assert_sanitized_before_estimate(current_plan):
+            assert current_plan.charts[0].semantics is not None
+            assert current_plan.charts[0].semantics.splits is None
+            return 0
+
+        with (
+            patch.object(plan_executor, "resolve_plan_metric_origins", return_value=plan),
+            patch.object(plan_executor, "estimate_query_count_for_plan", side_effect=_assert_sanitized_before_estimate),
+            patch.object(
+                plan_executor,
+                "compile_chart_grouping",
+                return_value=CompiledChartGrouping(
+                    dimensions=[],
+                    batches=[],
+                ),
+            ),
+            patch.object(
+                plan_executor,
+                "_execute_specs_concurrent",
+                side_effect=_fake_execute_specs_concurrent,
+            ),
+        ):
+            response = asyncio.run(
+                plan_executor.execute_plan_async(
+                    plan=plan,
+                    user_sub="user-1",
+                    trace_id="trace-1",
+                )
+            )
+
+        self.assertEqual(response.trace_id, "trace-1")
+        self.assertIn(
+            "One or more requested grouping fields were invalid and were ignored. The chart was rendered without those groupings.",
+            response.warnings,
+        )
 
     def test_to_execution_error_messages_include_actionable_guidance(self) -> None:
         graphql_error = plan_executor._to_execution_error(["graphql_error"], trace_id="trace-1")

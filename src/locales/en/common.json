@@ -7,6 +7,7 @@
       "clarify_default": "I need a bit more detail before I can generate a visualization.",
       "missing_time_bounds": "I can plot monthly or quarterly trends, but I need an explicit time range first. Please include bounds such as 'from 2023-01-01 to 2023-12-31' or 'last 12 months'.",
       "empty_plan_clarify": "I could not derive an executable analysis plan from that request. Please ask for a chart with metric and chart type, or for statistics provide two explicit cohorts to compare.",
+      "metric_choice_clarify": "Which metric did you mean: {options}?",
       "reject_default": "This request is outside the visualization flow.",
       "non_visualization_intent": "I can help with visualization requests. Try asking to generate a chart, or ask to update the current chart.",
       "success_complete": "Done!",

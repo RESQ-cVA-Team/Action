@@ -318,6 +318,19 @@ def _coerce_options(raw: Any) -> List[str]:
     return out
 
 
+def _normalized_metric_clarification_options(entities: Dict[str, Any]) -> List[str]:
+    metric_meta = ssot_loader.get_metric_metadata()
+    options: List[str] = []
+    seen: set[str] = set()
+    for raw_metric in _extract_string_list(entities.get("metric")):
+        canonical = raw_metric.strip().upper()
+        if not canonical or canonical in seen or canonical not in metric_meta:
+            continue
+        seen.add(canonical)
+        options.append(canonical)
+    return options
+
+
 def _is_missing_chart_type_only(missing_fields: List[str]) -> bool:
     normalized = [field.strip().lower() for field in missing_fields if field and field.strip()]
     return bool(normalized) and all(field == "chart_type" for field in normalized)
@@ -1345,6 +1358,17 @@ def _decision_stage(
             message=outcome.message,
             clarification_type=outcome.clarification_type,
             clarification_options=outcome.clarification_options,
+            missing_fields=outcome.missing_fields,
+        )
+
+    metric_clarification_options = _normalized_metric_clarification_options(entities)
+    if reason_norm == "ambiguous_request" and len(metric_clarification_options) >= 2:
+        outcome = VisualizationRequestOutcome(
+            decision="clarify",
+            reason=outcome.reason,
+            message=outcome.message,
+            clarification_type="metric",
+            clarification_options=metric_clarification_options,
             missing_fields=outcome.missing_fields,
         )
 
