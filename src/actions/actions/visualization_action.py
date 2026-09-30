@@ -190,6 +190,56 @@ def _emit_next_metric_followup(
     )
 
 
+def _build_metric_clarification_prompt(
+    clarification_type: Optional[str],
+    clarification_options: Optional[List[str]],
+    language: str,
+    fallback_message: Optional[str],
+) -> tuple[str, List[Dict[str, str]]]:
+    if str(clarification_type or "").strip().lower() != "metric":
+        if isinstance(fallback_message, str) and fallback_message.strip():
+            return fallback_message.strip(), []
+        return translate("action.visualization.clarify_default", language=language), []
+
+    metric_meta = ssot_loader.get_metric_metadata()
+    canonical_options: List[str] = []
+    seen: set[str] = set()
+    for raw_option in clarification_options or []:
+        if not isinstance(raw_option, str):
+            continue
+        canonical = raw_option.strip().upper()
+        if not canonical or canonical in seen or canonical not in metric_meta:
+            continue
+        seen.add(canonical)
+        canonical_options.append(canonical)
+
+    if len(canonical_options) < 2:
+        if isinstance(fallback_message, str) and fallback_message.strip():
+            return fallback_message.strip(), []
+        return translate("action.visualization.clarify_default", language=language), []
+
+    display_names = [ssot_loader.get_metric_display_name(metric_code) for metric_code in canonical_options]
+    if any(not isinstance(display_name, str) or not display_name.strip() for display_name in display_names):
+        if isinstance(fallback_message, str) and fallback_message.strip():
+            return fallback_message.strip(), []
+        return translate("action.visualization.clarify_default", language=language), []
+
+    message = translate(
+        "action.visualization.metric_choice_clarify",
+        language=language,
+        params={"options": ", ".join(display_names)},
+        default=f"Which metric did you mean: {', '.join(display_names)}?",
+    )
+    buttons = [
+        {
+            "title": display_name,
+            "payload": f'/clarify_visualization{{"metric":"{metric_code}"}}',
+        }
+        for metric_code, display_name in zip(canonical_options, display_names)
+    ]
+    return message, buttons
+
+
 def _collect_visualization_thread_messages(events: List[Dict[str, Any]], fallback_limit: int = 12) -> List[str]:
     user_messages: List[str] = []
     rejected_indices: set[int] = set()
@@ -580,6 +630,31 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                     progress_cb=None,
                 )
 
+                if outcome.decision == "clarify":
+                    clarification_message, clarification_buttons = _build_metric_clarification_prompt(
+                        outcome.clarification_type,
+                        outcome.clarification_options,
+                        language,
+                        outcome.message,
+                    )
+                    dispatcher.utter_message(
+                        json_message={
+                            "type": "visualization_query_decision",
+                            "trace_id": trace_id,
+                            "decision": outcome.decision,
+                            "reason": outcome.reason,
+                            "clarification_type": outcome.clarification_type,
+                            "clarification_options": outcome.clarification_options,
+                            "message": clarification_message,
+                            "missing_fields": outcome.missing_fields,
+                        }
+                    )
+                    dispatcher.utter_message(text=clarification_message, buttons=clarification_buttons)
+                    return [
+                        SlotSet("awaiting_visualization_clarification", True),
+                        SlotSet("guided_offer_shown", True),
+                    ]
+
                 dispatcher.utter_message(
                     json_message={
                         "type": "visualization_query_decision",
@@ -592,13 +667,6 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                         "missing_fields": outcome.missing_fields,
                     }
                 )
-
-                if outcome.decision == "clarify":
-                    dispatcher.utter_message(text=outcome.message or translate("action.visualization.clarify_default", language=language))
-                    return [
-                        SlotSet("awaiting_visualization_clarification", True),
-                        SlotSet("guided_offer_shown", True),
-                    ]
 
                 if outcome.decision == "reject":
                     dispatcher.utter_message(text=outcome.message or translate("action.visualization.reject_default", language=language))
@@ -897,6 +965,12 @@ class ActionOneShotGenerateVisualization(LongAction):
 
                     decision_name = str(outcome.decision or "").strip().lower()
                     if decision_name == "clarify":
+                        clarification_message, clarification_buttons = _build_metric_clarification_prompt(
+                            outcome.clarification_type,
+                            outcome.clarification_options,
+                            retry_language,
+                            outcome.message,
+                        )
                         ctx.say(
                             json_message={
                                 "type": "visualization_query_decision",
@@ -905,10 +979,10 @@ class ActionOneShotGenerateVisualization(LongAction):
                                 "reason": outcome.reason,
                                 "clarification_type": outcome.clarification_type,
                                 "clarification_options": outcome.clarification_options,
-                                "message": outcome.message,
+                                "message": clarification_message,
                             }
                         )
-                        ctx.say(text=outcome.message or translate("action.visualization.clarify_default", language=retry_language))
+                        ctx.say(text=clarification_message, buttons=clarification_buttons)
                         return PreworkResult(
                             events=[SlotSet("awaiting_visualization_clarification", True)],
                             proceed=False,
@@ -1020,6 +1094,12 @@ class ActionOneShotGenerateVisualization(LongAction):
                 decision_name = str(outcome.decision or "").strip().lower()
                 language = cast(str, request_ctx.get("language") or "en")
                 if decision_name == "clarify":
+                    clarification_message, clarification_buttons = _build_metric_clarification_prompt(
+                        outcome.clarification_type,
+                        outcome.clarification_options,
+                        language,
+                        outcome.message,
+                    )
                     ctx.say(
                         json_message={
                             "type": "visualization_query_decision",
@@ -1028,10 +1108,10 @@ class ActionOneShotGenerateVisualization(LongAction):
                             "reason": outcome.reason,
                             "clarification_type": outcome.clarification_type,
                             "clarification_options": outcome.clarification_options,
-                            "message": outcome.message,
+                            "message": clarification_message,
                         }
                     )
-                    ctx.say(text=outcome.message or translate("action.visualization.clarify_default", language=language))
+                    ctx.say(text=clarification_message, buttons=clarification_buttons)
                     return PreworkResult(
                         events=[SlotSet("awaiting_visualization_clarification", True)],
                         proceed=False,
@@ -1226,6 +1306,15 @@ class ActionOneShotGenerateVisualization(LongAction):
 
                     decision_name = str(outcome.decision or "").strip().lower()
                     if decision_name in {"clarify", "reject"}:
+                        clarification_message = outcome.message
+                        clarification_buttons: List[Dict[str, str]] = []
+                        if decision_name == "clarify":
+                            clarification_message, clarification_buttons = _build_metric_clarification_prompt(
+                                outcome.clarification_type,
+                                outcome.clarification_options,
+                                language,
+                                outcome.message,
+                            )
                         ctx.say(
                             json_message={
                                 "type": "visualization_query_decision",
@@ -1234,11 +1323,11 @@ class ActionOneShotGenerateVisualization(LongAction):
                                 "reason": outcome.reason,
                                 "clarification_type": outcome.clarification_type,
                                 "clarification_options": outcome.clarification_options,
-                                "message": outcome.message,
+                                "message": clarification_message,
                             }
                         )
                         default_key = "action.visualization.clarify_default" if decision_name == "clarify" else "action.visualization.reject_default"
-                        ctx.say(text=outcome.message or translate(default_key, language=language))
+                        ctx.say(text=clarification_message or translate(default_key, language=language), buttons=clarification_buttons)
                         return None
 
                     plan_obj = outcome.plan if isinstance(outcome.plan, lang_schema.AnalysisPlan) else None

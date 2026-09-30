@@ -347,3 +347,26 @@ class DecisionStageInvalidDecisionRetryTests(unittest.TestCase):
 
         self.assertEqual(outcome.decision, "reject")
         self.assertEqual(outcome.reason, "out_of_scope")
+
+    def test_normalizes_ambiguous_metric_request_to_metric_clarification_options(self) -> None:
+        with patch(
+            "src.planners.langchain.request_orchestrator._invoke_chain",
+            return_value={
+                "decision": "reject",
+                "reason": "ambiguous_request",
+                "clarification_type": None,
+                "clarification_options": None,
+                "message": "Please clarify which metric you want to visualize.",
+                "missing_fields": [],
+            },
+        ):
+            outcome = _decision_stage(
+                question="Show me a line graph of ivt dose",
+                entities={"chart_type": "LINE", "metric": ["THROMBOLYSIS_DRUG_DOSE", "THROMBOLYSIS"]},
+                language="en",
+            )
+
+        self.assertEqual(outcome.decision, "clarify")
+        self.assertEqual(outcome.reason, "ambiguous_request")
+        self.assertEqual(outcome.clarification_type, "metric")
+        self.assertEqual(outcome.clarification_options, ["THROMBOLYSIS_DRUG_DOSE", "THROMBOLYSIS"])

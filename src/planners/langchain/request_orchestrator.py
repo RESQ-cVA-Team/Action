@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, cast
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.domain.langchain.schema import TIME_INTERVALS, AnalysisPlan, AndFilter, ChartType, DataOriginSpec, DateFilter, MetricSpec, OriginScopeSpec, SplitSpec, StatisticalTestSpec
+from src.domain.langchain.schema import TIME_INTERVALS, AnalysisPlan, AndFilter, ChartSpec, ChartType, DataOriginSpec, DateFilter, MetricSpec, OriginScopeSpec, SplitSpec, StatisticalTestSpec
 from src.planners.langchain.llm_factory import create_chat_llm
 from src.planners.langchain.pipeline import (
     _PLANNER_REQUEST_TIMEOUT_SECONDS,
@@ -316,6 +316,19 @@ def _coerce_options(raw: Any) -> List[str]:
         if isinstance(item, str) and item.strip():
             out.append(item.strip())
     return out
+
+
+def _normalized_metric_clarification_options(entities: Dict[str, Any]) -> List[str]:
+    metric_meta = ssot_loader.get_metric_metadata()
+    options: List[str] = []
+    seen: set[str] = set()
+    for raw_metric in _extract_string_list(entities.get("metric")):
+        canonical = raw_metric.strip().upper()
+        if not canonical or canonical in seen or canonical not in metric_meta:
+            continue
+        seen.add(canonical)
+        options.append(canonical)
+    return options
 
 
 def _is_missing_chart_type_only(missing_fields: List[str]) -> bool:
@@ -718,6 +731,102 @@ _REDUNDANT_SELF_SPLIT_METRICS_BY_KIND = {
     "STROKE_TYPE": {"STROKE_TYPE"},
     "SEX": {"SEX_TYPE"},
 }
+
+
+def _metric_ssot_unit(metric_code: str) -> Optional[str]:
+    """Return the canonical SSOT unit for a metric, if one is declared."""
+    if not isinstance(metric_code, str) or not metric_code.strip():
+        return None
+
+    metric_key = metric_code.strip().upper()
+    metadata = ssot_loader.get_metric_metadata().get(metric_key, {})
+    if not isinstance(metadata, dict):
+        return None
+
+    unit = metadata.get("unit")
+    if isinstance(unit, str) and unit.strip():
+        return unit.strip()
+
+    numeric = metadata.get("numeric")
+    if isinstance(numeric, dict):
+        numeric_unit = numeric.get("unit")
+        if isinstance(numeric_unit, str) and numeric_unit.strip():
+            return numeric_unit.strip()
+
+    return None
+
+
+def _split_mixed_unit_charts(plan: AnalysisPlan) -> AnalysisPlan:
+    """Split multi-metric charts into separate chart specs when units differ.
+
+    A single chart is only valid when all included metrics share the same SSOT unit.
+    Mixed-unit requests should fall back to multiple charts instead of producing an
+    invalid combined chart that can fail downstream rendering.
+    """
+    charts = list(plan.charts or [])
+    if not charts:
+        return plan
+
+    split_charts: List[ChartSpec] = []
+    changed = False
+
+    for chart in charts:
+        metrics = list(chart.metrics or [])
+        if len(metrics) <= 1:
+            split_charts.append(chart)
+            continue
+
+        metric_units = []
+        for metric in metrics:
+            if not isinstance(metric.metric, str) or not metric.metric.strip():
+                continue
+            metric_units.append((metric, _metric_ssot_unit(metric.metric)))
+
+        declared_units = {unit for _, unit in metric_units if unit is not None}
+        missing_units = [metric for metric, unit in metric_units if unit is None]
+
+        if not missing_units and len(declared_units) <= 1:
+            split_charts.append(chart)
+            continue
+
+        if missing_units and not declared_units:
+            split_charts.append(chart)
+            continue
+
+        if missing_units and declared_units:
+            changed = True
+            for metric in metrics:
+                split_charts.append(
+                    ChartSpec(
+                        chart_type=chart.chart_type,
+                        semantics=chart.semantics,
+                        filters=chart.filters,
+                        metrics=[metric],
+                        numeric_resolution=chart.numeric_resolution,
+                    )
+                )
+            continue
+
+        if len(declared_units) > 1:
+            changed = True
+            for metric in metrics:
+                split_charts.append(
+                    ChartSpec(
+                        chart_type=chart.chart_type,
+                        semantics=chart.semantics,
+                        filters=chart.filters,
+                        metrics=[metric],
+                        numeric_resolution=chart.numeric_resolution,
+                    )
+                )
+            continue
+
+        split_charts.append(chart)
+
+    if not changed:
+        return plan
+
+    return AnalysisPlan(charts=split_charts or None, statistical_tests=plan.statistical_tests)
 
 
 def _normalize_plan_semantic_splits(plan: AnalysisPlan) -> AnalysisPlan:
@@ -1348,6 +1457,17 @@ def _decision_stage(
             missing_fields=outcome.missing_fields,
         )
 
+    metric_clarification_options = _normalized_metric_clarification_options(entities)
+    if reason_norm == "ambiguous_request" and len(metric_clarification_options) >= 2:
+        outcome = VisualizationRequestOutcome(
+            decision="clarify",
+            reason=outcome.reason,
+            message=outcome.message,
+            clarification_type="metric",
+            clarification_options=metric_clarification_options,
+            missing_fields=outcome.missing_fields,
+        )
+
     # Deterministic safeguard: don't trust a missing_fields claim that
     # contradicts ENTITIES_JSON itself (see _drop_falsely_missing_fields).
     if outcome.decision != "proceed" and outcome.missing_fields:
@@ -1540,6 +1660,7 @@ def orchestrate_visualization_request(
                 progress_cb=progress_cb,
             )
             plan = _normalize_plan_semantic_splits(plan)
+            plan = _split_mixed_unit_charts(plan)
             logger.info("Plan generation completed successfully", extra={"plan_type": type(plan).__name__})
 
             logger.info("Starting validation of statistical plan readiness")
@@ -1589,6 +1710,8 @@ def orchestrate_visualization_request(
                         trace_id=trace_id,
                         progress_cb=progress_cb,
                     )
+                    plan = _normalize_plan_semantic_splits(plan)
+                    plan = _split_mixed_unit_charts(plan)
                     return VisualizationRequestOutcome(
                         decision="proceed",
                         reason="orchestrator_fallback_to_plan",

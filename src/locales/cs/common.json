@@ -7,6 +7,7 @@
       "clarify_default": "Potřebuji ještě trochu více detailů, než mohu vygenerovat vizualizaci.",
       "missing_time_bounds": "Mohu vykreslit měsíční nebo čtvrtletní trend, ale nejdříve potřebuji explicitní časový rozsah. Uveďte prosím hranice, například 'od 2023-01-01 do 2023-12-31' nebo 'za posledních 12 měsíců'.",
       "empty_plan_clarify": "Z tohoto požadavku se mi nepodařilo odvodit spustitelný analytický plán. Zadejte požadavek na graf s metrikou a typem grafu, nebo u statistiky uveďte dvě explicitní kohorty k porovnání.",
+      "metric_choice_clarify": "Kterou metriku jste myslel(a): {options}?",
       "reject_default": "Tento požadavek je mimo tok vizualizace.",
       "non_visualization_intent": "Mohu pomoci s požadavky na vizualizaci. Zkuste požádat o vytvoření grafu nebo o aktualizaci aktuálního grafu.",
       "success_complete": "Hotovo!",

@@ -114,6 +114,14 @@ def _canonical_metric_from_exact_span(text: str, start: Any, end: Any) -> Option
     return _normalized_canonical_metric_keys().get(norm)
 
 
+def _span_contains(outer: tuple[Any, Any], inner: tuple[Any, Any]) -> bool:
+    if not all(isinstance(part, int) for part in outer + inner):
+        return False
+    outer_start, outer_end = cast(tuple[int, int], outer)
+    inner_start, inner_end = cast(tuple[int, int], inner)
+    return outer_start <= inner_start and outer_end >= inner_end
+
+
 def canonicalize_ssot_entities(entities: Dict[str, Any]) -> Dict[str, Any]:
     # Deterministic SSOT canonicalization only (no fallback inference).
     normalized: Dict[str, Any] = {}
@@ -209,6 +217,7 @@ def extract_entities_from_latest_message(
     # second pass can drop any entity type whose only support is a lookup-table
     # match contradicted by DIET's own reading of those exact tokens.
     diet_span_labels: Dict[tuple[Any, Any], str] = {}
+    diet_metric_spans: List[tuple[Any, Any]] = []
     for ent_any in entities_list:
         if not isinstance(ent_any, dict):
             continue
@@ -220,6 +229,8 @@ def extract_entities_from_latest_message(
             entity_type = ent.get("entity")
             if isinstance(entity_type, str):
                 diet_span_labels[span] = entity_type
+                if entity_type == "metric":
+                    diet_metric_spans.append(span)
 
     extracted: Dict[str, Any] = {}
     for ent_any in entities_list:
@@ -239,6 +250,16 @@ def extract_entities_from_latest_message(
             exact_span_canonical = _canonical_metric_from_exact_span(question_text, ent.get("start"), ent.get("end"))
             if exact_span_canonical is not None:
                 value = exact_span_canonical
+        if key_any == "metric" and "DIETClassifier" not in extractor_names:
+            if any(
+                (
+                    _span_contains(metric_span, span)
+                    or _span_contains(span, metric_span)
+                )
+                and metric_span != span
+                for metric_span in diet_metric_spans
+            ):
+                continue
         if "DIETClassifier" not in extractor_names and diet_label_for_span is not None and diet_label_for_span != key_any:
             # Keep the existing DIET-over-regex conflict rule by default, but
             # preserve explicit chart-request metrics that are known SSOT
