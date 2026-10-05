@@ -952,17 +952,31 @@ def _requested_metric_text_spans(question: str, entities: Dict[str, Any]) -> Lis
         return []
 
     lookup = ssot_loader.get_metric_text_lookup()
-    spans: List[tuple[int, int]] = []
+    question_norm = ssot_loader.normalize_metric_text_key(question_text)
+    metric_entries: Dict[str, Dict[str, Any]] = {}
 
     for metric in _extract_string_list(entities.get("metric")):
         metric_norm = ssot_loader.normalize_metric_text_key(metric)
         if not metric_norm:
             continue
-
         entry = lookup.get(metric_norm)
-        if entry is None:
-            continue
+        canonical = entry.get("canonical") if entry is not None else None
+        if isinstance(canonical, str) and canonical.strip():
+            metric_entries.setdefault(canonical.strip().upper(), entry)
 
+    # Rasa may omit the metric entity even when the user uses an exact SSOT
+    # synonym. Recover only complete metric-text phrases present in the
+    # question so their overlapping risk-factor terms are protected.
+    for metric_text, entry in lookup.items():
+        if not re.search(r"(?<!\w)" + re.escape(metric_text) + r"(?!\w)", question_norm):
+            continue
+        canonical = entry.get("canonical")
+        if isinstance(canonical, str) and canonical.strip():
+            metric_entries.setdefault(canonical.strip().upper(), entry)
+
+    spans: List[tuple[int, int]] = []
+
+    for entry in metric_entries.values():
         candidates: List[str] = []
         canonical = entry.get("canonical")
         if isinstance(canonical, str) and canonical.strip():
