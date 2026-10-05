@@ -789,11 +789,7 @@ def _split_mixed_unit_charts(plan: AnalysisPlan) -> AnalysisPlan:
             split_charts.append(chart)
             continue
 
-        if missing_units and not declared_units:
-            split_charts.append(chart)
-            continue
-
-        if missing_units and declared_units:
+        if missing_units:
             changed = True
             for metric in metrics:
                 split_charts.append(
