@@ -796,6 +796,11 @@ def _split_mixed_unit_charts(plan: AnalysisPlan) -> AnalysisPlan:
                 continue
             metric_units.append((metric, _metric_ssot_unit(metric.metric)))
 
+        # Same metric across scopes is a comparison, not a unit mix, even when the metric has no unit.
+        if len({metric.metric.strip().upper() for metric, _ in metric_units}) <= 1:
+            split_charts.append(chart)
+            continue
+
         declared_units = {unit for _, unit in metric_units if unit is not None}
         missing_units = [metric for metric, unit in metric_units if unit is None]
 

@@ -164,3 +164,43 @@ class FilterListNormalizationTests(unittest.TestCase):
         self.assertEqual(len(split_plan.charts), 2)
         self.assertEqual([m.metric for m in split_plan.charts[0].metrics], ["SEX"])
         self.assertEqual([m.metric for m in split_plan.charts[1].metrics], ["STROKE_TYPE"])
+
+    def test_same_unitless_metric_multi_scope_chart_stays_conjoined(self) -> None:
+        plan = AnalysisPlan.model_validate(
+            {
+                "charts": [
+                    {
+                        "chart_type": "BAR",
+                        "metrics": [
+                            {"metric": "SEX", "originScope": {"scopeType": "mine"}},
+                            {"metric": "SEX", "originScope": {"scopeType": "provider_name", "value": "X"}},
+                        ],
+                    }
+                ]
+            }
+        )
+
+        split_plan = _split_mixed_unit_charts(plan)
+
+        self.assertEqual(len(split_plan.charts), 1)
+        self.assertEqual(len(split_plan.charts[0].metrics), 2)
+
+    def test_same_metric_mine_vs_country_average_stays_conjoined(self) -> None:
+        plan = AnalysisPlan.model_validate(
+            {
+                "charts": [
+                    {
+                        "chart_type": "BAR",
+                        "metrics": [
+                            {"metric": "AA_DTN_LE60", "originScope": {"scopeType": "mine"}},
+                            {"metric": "AA_DTN_LE60", "originScope": {"scopeType": "country_average"}},
+                        ],
+                    }
+                ]
+            }
+        )
+
+        split_plan = _split_mixed_unit_charts(plan)
+
+        self.assertEqual(len(split_plan.charts), 1)
+        self.assertEqual(len(split_plan.charts[0].metrics), 2)
