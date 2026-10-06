@@ -479,9 +479,17 @@ def _extract_metric_code(entities: Dict[str, Any]) -> Optional[str]:
     return metrics[0].upper()
 
 
+# Hospital-list pagination entities. Their regex extractors fire on any bare
+# number, so a chart request like "dtn from 0-500" or "age in 10-year
+# buckets" arrives with limit/offset values that mean nothing here and only
+# pull the planner towards nonsense (live: NumericFilter nodes, a YEAR
+# grouping). The orchestrator only ever sees chart requests, so drop them.
+_PAGINATION_ENTITY_KEYS = {"limit", "offset", "sort"}
+
+
 def _normalize_entities_for_question(question: str, entities: Dict[str, Any]) -> Dict[str, Any]:
     _ = question
-    return dict(entities or {})
+    return {key: value for key, value in (entities or {}).items() if key not in _PAGINATION_ENTITY_KEYS}
 
 
 def _extract_date_bounds(entities: Dict[str, Any]) -> Optional[tuple[str, str]]:
