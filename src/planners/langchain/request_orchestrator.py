@@ -398,6 +398,20 @@ def _entity_present(entities: Dict[str, Any], key: str) -> bool:
     return value is not None and value is not False
 
 
+_PERIOD_REFERENCE_PATTERNS = (
+    re.compile(r"^\d{4}$"),
+    re.compile(r"^\d{4}-(0[1-9]|1[0-2])(-(0[1-9]|[12]\d|3[01]))?$"),
+    re.compile(r"^q[1-4]\s*\d{4}$", re.IGNORECASE),
+    re.compile(r"^\d{4}\s*q[1-4]$", re.IGNORECASE),
+    re.compile(r"^(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{4}$", re.IGNORECASE),
+)
+
+
+def _looks_like_period_reference(value: str) -> bool:
+    token = (value or "").strip()
+    return bool(token) and any(pattern.match(token) for pattern in _PERIOD_REFERENCE_PATTERNS)
+
+
 def _drop_falsely_missing_fields(missing_fields: List[str], entities: Dict[str, Any]) -> List[str]:
     """Cross-check the decision stage's own missing_fields claim against the
     same ENTITIES_JSON it was given. Observed intermittently: the LLM claims
@@ -1490,6 +1504,22 @@ def _decision_stage(
                 clarification_type=outcome.clarification_type,
                 clarification_options=outcome.clarification_options,
                 missing_fields=corrected_missing,
+            )
+
+    # Deterministic safeguard: a quarter, month or year reference ("Q1 2023",
+    # "March 2025", "2024") is a valid period, not a malformed date. Observed
+    # live: the same three-quarter request was accepted twice and rejected as
+    # invalid_date_format the third time.
+    if outcome.decision == "reject" and "invalid_date_format" in outcome.reason.strip().lower().replace(" ", "_"):
+        date_values = _extract_string_list(entities.get("date"))
+        if date_values and all(_looks_like_period_reference(value) for value in date_values):
+            return VisualizationRequestOutcome(
+                decision="proceed",
+                reason="all_required_fields_present",
+                message=None,
+                clarification_type=None,
+                clarification_options=[],
+                missing_fields=[],
             )
 
     # Deterministic safeguard: a request with a real, present metric cannot be
