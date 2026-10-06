@@ -286,7 +286,46 @@ def extract_entities_from_latest_message(
         if isinstance(role_any, str) and role_any.strip():
             _accumulate_entity_value(extracted, f"{key_any}_{role_any.strip().lower()}", value)
 
+    _derive_range_bounds_from_wording(extracted, question_text)
     return extracted
+
+
+_RANGE_WORDING = re.compile(
+    r"(?:between|from)\s+(\d+(?:\.\d+)?)\s*(?:and|to|-|–|—)\s*(\d+(?:\.\d+)?)"
+    r"|(\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+
+
+def _derive_range_bounds_from_wording(extracted: Dict[str, Any], question_text: str) -> None:
+    """DIET's lower/upper roles are unreliable for a two-ended range: live,
+    "between 10 and 30" came back with both numbers as lower. When the
+    wording itself states the range with the two numbers NLU extracted, the
+    wording decides the bounds.
+    """
+    for key in ("age", "nihss"):
+        values_any = extracted.get(key)
+        if not isinstance(values_any, list) or len(values_any) != 2:
+            continue
+        values = cast(List[Any], values_any)
+        try:
+            by_number = {float(str(v)): v for v in values}
+        except ValueError:
+            continue
+        if len(by_number) != 2:
+            continue
+        for match in _RANGE_WORDING.finditer(question_text or ""):
+            first, second = (match.group(1), match.group(2)) if match.group(1) else (match.group(3), match.group(4))
+            try:
+                pair = {float(first), float(second)}
+            except ValueError:
+                continue
+            if pair != set(by_number):
+                continue
+            lower, upper = sorted(pair)
+            extracted[f"{key}_lower"] = by_number[lower]
+            extracted[f"{key}_upper"] = by_number[upper]
+            break
 
 
 def _accumulate_entity_value(extracted: Dict[str, Any], key: str, value: Any) -> None:
