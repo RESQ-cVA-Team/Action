@@ -73,7 +73,7 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
     def test_allows_metric_synonyms_that_overlap_risk_factor_terms(self) -> None:
         self.assertIsNone(
             _detect_unsupported_risk_factor_filter(
-                "Show me anticoagulants at discharge in atrial fibrillation",
+                "Show me anticoagulants for atrial fibrillation at discharge",
                 {"metric": ["DISCHARGE_ANTICOAGULANTS_AFIB"]},
             )
         )
@@ -81,13 +81,13 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
     def test_allows_metric_synonym_when_metric_entity_is_missing(self) -> None:
         self.assertIsNone(
             _detect_unsupported_risk_factor_filter(
-                "Show me a line graph of anticoagulants at discharge in atrial fibrillation",
+                "Show me a line graph of anticoagulants for atrial fibrillation at discharge",
                 {"chart_type": ["LINE"]},
             )
         )
 
     def test_orchestration_does_not_reject_metric_synonym_when_metric_entity_is_missing(self) -> None:
-        question = "Show me a line graph of anticoagulants at discharge in atrial fibrillation"
+        question = "Show me a line graph of anticoagulants for atrial fibrillation at discharge"
         with patch(
             "src.planners.langchain.request_orchestrator._decision_stage",
             return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
@@ -113,7 +113,7 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
     def test_still_rejects_unrelated_risk_factor_when_metric_synonym_is_present(self) -> None:
         self.assertEqual(
             _detect_unsupported_risk_factor_filter(
-                "Show me anticoagulants at discharge in atrial fibrillation for smokers",
+                "Show me anticoagulants for atrial fibrillation at discharge for smokers",
                 {"metric": ["DISCHARGE_ANTICOAGULANTS_AFIB"]},
             ),
             "smoker",
@@ -122,7 +122,7 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
     def test_detects_unrelated_risk_factor_when_metric_entity_is_missing(self) -> None:
         self.assertEqual(
             _detect_unsupported_risk_factor_filter(
-                "Show me a line graph of anticoagulants at discharge in atrial fibrillation for smokers",
+                "Show me a line graph of anticoagulants for atrial fibrillation at discharge for smokers",
                 {"chart_type": ["LINE"]},
             ),
             "smoker",
