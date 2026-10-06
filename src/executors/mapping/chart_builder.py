@@ -22,8 +22,9 @@ from src.domain.langchain.schema import (
     GroupByStrokeType,
     GroupByTime,
 )
+from src.executors.planning.metric_request_factory import numeric_request_bounds
 from src.executors.planning.query_compiler import Dimension
-from src.executors.planning.ssot_metric_defaults import build_distribution_bin_ranges
+from src.executors.planning.ssot_metric_defaults import build_distribution_bin_ranges, is_enum_metric
 from src.shared.ssot_loader import (
     get_canonical_display_name,
     get_metric_display_name,
@@ -450,22 +451,19 @@ def _derive_axes_from_dimensions(
     return x_axis, y_axis
 
 
-def _distribution_value_range(plan_chart: S.ChartSpec, series: List[ChartSeries], bin_width: Optional[float]) -> Optional[str]:
-    xs: List[float] = []
-    for item in series:
-        for point in item.data:
-            if isinstance(point.x, (int, float)) and not isinstance(point.x, bool):
-                xs.append(float(point.x))
-    if not xs:
-        return None
-    lower = min(xs)
-    width = bin_width
-    if width is None and series and len(series[0].data) > 1:
-        width = _histogram_bin_width_from_points(series[0].data)
-    upper = max(xs) + (width if isinstance(width, (int, float)) and width > 0 else 0.0)
-    text = f"{lower:g} to {upper:g}"
+def _fetched_value_range(plan_chart: S.ChartSpec) -> Optional[str]:
+    """The range the metric calculator was asked for, not the bins left after
+    tail trimming: a chart whose first bin starts at 30 was still fetched
+    over 0 to 520, and that is the fact the title should carry."""
     metric_codes = _metric_codes(plan_chart)
-    unit = _metric_unit(metric_codes[0]) if len(metric_codes) == 1 else None
+    if len(metric_codes) != 1 or is_enum_metric(metric_codes[0]):
+        return None
+    try:
+        lower, upper = numeric_request_bounds(plan_chart, metric_codes[0])
+    except Exception:
+        return None
+    unit = _metric_unit(metric_codes[0])
+    text = f"{lower:g} to {upper:g}"
     return f"{text} {unit}" if unit else text
 
 
@@ -556,7 +554,7 @@ def build_chart_dto(
 
     value_range: Optional[str] = None
     if _uses_distribution_axes(chart_type_upper, dimensions, series_to_render):
-        value_range = _distribution_value_range(plan_chart, series_to_render, histogram_original_bin_width)
+        value_range = _fetched_value_range(plan_chart)
     title_text = _derive_title(
         plan_chart,
         dimensions,
