@@ -22,6 +22,7 @@ from src.domain.langchain.schema import (
     GroupByStrokeType,
     GroupByTime,
 )
+from src.executors.mapping.series_mapper import _grouped_time_period_label
 from src.executors.planning.query_compiler import Dimension
 from src.executors.planning.ssot_metric_defaults import build_distribution_bin_ranges
 from src.shared.ssot_loader import (
@@ -500,9 +501,12 @@ def _derive_title(
         if token and token not in split_labels:
             split_labels.append(token)
 
+    explicit_periods = list(getattr(time_dim.spec, "periods", None) or []) if time_dim is not None else []
     if is_distribution and not dimensions:
         subject += " distribution"
-    if time_dim is not None:
+    if explicit_periods:
+        subject += " for " + ", ".join(_grouped_time_period_label(p.start_date, p.end_date) for p in explicit_periods)
+    elif time_dim is not None:
         subject += f" per {_normalize_title_token(_dimension_label(time_dim) or 'period')}"
     if split_labels:
         subject += " by " + " and ".join(split_labels)
@@ -512,10 +516,12 @@ def _derive_title(
         parts.append(value_range)
 
     filters_node = cast(Any, getattr(plan_chart, "filters", None))
-    sampled_period = sampled_period_override or _sample_period(filters_node)
+    # Explicit periods are already spelled out in the subject; the sampled
+    # span would only suggest a continuous range that was never requested.
+    sampled_period = None if explicit_periods else (sampled_period_override or _sample_period(filters_node))
     if sampled_period:
         parts.append(sampled_period)
-    filters_part = _format_filter_text(filters_node, include_date=sampled_period is None)
+    filters_part = _format_filter_text(filters_node, include_date=sampled_period is None and not explicit_periods)
     if filters_part and filters_part != "all patients":
         parts.append(f"filtered by {filters_part}")
     return ", ".join(parts)
