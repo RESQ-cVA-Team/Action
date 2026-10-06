@@ -9,3 +9,13 @@
 # internal dependency resolution at install time.
 GHSA-6v7p-g79w-8964
 CVE-2025-47273
+
+# Same situation, pip's vendored urllib3==2.7.0 (also pip/_vendor/vendor.txt,
+# same pip 26.2.1 release, same "no way to upgrade pip's bundle separately"
+# constraint as above). Confirmed via the built image: only one real urllib3
+# install exists (/opt/venv/.../urllib3-2.8.0.dist-info, matching
+# requirements.txt) -- Trivy's Python package scanner also picks up pip's
+# internal pip/_vendor/urllib3 source tree as if it were a second top-level
+# install, and reports it at the version pip itself vendors.
+CVE-2026-97687
+CVE-2026-97689
