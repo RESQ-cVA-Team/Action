@@ -411,10 +411,11 @@ def merge_latest_with_thread_entities(
     return merged
 
 
-def _is_awaiting_clarification_reply(events: List[Dict[str, Any]]) -> bool:
-    """Whether the bot's most recent utterance before the current turn was a
-    clarification request -- i.e. this turn completes that pending ask rather
-    than starting a fresh one.
+def _pending_clarification_payload(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The most recent visualization_query_decision payload the bot sent
+    before the user's current turn, if that payload was a clarify -- i.e.
+    what this turn is hoping to resolve. None if there's no pending
+    clarification (fresh request, or the prior decision wasn't a clarify).
 
     Deliberately derived from events rather than the
     awaiting_visualization_clarification slot: action_clarify_visualization_request
@@ -429,7 +430,7 @@ def _is_awaiting_clarification_reply(events: List[Dict[str, Any]]) -> bool:
             last_user_idx = idx
             break
     if last_user_idx < 0:
-        return False
+        return None
 
     for idx in range(last_user_idx - 1, -1, -1):
         ev = events[idx]
@@ -437,8 +438,8 @@ def _is_awaiting_clarification_reply(events: List[Dict[str, Any]]) -> bool:
             continue
         payload = _extract_bot_custom_payload(ev)
         if payload and payload.get("type") == "visualization_query_decision":
-            return payload.get("decision") == "clarify"
-    return False
+            return payload if payload.get("decision") == "clarify" else None
+    return None
 
 
 def _should_carry_forward_visualization_context(intent_name: str, events: List[Dict[str, Any]]) -> bool:
@@ -458,7 +459,7 @@ def _should_carry_forward_visualization_context(intent_name: str, events: List[D
     """
     if intent_name in ("update_visualization", "clarify_visualization"):
         return True
-    return _is_awaiting_clarification_reply(events)
+    return _pending_clarification_payload(events) is not None
 
 
 def _extract_bot_custom_payload(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -619,6 +620,8 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                     if latest_plan_summary:
                         planner_question = f"{latest_plan_summary}\n\nUser's newest instruction:\n{planner_question}".strip()
 
+                pending_clarification = _pending_clarification_payload(events) if carry_forward else None
+
                 outcome = orchestrate_visualization_request(
                     question=planner_question,
                     entities=extracted_entities,
@@ -628,6 +631,7 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                     include_plan=False,
                     conversation_history=conversation_history,
                     progress_cb=None,
+                    pending_clarification=pending_clarification,
                 )
 
                 if outcome.decision == "clarify":
@@ -772,6 +776,7 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
         )
         conversation_history = _collect_visualization_thread_messages(events, fallback_limit=12)
         latest_plan_summary = _collect_latest_visualization_plan_summary(events)
+        pending_clarification = _pending_clarification_payload(events)
     else:
         # Fresh generate_visualization request, not completing a pending
         # clarification: start clean, no entities or history from earlier
@@ -779,6 +784,7 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
         extracted_entities = latest_entities
         conversation_history = []
         latest_plan_summary = None
+        pending_clarification = None
 
     # ctx.text is the current turn's own text; prior turns are carried via
     # extracted_entities (structured) and conversation_history (passed separately to
@@ -801,6 +807,7 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
         "language": language,
         "conversation_history": conversation_history,
         "latest_plan_summary": latest_plan_summary,
+        "pending_clarification": pending_clarification,
     }
 
 
@@ -951,6 +958,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                     override_language = cast(Optional[str], request_ctx.get("override_language"))
                     conversation_history = cast(List[str], request_ctx.get("conversation_history") or [])
                     retry_language = cast(str, request_ctx.get("language") or "en")
+                    pending_clarification = cast(Optional[Dict[str, Any]], request_ctx.get("pending_clarification"))
 
                     outcome = orchestrate_visualization_request(
                         question=planner_question,
@@ -961,6 +969,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         include_plan=True,
                         conversation_history=conversation_history,
                         progress_cb=None,
+                        pending_clarification=pending_clarification,
                     )
 
                     decision_name = str(outcome.decision or "").strip().lower()
@@ -1090,6 +1099,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                     include_plan=True,
                     conversation_history=cast(List[str], request_ctx.get("conversation_history") or []),
                     progress_cb=None,
+                    pending_clarification=cast(Optional[Dict[str, Any]], request_ctx.get("pending_clarification")),
                 )
                 decision_name = str(outcome.decision or "").strip().lower()
                 language = cast(str, request_ctx.get("language") or "en")
@@ -1291,6 +1301,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                     extracted_entities = cast(Dict[str, Any], request_ctx["extracted_entities"])
                     override_language = cast(Optional[str], request_ctx["override_language"])
                     conversation_history = cast(List[str], request_ctx.get("conversation_history") or [])
+                    pending_clarification = cast(Optional[Dict[str, Any]], request_ctx.get("pending_clarification"))
 
                     progress("Calling orchestrator to build a plan")
                     outcome = orchestrate_visualization_request(
@@ -1302,6 +1313,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         include_plan=True,
                         conversation_history=conversation_history,
                         progress_cb=progress,
+                        pending_clarification=pending_clarification,
                     )
 
                     decision_name = str(outcome.decision or "").strip().lower()
