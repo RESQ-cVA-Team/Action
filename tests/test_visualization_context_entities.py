@@ -22,7 +22,7 @@ def _load_visualization_context_helpers():
         "_is_visualization_payload",
         "_event_has_visualization_signal",
         "_find_latest_visualization_anchor_user_ordinal",
-        "_is_awaiting_clarification_reply",
+        "_pending_clarification_payload",
         "_should_carry_forward_visualization_context",
         "canonicalize_ssot_entities",
     }
@@ -315,6 +315,58 @@ def test_should_carry_forward_true_while_awaiting_clarification_reply() -> None:
     assert merged["country_code"] == "CZ"
     assert merged["metric"] == "DTN"
     assert merged["chart_type"] == "LINE"
+
+
+def test_pending_clarification_payload_returns_the_full_prior_clarify_payload() -> None:
+    """_should_carry_forward_visualization_context only needs a bool, but the
+    "stay on the pending field" safeguard in request_orchestrator.py needs
+    the full payload (missing_fields/clarification_type/message/...) -- this
+    is the same traversal as the awaiting-clarification test above, just
+    asserting on what actually comes back."""
+    helpers = _load_visualization_context_helpers()
+    pending_clarification_payload = helpers["_pending_clarification_payload"]
+    events = [
+        _user_event("show me nihss over time", "generate_visualization", [{"entity": "group_by", "value": "NIHSS"}]),
+        {
+            "event": "bot",
+            "custom": {
+                "type": "visualization_query_decision",
+                "decision": "clarify",
+                "reason": "missing_required_fields",
+                "clarification_type": "metric",
+                "clarification_options": [],
+                "message": "Which NIHSS metric would you like to visualize over time?",
+                "missing_fields": ["metric"],
+            },
+        },
+        _user_event("AdmissionNihss", "generate_visualization", []),
+    ]
+
+    payload = pending_clarification_payload(events)
+    assert payload is not None
+    assert payload["missing_fields"] == ["metric"]
+    assert payload["message"] == "Which NIHSS metric would you like to visualize over time?"
+
+
+def test_pending_clarification_payload_none_when_no_bot_turn_preceded() -> None:
+    helpers = _load_visualization_context_helpers()
+    pending_clarification_payload = helpers["_pending_clarification_payload"]
+    events = [_user_event("show me a bar chart of stroke type", "generate_visualization", [])]
+    assert pending_clarification_payload(events) is None
+
+
+def test_pending_clarification_payload_none_when_prior_decision_was_not_clarify() -> None:
+    helpers = _load_visualization_context_helpers()
+    pending_clarification_payload = helpers["_pending_clarification_payload"]
+    events = [
+        _user_event("show dtn", "generate_visualization", [{"entity": "metric", "value": "DTN"}]),
+        {
+            "event": "bot",
+            "custom": {"type": "visualization_query_decision", "decision": "proceed", "reason": "all_required_fields_present"},
+        },
+        _user_event("make it a bar chart", "clarify_visualization", [{"entity": "chart_type", "value": "BAR"}]),
+    ]
+    assert pending_clarification_payload(events) is None
 
 
 def test_should_not_carry_forward_after_a_completed_request_with_no_pending_clarification() -> None:
