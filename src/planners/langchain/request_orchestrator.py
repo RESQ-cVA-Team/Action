@@ -1491,6 +1491,25 @@ def _decision_stage(
                 missing_fields=corrected_missing,
             )
 
+    # Deterministic safeguard: a bare metric question ("What is my door to
+    # needle time?") gets a default chart from the planner, not a question
+    # about chart type. Only chart_type is covered; a missing metric still
+    # needs the user.
+    if (
+        outcome.decision == "clarify"
+        and [field.strip().lower() for field in (outcome.missing_fields or [])] == ["chart_type"]
+        and _entity_present(entities, "metric")
+        and not _has_statistical_test_signal(question, entities)
+    ):
+        return VisualizationRequestOutcome(
+            decision="proceed",
+            reason="all_required_fields_present",
+            message=None,
+            clarification_type=None,
+            clarification_options=[],
+            missing_fields=[],
+        )
+
     # Deterministic safeguard: a request with a real, present metric cannot be
     # genuinely out of scope -- Rasa's own intent routing already established
     # this is a visualization request before this stage ever runs (this

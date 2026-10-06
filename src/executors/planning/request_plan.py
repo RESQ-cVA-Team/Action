@@ -31,6 +31,8 @@ class RequestSpec:
     # native groupBy for arbitrary buckets), but the series mapper still needs
     # to know each request represents one category, not an ungrouped whole.
     is_filter_grouped: bool = False
+    # "count" plots case counts; "percent" plots the share of cases (measure RATE).
+    value_mode: str = "count"
 
 
 def _collect_date_bounds(
@@ -98,6 +100,7 @@ def build_primary_request_specs(
     metric_scope_labels: Optional[Sequence[Optional[str]]] = None,
     data_origin: Optional[DataOrigin] = None,
     include_general_stats: bool = False,
+    value_mode: str = "count",
 ) -> List[RequestSpec]:
     specs: List[RequestSpec] = []
     per_metric_data_origin = any(origin is not None for origin in (metric_data_origins or []))
@@ -140,6 +143,7 @@ def build_primary_request_specs(
                         scope_label=effective_scope_label,
                         batched_time_periods=batched_time_periods,
                         is_filter_grouped=bool(filter_dims),
+                        value_mode=value_mode,
                     )
                 )
         else:
@@ -164,6 +168,7 @@ def build_primary_request_specs(
                     add_time_period_labels=batched_time_enabled,
                     batched_time_periods=batched_time_periods,
                     is_filter_grouped=bool(filter_dims),
+                    value_mode=value_mode,
                 )
             )
 
