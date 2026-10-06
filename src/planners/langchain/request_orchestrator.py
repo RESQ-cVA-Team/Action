@@ -843,6 +843,69 @@ def _split_mixed_unit_charts(plan: AnalysisPlan) -> AnalysisPlan:
     return AnalysisPlan(charts=split_charts or None, statistical_tests=plan.statistical_tests)
 
 
+def _metric_synonym_texts(metric_codes: List[str]) -> List[str]:
+    wanted = {code.strip().upper() for code in metric_codes if isinstance(code, str) and code.strip()}
+    if not wanted:
+        return []
+    texts: List[str] = []
+    for text, entry in ssot_loader.get_metric_text_lookup().items():
+        canonical = entry.get("canonical") if isinstance(entry, dict) else None
+        if isinstance(canonical, str) and canonical.strip().upper() in wanted:
+            texts.append(text)
+    return texts
+
+
+_NAMED_SCOPE_TYPES = {"provider_name", "provider_group_name"}
+
+
+def _drop_hospital_scopes_from_metric_words(plan: AnalysisPlan, entities: Dict[str, Any]) -> AnalysisPlan:
+    """Drop hospital/group name scopes the planner read out of the metric's own name.
+
+    "imaging at first hospital" names the metric AA_IMAGING, not a hospital
+    or provider group called "first hospital"; resolving a name like that
+    either pages through every accessible provider and times out, or fails
+    with "could not match that provider group". A named scope is kept
+    whenever NLU saw a hospital or group name for it, and only dropped when
+    its text is a fragment of one of the chart's own metric synonyms.
+    """
+    named = [ssot_loader.normalize_metric_text_key(value) for key in ("hospital_name", "provider_name", "provider_group_name") for value in _extract_string_list(entities.get(key))]
+    named = [token for token in named if token]
+    plan_changed = False
+    charts: List[ChartSpec] = []
+    for chart in plan.charts or []:
+        codes = [metric.metric for metric in chart.metrics if isinstance(metric.metric, str)]
+        synonyms: Optional[List[str]] = None
+        chart_changed = False
+        metrics: List[MetricSpec] = []
+        for metric in chart.metrics:
+            scope = metric.origin_scope
+            value_norm = ""
+            if scope is not None and scope.scope_type in _NAMED_SCOPE_TYPES:
+                value_norm = ssot_loader.normalize_metric_text_key(str(scope.value or scope.label or ""))
+            if not value_norm or any(value_norm in token or token in value_norm for token in named):
+                metrics.append(metric)
+                continue
+            if synonyms is None:
+                synonyms = _metric_synonym_texts(codes)
+            if any(value_norm in synonym for synonym in synonyms):
+                logger.info(
+                    "Dropping named scope that is part of the metric name",
+                    extra={"scope_type": scope.scope_type if scope is not None else None, "scope_value": scope.value if scope is not None else None, "metrics": codes},
+                )
+                metrics.append(metric.model_copy(update={"origin_scope": None}))
+                chart_changed = True
+            else:
+                metrics.append(metric)
+        if chart_changed:
+            plan_changed = True
+            charts.append(chart.model_copy(update={"metrics": metrics}))
+        else:
+            charts.append(chart)
+    if not plan_changed:
+        return plan
+    return plan.model_copy(update={"charts": charts})
+
+
 def _normalize_plan_semantic_splits(plan: AnalysisPlan) -> AnalysisPlan:
     """Normalize planner split semantics into compiler-supported forms.
 
@@ -1727,6 +1790,7 @@ def orchestrate_visualization_request(
             )
             plan = _normalize_plan_semantic_splits(plan)
             plan = _split_mixed_unit_charts(plan)
+            plan = _drop_hospital_scopes_from_metric_words(plan, normalized_entities)
             logger.info("Plan generation completed successfully", extra={"plan_type": type(plan).__name__})
 
             logger.info("Starting validation of statistical plan readiness")
@@ -1778,6 +1842,7 @@ def orchestrate_visualization_request(
                     )
                     plan = _normalize_plan_semantic_splits(plan)
                     plan = _split_mixed_unit_charts(plan)
+                    plan = _drop_hospital_scopes_from_metric_words(plan, entities)
                     return VisualizationRequestOutcome(
                         decision="proceed",
                         reason="orchestrator_fallback_to_plan",
