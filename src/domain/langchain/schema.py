@@ -449,6 +449,7 @@ class GroupByTime(HashableBaseModel):
 
     grain: str = Field(description="Time aggregation grain.")
     window: Optional[Union[TimeWindow, TimeRange]] = Field(default=None, description="Optional relative or absolute time window.")
+    periods: Optional[List[TimeRange]] = Field(default=None, description="Explicit, possibly non-adjacent periods, one bucket each. Takes precedence over window.")
     include_partial: Optional[bool] = Field(default=None, description="Whether to include the current, incomplete bucket.")
 
     @field_validator("grain")
@@ -597,6 +598,20 @@ class TimeSemanticsSpec(BaseModel):
     grain: Optional[str] = None
     window: Optional[Union[TimeWindow, TimeRange]] = None
     include_partial: Optional[bool] = None
+    # Several specific, possibly non-adjacent periods ("Q1 2023, Q3 2025 and
+    # Q2 2026"), one bucket each. A single date range stays a TimeRange window.
+    periods: Optional[List[TimeRange]] = None
+
+    @field_validator("periods")
+    def validate_periods(cls, v: Optional[List[TimeRange]]) -> Optional[List[TimeRange]]:
+        if v is None:
+            return v
+        if not v:
+            return None
+        for period in v:
+            if period.start_date > period.end_date:
+                raise ValueError(f"time.periods entry has start_date after end_date: {period.start_date} > {period.end_date}")
+        return v
 
     @field_validator("grain")
     def validate_grain(cls, v: Optional[str]) -> Optional[str]:
