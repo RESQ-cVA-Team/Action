@@ -157,5 +157,49 @@ class OriginScopeResolverSemanticsTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
 
+class ProviderNameSearchCachingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        origin_scope_resolver._PROVIDER_LIST_CACHE.clear()
+
+    def tearDown(self) -> None:
+        origin_scope_resolver._PROVIDER_LIST_CACHE.clear()
+
+    def _client(self, calls):
+        class FakeClient:
+            def list_providers(self, **kwargs):
+                calls.append(kwargs)
+                return {
+                    "results": [
+                        {"id": 1853, "nameEnglish": "Army Alhama de Murcia Hospital"},
+                        {"id": 279, "nameEnglish": "My Hospital"},
+                    ],
+                    "count": 2,
+                }
+
+        return FakeClient()
+
+    def test_name_that_matches_nothing_scans_once_and_is_cached(self) -> None:
+        # Live: a hallucinated name paged through every provider, then the
+        # catalog fallback paged through them all again, and the whole
+        # resolution hit the 25s origin-scope timeout.
+        calls = []
+        with patch.object(origin_scope_resolver, "get_analytics_center_client", return_value=self._client(calls)):
+            first = origin_scope_resolver._search_accessible_providers_by_name(requested_names=["first hospital"], user_sub="user-1", job_id="job-1", trace_id="t")
+            catalog = origin_scope_resolver._list_all_providers_catalog(user_sub="user-1", job_id="job-1", trace_id="t")
+            second = origin_scope_resolver._search_accessible_providers_by_name(requested_names=["My Hospital"], user_sub="user-1", job_id="job-1", trace_id="t")
+
+        self.assertEqual(first, [])
+        self.assertEqual(len(catalog), 2)
+        self.assertEqual([p["id"] for p in second], [279])
+        self.assertEqual(len(calls), 1)
+
+    def test_cache_is_per_user(self) -> None:
+        calls = []
+        with patch.object(origin_scope_resolver, "get_analytics_center_client", return_value=self._client(calls)):
+            origin_scope_resolver._search_accessible_providers_by_name(requested_names=["My Hospital"], user_sub="user-1", job_id="job-1", trace_id="t")
+            origin_scope_resolver._search_accessible_providers_by_name(requested_names=["My Hospital"], user_sub="user-2", job_id="job-1", trace_id="t")
+        self.assertEqual(len(calls), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
