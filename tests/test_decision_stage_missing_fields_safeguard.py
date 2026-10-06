@@ -372,6 +372,156 @@ class DecisionStageInvalidDecisionRetryTests(unittest.TestCase):
         self.assertEqual(outcome.clarification_options, ["THROMBOLYSIS_DRUG_DOSE", "THROMBOLYSIS"])
 
 
+class PendingClarificationSafeguardTests(unittest.TestCase):
+    """Covers the "stay on the field we just asked about" safeguard -- see
+    its docstring in request_orchestrator.py for the live bug this closes:
+    a user's free-text reply that Rasa's NLU failed to extract an entity
+    from left the LLM free to ask about a *different* still-missing field
+    instead of re-asking the one it had just requested."""
+
+    _PENDING_METRIC_CLARIFICATION = {
+        "decision": "clarify",
+        "reason": "missing_required_fields",
+        "clarification_type": "metric",
+        "clarification_options": [],
+        "message": "Which NIHSS metric would you like to visualize over time?",
+        "missing_fields": ["metric"],
+    }
+
+    def test_overrides_when_llm_drifts_to_a_different_missing_field(self) -> None:
+        # NLU extraction failed for the user's reply (e.g. "AdmissionNihss"
+        # standalone) -- entities still has no metric, only the group_by
+        # entity carried forward from the prior turn. The LLM nonetheless
+        # asks about chart_type instead of re-asking about metric.
+        with patch(
+            "src.planners.langchain.request_orchestrator._invoke_chain",
+            return_value={
+                "decision": "clarify",
+                "reason": "missing_required_fields",
+                "clarification_type": "chart_type",
+                "clarification_options": ["LINE", "BAR"],
+                "message": "What type of chart would you like for the NIHSS data?",
+                "missing_fields": ["chart_type"],
+            },
+        ):
+            outcome = _decision_stage(
+                question="AdmissionNihss",
+                entities={"group_by": "NIHSS"},
+                language="en",
+                pending_clarification=self._PENDING_METRIC_CLARIFICATION,
+            )
+
+        self.assertEqual(outcome.decision, "clarify")
+        self.assertEqual(outcome.missing_fields, ["metric"])
+        self.assertEqual(outcome.clarification_type, "metric")
+        self.assertEqual(outcome.message, "Which NIHSS metric would you like to visualize over time?")
+
+    def test_does_not_override_when_the_reply_actually_resolves_it(self) -> None:
+        # The reply DID extract a metric this time -- the LLM's own next
+        # question (now legitimately about chart_type) should stand.
+        with patch(
+            "src.planners.langchain.request_orchestrator._invoke_chain",
+            return_value={
+                "decision": "clarify",
+                "reason": "missing_required_fields",
+                "clarification_type": "chart_type",
+                "clarification_options": ["LINE", "BAR"],
+                "message": "What type of chart would you like for the admission NIHSS data?",
+                "missing_fields": ["chart_type"],
+            },
+        ):
+            outcome = _decision_stage(
+                question="admission nihss",
+                entities={"metric": "ADMISSION_NIHSS"},
+                language="en",
+                pending_clarification=self._PENDING_METRIC_CLARIFICATION,
+            )
+
+        self.assertEqual(outcome.decision, "clarify")
+        self.assertEqual(outcome.missing_fields, ["chart_type"])
+        self.assertEqual(outcome.clarification_type, "chart_type")
+
+    def test_no_pending_clarification_leaves_outcome_untouched(self) -> None:
+        with patch(
+            "src.planners.langchain.request_orchestrator._invoke_chain",
+            return_value={
+                "decision": "clarify",
+                "reason": "missing_required_fields",
+                "clarification_type": "chart_type",
+                "clarification_options": ["LINE", "BAR"],
+                "message": "What type of chart would you like?",
+                "missing_fields": ["chart_type"],
+            },
+        ):
+            outcome = _decision_stage(
+                question="line chart of dtn",
+                entities={"metric": "DTN"},
+                language="en",
+                pending_clarification=None,
+            )
+
+        self.assertEqual(outcome.decision, "clarify")
+        self.assertEqual(outcome.missing_fields, ["chart_type"])
+
+    def test_overrides_when_llm_only_covers_part_of_two_pending_fields(self) -> None:
+        # Live-caught regression: when the pending clarification was asking
+        # about BOTH metric and chart_type, a new response that only re-asks
+        # about chart_type (silently dropping metric) must not be mistaken
+        # for a resolution just because the two sets overlap at all.
+        pending_both = {
+            "decision": "clarify",
+            "reason": "missing_required_fields",
+            "clarification_type": "request_missing_fields",
+            "clarification_options": [],
+            "message": "What metric and chart type would you like to use?",
+            "missing_fields": ["metric", "chart_type"],
+        }
+        with patch(
+            "src.planners.langchain.request_orchestrator._invoke_chain",
+            return_value={
+                "decision": "clarify",
+                "reason": "missing_required_fields",
+                "clarification_type": "chart_type",
+                "clarification_options": ["LINE", "BAR"],
+                "message": "What type of chart would you like for AdmissionNihss?",
+                "missing_fields": ["chart_type"],
+            },
+        ):
+            outcome = _decision_stage(
+                question="AdmissionNihss",
+                entities={},
+                language="en",
+                pending_clarification=pending_both,
+            )
+
+        self.assertEqual(outcome.decision, "clarify")
+        self.assertEqual(set(outcome.missing_fields or []), {"metric", "chart_type"})
+        self.assertEqual(outcome.message, "What metric and chart type would you like to use?")
+
+    def test_ignores_a_pending_payload_that_was_not_itself_a_clarify(self) -> None:
+        # Defensive: only a prior clarify should ever pin the field -- a
+        # proceed/reject payload has no "field we were waiting on" at all.
+        with patch(
+            "src.planners.langchain.request_orchestrator._invoke_chain",
+            return_value={
+                "decision": "clarify",
+                "reason": "missing_required_fields",
+                "clarification_type": "chart_type",
+                "clarification_options": [],
+                "message": "What type of chart?",
+                "missing_fields": ["chart_type"],
+            },
+        ):
+            outcome = _decision_stage(
+                question="something",
+                entities={},
+                language="en",
+                pending_clarification={"decision": "proceed", "missing_fields": ["metric"]},
+            )
+
+        self.assertEqual(outcome.missing_fields, ["chart_type"])
+
+
 class RangeEntityMissingFieldTests(unittest.TestCase):
     def test_age_claimed_missing_is_dropped_when_a_bound_companion_is_present(self) -> None:
         result = _drop_falsely_missing_fields(["age"], {"metric": "DTN", "age_lower": "50", "age_upper": "50"})
