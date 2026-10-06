@@ -50,6 +50,30 @@ def _bool_values_from_categories(categories: Optional[List[str]]) -> Optional[Li
     return out
 
 
+def _infer_time_grain(periods: List[S.TimeRange]) -> str:
+    """Grain for explicit periods that came without one, from the longest span."""
+    from datetime import date
+
+    longest = 0
+    for period in periods:
+        try:
+            span = (date.fromisoformat(period.end_date[:10]) - date.fromisoformat(period.start_date[:10])).days + 1
+        except ValueError:
+            continue
+        longest = max(longest, span)
+    if longest <= 1:
+        return "DAY"
+    if longest <= 7:
+        return "WEEK"
+    if longest <= 14:
+        return "BIWEEK"
+    if longest <= 31:
+        return "MONTH"
+    if longest <= 92:
+        return "QUARTER"
+    return "YEAR"
+
+
 def _group_by_from_semantics(chart: S.ChartSpec) -> Optional[List[GroupBySpec]]:
     semantics = chart.semantics
     if semantics is None:
@@ -57,12 +81,14 @@ def _group_by_from_semantics(chart: S.ChartSpec) -> Optional[List[GroupBySpec]]:
 
     groups: List[GroupBySpec] = []
 
-    if semantics.time is not None and semantics.time.grain is not None:
+    if semantics.time is not None and (semantics.time.grain is not None or semantics.time.periods):
+        periods = list(semantics.time.periods or [])
         groups.append(
             GroupByTime(
-                grain=semantics.time.grain,
+                grain=semantics.time.grain or _infer_time_grain(periods),
                 window=semantics.time.window,
                 include_partial=semantics.time.include_partial,
+                periods=periods or None,
             )
         )
 
@@ -289,6 +315,19 @@ class Dimension:
                         return datetime.fromisoformat(text).date()
                     except Exception:
                         raise ValueError("Semantic time grouping requires ISO date values in window bounds")
+
+            explicit_periods = list(getattr(time_spec, "periods", None) or [])
+            if explicit_periods:
+                explicit_buckets: list[tuple[date, date]] = []
+                for period in explicit_periods:
+                    start = _parse_date(period.start_date)
+                    end = _parse_date(period.end_date)
+                    if start is None or end is None:
+                        raise ValueError("Explicit time periods require ISO dates")
+                    if start > end:
+                        start, end = end, start
+                    explicit_buckets.append((start, end))
+                return explicit_buckets
 
             window = time_spec.window
             grain = str(time_spec.grain).upper()

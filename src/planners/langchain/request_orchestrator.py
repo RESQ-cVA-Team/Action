@@ -398,6 +398,20 @@ def _entity_present(entities: Dict[str, Any], key: str) -> bool:
     return value is not None and value is not False
 
 
+_PERIOD_REFERENCE_PATTERNS = (
+    re.compile(r"^\d{4}$"),
+    re.compile(r"^\d{4}-(0[1-9]|1[0-2])(-(0[1-9]|[12]\d|3[01]))?$"),
+    re.compile(r"^q[1-4]\s*\d{4}$", re.IGNORECASE),
+    re.compile(r"^\d{4}\s*q[1-4]$", re.IGNORECASE),
+    re.compile(r"^(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{4}$", re.IGNORECASE),
+)
+
+
+def _looks_like_period_reference(value: str) -> bool:
+    token = (value or "").strip()
+    return bool(token) and any(pattern.match(token) for pattern in _PERIOD_REFERENCE_PATTERNS)
+
+
 def _drop_falsely_missing_fields(missing_fields: List[str], entities: Dict[str, Any]) -> List[str]:
     """Cross-check the decision stage's own missing_fields claim against the
     same ENTITIES_JSON it was given. Observed intermittently: the LLM claims
@@ -1383,6 +1397,7 @@ def _decision_stage(
     entities: Dict[str, Any],
     language: Optional[str],
     conversation_history: Optional[List[str]] = None,
+    pending_clarification: Optional[Dict[str, Any]] = None,
 ) -> VisualizationRequestOutcome:
     llm = _get_llm()
     if llm is None:
@@ -1487,6 +1502,22 @@ def _decision_stage(
                 missing_fields=corrected_missing,
             )
 
+    # Deterministic safeguard: a quarter, month or year reference ("Q1 2023",
+    # "March 2025", "2024") is a valid period, not a malformed date. Observed
+    # live: the same three-quarter request was accepted twice and rejected as
+    # invalid_date_format the third time.
+    if outcome.decision == "reject" and "invalid_date_format" in outcome.reason.strip().lower().replace(" ", "_"):
+        date_values = _extract_string_list(entities.get("date"))
+        if date_values and all(_looks_like_period_reference(value) for value in date_values):
+            return VisualizationRequestOutcome(
+                decision="proceed",
+                reason="all_required_fields_present",
+                message=None,
+                clarification_type=None,
+                clarification_options=[],
+                missing_fields=[],
+            )
+
     # Deterministic safeguard: a request with a real, present metric cannot be
     # genuinely out of scope -- Rasa's own intent routing already established
     # this is a visualization request before this stage ever runs (this
@@ -1538,6 +1569,34 @@ def _decision_stage(
             missing_fields=[],
         )
 
+    # Deterministic safeguard: don't silently drift off the field the user was
+    # just asked to clarify. Without this, two simultaneously-missing required
+    # fields leave the model free to ask about either one with no preference
+    # for continuity -- observed live: a user's free-text reply to "which
+    # metric?" that Rasa's NLU failed to extract an entity from caused the
+    # very next turn to ask about chart_type instead, only circling back to
+    # metric a turn later. That reads to the user as "my correct answer was
+    # ignored", not as the NLU miss it actually is. Re-asking the exact same
+    # question verbatim, deterministically, is a more honest failure mode
+    # than quietly moving on to an unrelated field.
+    if pending_clarification and str(pending_clarification.get("decision")) == "clarify":
+        pending_fields = [f for f in (pending_clarification.get("missing_fields") or []) if isinstance(f, str)]
+        still_missing = [f for f in pending_fields if not _entity_present(entities, f)]
+        # Require the LLM's own missing_fields to cover *every* field still
+        # outstanding, not just overlap with one of them -- a response that
+        # only re-asks about one of two still-missing fields is exactly the
+        # silent-drop this safeguard exists to catch, not a resolution.
+        resolved_by_llm = outcome.decision == "clarify" and set(still_missing) <= set(outcome.missing_fields or [])
+        if still_missing and not resolved_by_llm:
+            outcome = VisualizationRequestOutcome(
+                decision="clarify",
+                reason=str(pending_clarification.get("reason") or "missing_required_fields"),
+                message=pending_clarification.get("message") if isinstance(pending_clarification.get("message"), str) else None,
+                clarification_type=pending_clarification.get("clarification_type") if isinstance(pending_clarification.get("clarification_type"), str) else None,
+                clarification_options=list(pending_clarification.get("clarification_options") or []),
+                missing_fields=still_missing,
+            )
+
     return outcome
 
 
@@ -1550,6 +1609,7 @@ def orchestrate_visualization_request(
     include_plan: bool = True,
     conversation_history: Optional[List[str]] = None,
     progress_cb: Optional[Callable[[str], None]] = None,
+    pending_clarification: Optional[Dict[str, Any]] = None,
 ) -> VisualizationRequestOutcome:
     with log_context(trace_id=trace_id or "", orchestrator_include_plan=include_plan):
         normalized_entities = _normalize_entities_for_question(question, entities)
@@ -1606,7 +1666,13 @@ def orchestrate_visualization_request(
                 )
                 return stats_entity_validation
 
-            stage1 = _decision_stage(question, normalized_entities, language, conversation_history=conversation_history)
+            stage1 = _decision_stage(
+                question,
+                normalized_entities,
+                language,
+                conversation_history=conversation_history,
+                pending_clarification=pending_clarification,
+            )
             logger.info(
                 "Orchestrator decision: %s, message: %s, missing: %s",
                 stage1.decision,
