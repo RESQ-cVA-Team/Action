@@ -51,5 +51,6 @@ Rules:
   metric, not a request to choose between two). Only treat a metric as
   genuinely ambiguous when ENTITIES_JSON does NOT already contain a resolved
   metric for it.
+- Quarter, month and year references ("Q1 2023", "March 2025", "2024") are valid period values, never "invalid_date_format"; that reason is only for dates that cannot exist (month 13, day 40).
 - When a date entity contains only a year (e.g. "2026"), expand it to a full-year range: two DateFilters — operator GE with value "{{year}}-01-01" AND operator LE with value "{{year}}-12-31".
 - Do not include markdown or prose outside JSON.

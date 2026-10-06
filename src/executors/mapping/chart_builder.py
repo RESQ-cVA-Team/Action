@@ -22,6 +22,7 @@ from src.domain.langchain.schema import (
     GroupByStrokeType,
     GroupByTime,
 )
+from src.executors.mapping.series_mapper import _grouped_time_period_label
 from src.executors.planning.query_compiler import Dimension
 from src.executors.planning.ssot_metric_defaults import build_distribution_bin_ranges
 from src.shared.ssot_loader import (
@@ -462,50 +463,80 @@ def _derive_axes_from_dimensions(
     return x_axis, y_axis
 
 
+def _distribution_value_range(plan_chart: S.ChartSpec, series: List[ChartSeries], bin_width: Optional[float]) -> Optional[str]:
+    xs: List[float] = []
+    for item in series:
+        for point in item.data:
+            if isinstance(point.x, (int, float)) and not isinstance(point.x, bool):
+                xs.append(float(point.x))
+    if not xs:
+        return None
+    lower = min(xs)
+    width = bin_width
+    if width is None and series and len(series[0].data) > 1:
+        width = _histogram_bin_width_from_points(series[0].data)
+    upper = max(xs) + (width if isinstance(width, (int, float)) and width > 0 else 0.0)
+    text = f"{lower:g} to {upper:g}"
+    metric_codes = _metric_codes(plan_chart)
+    unit = _metric_unit(metric_codes[0]) if len(metric_codes) == 1 else None
+    return f"{text} {unit}" if unit else text
+
+
 def _derive_title(
     plan_chart: S.ChartSpec,
     dimensions: List[Dimension],
     sampled_period_override: Optional[str] = None,
+    value_range: Optional[str] = None,
+    is_distribution: bool = False,
 ) -> str:
-    metric_codes = _metric_codes(plan_chart)
-    metrics_part = ", ".join(metric_codes) if metric_codes else get_metric_display_name(plan_chart.chart_type or "CHART")
+    """Title parts, in order: what is shown, the value range it covers (for
+    distributions), the sampled period, and any filters, comma separated.
+    Each part only appears when it carries information, so the plain case
+    reads "Door to needle distribution, 30 to 290 minutes, 2024-10-02 to
+    2026-10-02" and a filtered split reads "Door to needle by sex, 2024-10-02
+    to 2026-10-02, filtered by stroke type = ischemic".
+    """
+    names: List[str] = []
+    for code in _metric_codes(plan_chart):
+        name = _normalize_title_token(get_metric_display_name(code))
+        if name and name not in names:
+            names.append(name)
+    subject = " and ".join(names) if names else _normalize_title_token(get_metric_display_name(plan_chart.chart_type or "CHART"))
 
-    across_dim: Optional[Dimension] = None
+    time_dim: Optional[Dimension] = next((d for d in dimensions if isinstance(d.spec, GroupByTime)), None)
+    split_labels: List[str] = []
     for dimension in dimensions:
-        if isinstance(dimension.spec, GroupByTime):
-            across_dim = dimension
-            break
-    if across_dim is None and dimensions:
-        across_dim = dimensions[0]
-
-    by_parts: List[str] = []
-    for dimension in dimensions:
-        if across_dim is not None and dimension is across_dim:
+        if dimension is time_dim:
             continue
         label = _dimension_label(dimension)
-        if not label:
-            continue
-        token = _normalize_title_token(label)
-        if token and token not in by_parts:
-            by_parts.append(token)
+        token = _normalize_title_token(label) if label else ""
+        if token and token not in split_labels:
+            split_labels.append(token)
 
-    if across_dim is None:
-        across_part = "category"
-    else:
-        across_label = _dimension_label(across_dim) or "category"
-        across_part = _normalize_title_token(across_label)
+    explicit_periods = list(getattr(time_dim.spec, "periods", None) or []) if time_dim is not None else []
+    if is_distribution and not dimensions:
+        subject += " distribution"
+    if explicit_periods:
+        subject += " for " + ", ".join(_grouped_time_period_label(p.start_date, p.end_date) for p in explicit_periods)
+    elif time_dim is not None:
+        subject += f" per {_normalize_title_token(_dimension_label(time_dim) or 'period')}"
+    if split_labels:
+        subject += " by " + " and ".join(split_labels)
+
+    parts: List[str] = [subject[:1].upper() + subject[1:]]
+    if value_range:
+        parts.append(value_range)
 
     filters_node = cast(Any, getattr(plan_chart, "filters", None))
-    sampled_period = sampled_period_override or _sample_period(filters_node)
-    filters_part = _format_filter_text(filters_node, include_date=sampled_period is None)
-
-    title = metrics_part
-    if by_parts:
-        title += f" by {' × '.join(by_parts)}"
+    # Explicit periods are already spelled out in the subject; the sampled
+    # span would only suggest a continuous range that was never requested.
+    sampled_period = None if explicit_periods else (sampled_period_override or _sample_period(filters_node))
     if sampled_period:
-        title += f" sampled from {sampled_period}"
-    title += f" across {across_part} ({filters_part})"
-    return title
+        parts.append(sampled_period)
+    filters_part = _format_filter_text(filters_node, include_date=sampled_period is None and not explicit_periods)
+    if filters_part and filters_part != "all patients":
+        parts.append(f"filtered by {filters_part}")
+    return ", ".join(parts)
 
 
 def build_chart_dto(
@@ -518,7 +549,6 @@ def build_chart_dto(
     histogram_original_bin_width: Optional[float] = None,
     apply_numeric_tail_trim: bool = True,
 ) -> ChartDTO:
-    title_text = _derive_title(plan_chart, dimensions, sampled_period_override=sampled_period_override)
     chart_type_upper = (plan_chart.chart_type or "").upper()
 
     series_to_render = series
@@ -541,6 +571,17 @@ def build_chart_dto(
             chart_type_upper=chart_type_upper,
             series=series_to_render,
         )
+
+    value_range: Optional[str] = None
+    if _uses_distribution_axes(chart_type_upper, dimensions, series_to_render):
+        value_range = _distribution_value_range(plan_chart, series_to_render, histogram_original_bin_width)
+    title_text = _derive_title(
+        plan_chart,
+        dimensions,
+        sampled_period_override=sampled_period_override,
+        value_range=value_range,
+        is_distribution=value_range is not None,
+    )
 
     metadata = ChartMetadata(
         title=title_text,
