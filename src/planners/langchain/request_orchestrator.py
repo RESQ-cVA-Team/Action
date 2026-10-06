@@ -398,6 +398,9 @@ def _entity_present(entities: Dict[str, Any], key: str) -> bool:
     return value is not None and value is not False
 
 
+_RANGE_ENTITY_FIELDS = {"age", "nihss", "date"}
+
+
 def _drop_falsely_missing_fields(missing_fields: List[str], entities: Dict[str, Any]) -> List[str]:
     """Cross-check the decision stage's own missing_fields claim against the
     same ENTITIES_JSON it was given. Observed intermittently: the LLM claims
@@ -408,7 +411,17 @@ def _drop_falsely_missing_fields(missing_fields: List[str], entities: Dict[str, 
     so this only overrides objectively-false claims, never a field that
     genuinely needs semantic judgment to consider satisfied.
     """
-    return [field for field in missing_fields if not (field.strip().lower() in _SELF_VERIFIABLE_REQUIRED_FIELDS and _entity_present(entities, field.strip().lower()))]
+    kept: List[str] = []
+    for field in missing_fields:
+        key = field.strip().lower()
+        if key in _SELF_VERIFIABLE_REQUIRED_FIELDS and _entity_present(entities, key):
+            continue
+        # "over 50 and under 50" arrives as age plus age_lower/age_upper; a
+        # bound present under any of those keys means the range was given.
+        if key in _RANGE_ENTITY_FIELDS and any(_entity_present(entities, k) for k in (key, f"{key}_lower", f"{key}_upper")):
+            continue
+        kept.append(field)
+    return kept
 
 
 def _has_statistical_test_signal(question: str, entities: Dict[str, Any]) -> bool:

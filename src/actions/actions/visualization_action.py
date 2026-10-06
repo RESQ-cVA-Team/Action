@@ -319,15 +319,19 @@ def _extract_entities_from_user_event(event: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         value = ent["value"]
-        if key_any not in extracted:
-            extracted[key_any] = value
-            continue
-
-        existing = extracted[key_any]
-        if isinstance(existing, list):
-            cast(List[Any], existing).append(value)
-        else:
-            extracted[key_any] = [existing, value]
+        keys = [key_any]
+        role_any = ent.get("role")
+        if isinstance(role_any, str) and role_any.strip():
+            keys.append(f"{key_any}_{role_any.strip().lower()}")
+        for key in keys:
+            if key not in extracted:
+                extracted[key] = value
+                continue
+            existing = extracted[key]
+            if isinstance(existing, list):
+                cast(List[Any], existing).append(value)
+            else:
+                extracted[key] = [existing, value]
 
     return extracted
 

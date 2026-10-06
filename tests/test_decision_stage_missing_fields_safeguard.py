@@ -370,3 +370,17 @@ class DecisionStageInvalidDecisionRetryTests(unittest.TestCase):
         self.assertEqual(outcome.reason, "ambiguous_request")
         self.assertEqual(outcome.clarification_type, "metric")
         self.assertEqual(outcome.clarification_options, ["THROMBOLYSIS_DRUG_DOSE", "THROMBOLYSIS"])
+
+
+class RangeEntityMissingFieldTests(unittest.TestCase):
+    def test_age_claimed_missing_is_dropped_when_a_bound_companion_is_present(self) -> None:
+        result = _drop_falsely_missing_fields(["age"], {"metric": "DTN", "age_lower": "50", "age_upper": "50"})
+        self.assertEqual(result, [])
+
+    def test_age_claimed_missing_is_dropped_when_the_flat_key_is_present(self) -> None:
+        result = _drop_falsely_missing_fields(["age"], {"metric": "DTN", "age": "50"})
+        self.assertEqual(result, [])
+
+    def test_age_claimed_missing_is_kept_when_no_bound_was_given(self) -> None:
+        result = _drop_falsely_missing_fields(["age"], {"metric": "DTN"})
+        self.assertEqual(result, ["age"])
