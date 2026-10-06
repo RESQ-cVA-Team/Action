@@ -193,6 +193,13 @@ class ProviderNameSearchCachingTests(unittest.TestCase):
         self.assertEqual([p["id"] for p in second], [279])
         self.assertEqual(len(calls), 1)
 
+    def test_cache_is_shared_across_chat_threads_of_the_same_user(self) -> None:
+        calls = []
+        with patch.object(origin_scope_resolver, "get_analytics_center_client", return_value=self._client(calls)):
+            origin_scope_resolver._search_accessible_providers_by_name(requested_names=["My Hospital"], user_sub="0a709c3b-2c71-4c5b-85d6-66454da5c9d7:thread:4", job_id="job-1", trace_id="t")
+            origin_scope_resolver._search_accessible_providers_by_name(requested_names=["My Hospital"], user_sub="0a709c3b-2c71-4c5b-85d6-66454da5c9d7:thread:9", job_id="job-2", trace_id="t")
+        self.assertEqual(len(calls), 1)
+
     def test_cache_is_per_user(self) -> None:
         calls = []
         with patch.object(origin_scope_resolver, "get_analytics_center_client", return_value=self._client(calls)):

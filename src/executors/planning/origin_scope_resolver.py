@@ -52,9 +52,11 @@ def _provider_cache_key(
     user_sub: str,
     country_code: Optional[str],
 ) -> tuple[str, str, str]:
+    # Live chat senders look like "<keycloak sub>:thread:<id>"; the provider
+    # list depends on the person, not the thread, so key on the person.
     return (
         cache_type,
-        (user_sub or "").strip(),
+        (user_sub or "").strip().split(":thread:", 1)[0],
         (country_code or "").strip().upper(),
     )
 
