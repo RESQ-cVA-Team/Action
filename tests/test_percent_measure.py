@@ -7,7 +7,7 @@ from src.domain.langchain.schema import AnalysisSemanticsSpec, ChartSpec, Measur
 from src.executors.mapping.chart_builder import build_chart_dto
 from src.executors.mapping.series_mapper import map_metrics_payload_to_series
 from src.executors.orchestration.plan_executor import _chart_value_mode
-from src.planners.langchain.request_orchestrator import _decision_stage
+from src.planners.langchain.request_orchestrator import _decision_stage, _infer_stroke_type_share_metric
 
 
 def _kpi(**kpi1):
@@ -104,6 +104,20 @@ class BareMetricDefaultChartTests(unittest.TestCase):
         ):
             outcome = _decision_stage(question="Run a mann-whitney test on dtn", entities={"metric": "DTN", "statistical_test_type": "MANN_WHITNEY"}, language="en")
         self.assertEqual(outcome.decision, "proceed")
+
+
+class StrokeShareMetricInferenceTests(unittest.TestCase):
+    def test_percentage_of_a_stroke_type_becomes_the_stroke_type_metric(self) -> None:
+        out = _infer_stroke_type_share_metric("Make a line chart of percentage of ischemic strokes per quarter", {"chart_type": "LINE", "stroke_type": "ISCHEMIC", "group_by": "QUARTER"})
+        self.assertEqual(out["metric"], "STROKE_TYPE")
+
+    def test_a_present_metric_is_never_overridden(self) -> None:
+        entities = {"metric": "DTN", "stroke_type": "ISCHEMIC"}
+        self.assertEqual(_infer_stroke_type_share_metric("percentage of ischemic strokes with dtn", entities), entities)
+
+    def test_a_plain_stroke_type_filter_is_left_alone(self) -> None:
+        entities = {"stroke_type": "ISCHEMIC", "chart_type": "BAR"}
+        self.assertEqual(_infer_stroke_type_share_metric("show ischemic strokes in a bar chart", entities), entities)
 
 
 if __name__ == "__main__":

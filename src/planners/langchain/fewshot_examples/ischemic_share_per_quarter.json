@@ -1,0 +1,47 @@
+{
+  "user_utterance": "Make a line chart of percentage of ischemic strokes per quarter",
+  "entities_detected": {
+    "chart_type": [
+      "LINE"
+    ],
+    "stroke_type": [
+      "ISCHEMIC"
+    ],
+    "group_by": [
+      "QUARTER"
+    ],
+    "metric": [
+      "STROKE_TYPE"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "LINE",
+        "metrics": [
+          {
+            "metric": "STROKE_TYPE"
+          }
+        ],
+        "semantics": {
+          "intent": "TREND",
+          "measure": {
+            "type": "RATE"
+          },
+          "time": {
+            "grain": "QUARTER"
+          },
+          "x_axis": {
+            "role": "TIME",
+            "grain": "QUARTER"
+          },
+          "y_axis": {
+            "role": "AGGREGATE_VALUE",
+            "metric": "STROKE_TYPE",
+            "aggregation": "RATE"
+          }
+        }
+      }
+    ]
+  }
+}

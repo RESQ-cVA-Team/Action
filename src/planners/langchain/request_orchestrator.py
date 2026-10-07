@@ -504,6 +504,23 @@ def _extract_metric_code(entities: Dict[str, Any]) -> Optional[str]:
     return metrics[0].upper()
 
 
+_STROKE_SHARE_WORDING = re.compile(r"\b(percent(age)?|share|proportion|rate)\b.{0,40}\bstrokes?\b", re.IGNORECASE)
+
+
+def _infer_stroke_type_share_metric(question: str, entities: Dict[str, Any]) -> Dict[str, Any]:
+    """"Percentage of ischemic strokes" names no metric that NLU can see: the
+    word it tags is the stroke type. The share of a stroke type among all
+    strokes is the STROKE_TYPE metric plotted as a rate, so fill that in
+    rather than asking which metric was meant."""
+    if _entity_present(entities, "metric") or not _entity_present(entities, "stroke_type"):
+        return entities
+    if not _STROKE_SHARE_WORDING.search(question or ""):
+        return entities
+    out = dict(entities)
+    out["metric"] = "STROKE_TYPE"
+    return out
+
+
 def _normalize_entities_for_question(question: str, entities: Dict[str, Any]) -> Dict[str, Any]:
     _ = question
     return dict(entities or {})
@@ -1708,7 +1725,7 @@ def orchestrate_visualization_request(
     pending_clarification: Optional[Dict[str, Any]] = None,
 ) -> VisualizationRequestOutcome:
     with log_context(trace_id=trace_id or "", orchestrator_include_plan=include_plan):
-        normalized_entities = _normalize_entities_for_question(question, entities)
+        normalized_entities = _infer_stroke_type_share_metric(question, _normalize_entities_for_question(question, entities))
         if not _ORCHESTRATOR_ENABLED:
             if not include_plan:
                 return VisualizationRequestOutcome(decision="proceed", reason="orchestrator_disabled")
