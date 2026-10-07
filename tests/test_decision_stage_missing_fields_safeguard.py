@@ -651,6 +651,49 @@ class RangeClarificationTests(unittest.TestCase):
         self.assertEqual(outcome.decision, "clarify")
 
 
+class StatisticalTestTypeOnChartRequestTests(unittest.TestCase):
+    _ASKS_FOR_A_TEST = {
+        "decision": "clarify",
+        "reason": "missing_required_fields",
+        "missing_fields": ["statistical_test_type"],
+        "clarification_type": "statistical_test_type",
+        "clarification_options": None,
+        "message": "What statistical test would you like to perform?",
+    }
+
+    def _run(self, response, question, entities):
+        with patch("src.planners.langchain.request_orchestrator._invoke_chain", return_value=response):
+            return _decision_stage(question=question, entities=entities, language="en")
+
+    def test_a_chart_request_never_needs_a_test_type(self) -> None:
+        outcome = self._run(
+            self._ASKS_FOR_A_TEST,
+            "Make me an admission nihss of only patients older than 60 years",
+            {"metric": "ADMISSION_NIHSS", "age": "60", "age_lower": "60"},
+        )
+
+        self.assertEqual(outcome.decision, "proceed")
+        self.assertEqual(outcome.reason, "all_required_fields_present")
+
+    def test_a_test_type_claimed_together_with_chart_type_is_dropped_too(self) -> None:
+        response = dict(self._ASKS_FOR_A_TEST, missing_fields=["statistical_test_type", "chart_type"])
+        outcome = self._run(response, "Make me an admission nihss of only patients older than 60 years", {"metric": "ADMISSION_NIHSS"})
+
+        self.assertEqual(outcome.decision, "proceed")
+
+    def test_a_request_that_names_a_test_still_asks(self) -> None:
+        outcome = self._run(self._ASKS_FOR_A_TEST, "run a statistical test on my dtn for Q4 2025 and Q1 2026", {"metric": "DTN"})
+
+        self.assertEqual(outcome.decision, "clarify")
+        self.assertEqual(outcome.missing_fields, ["statistical_test_type"])
+
+    def test_other_claimed_fields_are_left_to_the_model(self) -> None:
+        response = dict(self._ASKS_FOR_A_TEST, missing_fields=["statistical_test_type", "statistical_cohorts"])
+        outcome = self._run(response, "Make me an admission nihss of only patients older than 60 years", {"metric": "ADMISSION_NIHSS"})
+
+        self.assertEqual(outcome.decision, "clarify")
+
+
 class NormalizeEntitiesForQuestionTests(unittest.TestCase):
     def test_kpi_annotation_is_dropped(self) -> None:
         normalized = _normalize_entities_for_question(

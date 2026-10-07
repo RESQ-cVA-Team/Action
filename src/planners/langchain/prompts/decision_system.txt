@@ -37,6 +37,7 @@ Use them as follows:
 Rules:
 - For chart requests, the required field is metric. chart_type is optional: when it is absent the planning stage picks a sensible default chart, so never clarify for chart_type alone.
 - For statistical-test-only requests, required fields are metric and statistical_test_type; chart_type is optional and should not trigger clarification.
+- A request is a statistical test only when it names a test or asks for significance; a chart or metric request that says nothing about a test never needs statistical_test_type, so never ask for one.
 - If required fields for the detected intent are present, return decision="proceed" and message=null.
 - If one required field is missing, return decision="clarify", put the missing field in missing_fields, and write one concise question in message (under 25 words).
 - Never reject a metric because you judge it numeric-incompatible with the requested chart_type (e.g. a categorical/Enum metric like sex or stroke_type charted as a bar/pie/line). Any metric present in ENTITIES_JSON or VALID_METRIC_CANDIDATES_JSON is a valid metric for any chart_type at this stage — chart/metric compatibility is decided by the planning stage, not triage.
