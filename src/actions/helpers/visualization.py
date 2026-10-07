@@ -10,6 +10,7 @@ from typing import (
     Mapping,
     Optional,
     Protocol,
+    Tuple,
     cast,
     runtime_checkable,
 )
@@ -295,37 +296,80 @@ _RANGE_WORDING = re.compile(
     r"|(\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?)",
     re.IGNORECASE,
 )
+_LOWER_BOUND_WORDING = re.compile(
+    r"\b(?:over|above|older than|more than|greater than|higher than|at least)\s+(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+_UPPER_BOUND_WORDING = re.compile(
+    r"\b(?:under|below|younger than|less than|lower than|fewer than|at most|up to)\s+(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
 
 
 def _derive_range_bounds_from_wording(extracted: Dict[str, Any], question_text: str) -> None:
-    """DIET's lower/upper roles are unreliable for a two-ended range: live,
-    "between 10 and 30" came back with both numbers as lower. When the
-    wording itself states the range with the two numbers NLU extracted, the
-    wording decides the bounds.
+    """DIET's lower/upper roles are unreliable: live, "between 10 and 30"
+    came back with both numbers as lower, and "over 50 and under 50" with
+    only the upper role. When the wording states the bounds with numbers
+    NLU extracted, the wording decides them; otherwise the roles stand.
     """
+    text = question_text or ""
     for key in ("age", "nihss"):
         values_any = extracted.get(key)
-        if not isinstance(values_any, list) or len(values_any) != 2:
-            continue
-        values = cast(List[Any], values_any)
+        values = cast(List[Any], values_any) if isinstance(values_any, list) else [values_any]
         try:
-            by_number = {float(str(v)): v for v in values}
+            by_number = {float(str(v)): v for v in values if v is not None}
         except ValueError:
             continue
-        if len(by_number) != 2:
+        if not by_number:
             continue
-        for match in _RANGE_WORDING.finditer(question_text or ""):
-            first, second = (match.group(1), match.group(2)) if match.group(1) else (match.group(3), match.group(4))
-            try:
-                pair = {float(first), float(second)}
-            except ValueError:
-                continue
-            if pair != set(by_number):
-                continue
-            lower, upper = sorted(pair)
-            extracted[f"{key}_lower"] = by_number[lower]
-            extracted[f"{key}_upper"] = by_number[upper]
-            break
+        bounds = _span_bounds(text, by_number) or _one_sided_bounds(text, by_number)
+        if bounds is None:
+            continue
+        lower, upper = bounds
+        extracted.pop(f"{key}_lower", None)
+        extracted.pop(f"{key}_upper", None)
+        if lower is not None:
+            extracted[f"{key}_lower"] = lower
+        if upper is not None:
+            extracted[f"{key}_upper"] = upper
+
+
+def _span_bounds(text: str, by_number: Dict[float, Any]) -> Optional[Tuple[Any, Any]]:
+    """"between 10 and 30", "from 30 to 60", "30-60": both numbers extracted."""
+    if len(by_number) < 2:
+        return None
+    for match in _RANGE_WORDING.finditer(text):
+        first, second = (match.group(1), match.group(2)) if match.group(1) else (match.group(3), match.group(4))
+        try:
+            pair = {float(first), float(second)}
+        except ValueError:
+            continue
+        if len(pair) != 2 or not pair <= set(by_number):
+            continue
+        lower, upper = sorted(pair)
+        return by_number[lower], by_number[upper]
+    return None
+
+
+def _one_sided_bounds(text: str, by_number: Dict[float, Any]) -> Optional[Tuple[Any, Any]]:
+    """"over 50", "under 50", "older than 60 and younger than 60": each phrase
+    names its own bound, so the same number can be both."""
+    lower = _first_extracted_number(_LOWER_BOUND_WORDING, text, by_number)
+    upper = _first_extracted_number(_UPPER_BOUND_WORDING, text, by_number)
+    if lower is None and upper is None:
+        return None
+    return lower, upper
+
+
+def _first_extracted_number(pattern: "re.Pattern[str]", text: str, by_number: Dict[float, Any]) -> Optional[Any]:
+    for match in pattern.finditer(text):
+        try:
+            number = float(match.group(1))
+        except ValueError:
+            continue
+        if number in by_number:
+            return by_number[number]
+    return None
 
 
 def _accumulate_entity_value(extracted: Dict[str, Any], key: str, value: Any) -> None:

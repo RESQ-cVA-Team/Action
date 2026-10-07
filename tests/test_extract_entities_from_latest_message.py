@@ -331,7 +331,7 @@ def test_role_tagged_range_with_distinct_bounds() -> None:
 
 
 def test_entities_without_a_role_get_no_companion_keys() -> None:
-    entities = extract_entities_from_latest_message(_message([{"entity": "age", "value": "60"}], text="patients over 60"))
+    entities = extract_entities_from_latest_message(_message([{"entity": "age", "value": "60"}], text="patients aged 60"))
 
     assert entities == {"age": "60"}
 
@@ -376,3 +376,46 @@ def test_two_numbers_without_range_wording_keep_whatever_roles_diet_gave() -> No
 
     assert entities["age_upper"] == "30"
     assert entities["age_lower"] == "50"
+
+
+def test_over_and_under_the_same_number_gives_both_bounds() -> None:
+    # Live: "over 50 and under 50" came back as one "50" with only the upper role.
+    entities = extract_entities_from_latest_message(
+        _message(
+            [{"entity": "metric", "value": "DTN"}, {"entity": "age", "value": "50", "role": "upper"}],
+            text="Show me a bar chart of dtn for patients over 50 and under 50",
+        )
+    )
+
+    assert entities["age"] == "50"
+    assert entities["age_lower"] == "50"
+    assert entities["age_upper"] == "50"
+
+
+def test_wording_overrides_a_role_that_contradicts_it() -> None:
+    entities = extract_entities_from_latest_message(
+        _message([{"entity": "age", "value": "60", "role": "upper"}], text="admission nihss for patients older than 60 years")
+    )
+
+    assert entities["age_lower"] == "60"
+    assert "age_upper" not in entities
+
+
+def test_one_sided_wording_fills_in_a_missing_role() -> None:
+    entities = extract_entities_from_latest_message(_message([{"entity": "nihss", "value": "10"}], text="dtn for patients with nihss under 10"))
+
+    assert entities == {"nihss": "10", "nihss_upper": "10"}
+
+
+def test_a_bound_phrase_about_another_number_is_ignored() -> None:
+    entities = extract_entities_from_latest_message(
+        _message(
+            [{"entity": "age", "value": "60", "role": "lower"}, {"entity": "nihss", "value": "10"}],
+            text="patients over 60 with nihss under 10",
+        )
+    )
+
+    assert entities["age_lower"] == "60"
+    assert "age_upper" not in entities
+    assert entities["nihss_upper"] == "10"
+    assert "nihss_lower" not in entities
