@@ -127,13 +127,20 @@ jobs:
           # entry needs its own reason and a way to notice when it stops
           # applying, so this only ever silences the exact (package, id)
           # pair named, never the package as a whole.
+          _SANIC_CEILING_REASON = (
+            "fix is 24.12.1+; rasa-sdk==3.14.2 pins sanic<23.0, and no "
+            "rasa-sdk release between 3.14.2 and 3.20.0 raises that "
+            "ceiling (3.20.0 jumps straight to sanic>=25.12, its own "
+            "larger upgrade). Revisit on the next rasa-sdk bump."
+          )
           ACKNOWLEDGED = {
-            ("sanic", "CVE-2026-85078"): (
-              "fix is 24.12.1+; rasa-sdk==3.14.2 pins sanic<23.0, and no "
-              "rasa-sdk release between 3.14.2 and 3.20.0 raises that "
-              "ceiling (3.20.0 jumps straight to sanic>=25.12, its own "
-              "larger upgrade). Revisit on the next rasa-sdk bump."
-            ),
+            # pip-audit was run with --aliases=off, so the same underlying
+            # sanic advisory can surface under either id depending on which
+            # one its data source treats as canonical that run (confirmed
+            # via osv.dev: PYSEC-2026-4162's aliases include CVE-2026-85078)
+            # -- both need an entry rather than relying on alias resolution.
+            ("sanic", "CVE-2026-85078"): _SANIC_CEILING_REASON,
+            ("sanic", "PYSEC-2026-4162"): _SANIC_CEILING_REASON,
           }
 
           payload = json.loads(Path(sys.argv[1]).read_text())

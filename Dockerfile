@@ -13,6 +13,9 @@ FROM rasa/rasa-sdk:3.19.0@sha256:39ddf4e684d300f43cdbfbde3d1f445b0a9d64110944f54
 
 USER root
 
+# OS packages get security patches independently of the pinned image tag.
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt VERSION .
 COPY --from=deps /tmp/wheels /tmp/wheels
 
