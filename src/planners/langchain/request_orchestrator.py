@@ -992,6 +992,44 @@ def _drop_hospital_scopes_from_metric_words(plan: AnalysisPlan, entities: Dict[s
     return plan.model_copy(update={"charts": charts})
 
 
+_PERIOD_MENTION = re.compile(
+    r"\b(?:19|20)\d{2}\b"
+    r"|\bq[1-4]\b"
+    r"|\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\b"
+    r"|\b(?:jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+\d"
+    r"|\b(?:last|past|previous|this|current)\s+(?:\d+\s+)?(?:day|week|month|quarter|year)s?\b"
+    r"|\b(?:ytd|year to date)\b",
+    re.IGNORECASE,
+)
+
+
+def _drop_unrequested_explicit_periods(plan: AnalysisPlan, question: str, entities: Dict[str, Any]) -> AnalysisPlan:
+    """Strip explicit periods the planner made up for a plain "per quarter".
+
+    semantics.time.periods is for periods the user named ("Q1 2023 and Q3
+    2025"); a grain word on its own means the default window. Live,
+    "percentage of AA_DTN_LE60 per quarter" came back as the four quarters
+    of 2023. Any period reference in the question or a date entity keeps
+    the planner's periods.
+    """
+    if _extract_string_list(entities.get("date")) or _PERIOD_MENTION.search(question or ""):
+        return plan
+    plan_changed = False
+    charts: List[ChartSpec] = []
+    for chart in plan.charts or []:
+        semantics = chart.semantics
+        if semantics is None or semantics.time is None or not semantics.time.periods:
+            charts.append(chart)
+            continue
+        logger.info("Dropping explicit periods the question never named", extra={"periods": [period.model_dump() for period in semantics.time.periods]})
+        time_spec = semantics.time.model_copy(update={"periods": None})
+        charts.append(chart.model_copy(update={"semantics": semantics.model_copy(update={"time": time_spec})}))
+        plan_changed = True
+    if not plan_changed:
+        return plan
+    return plan.model_copy(update={"charts": charts})
+
+
 def _normalize_plan_semantic_splits(plan: AnalysisPlan) -> AnalysisPlan:
     """Normalize planner split semantics into compiler-supported forms.
 
@@ -1988,6 +2026,7 @@ def orchestrate_visualization_request(
             plan = _normalize_plan_semantic_splits(plan)
             plan = _split_mixed_unit_charts(plan)
             plan = _drop_hospital_scopes_from_metric_words(plan, normalized_entities)
+            plan = _drop_unrequested_explicit_periods(plan, question, normalized_entities)
             logger.info("Plan generation completed successfully", extra={"plan_type": type(plan).__name__})
 
             logger.info("Starting validation of statistical plan readiness")
@@ -2040,6 +2079,7 @@ def orchestrate_visualization_request(
                     plan = _normalize_plan_semantic_splits(plan)
                     plan = _split_mixed_unit_charts(plan)
                     plan = _drop_hospital_scopes_from_metric_words(plan, entities)
+                    plan = _drop_unrequested_explicit_periods(plan, question, entities)
                     return VisualizationRequestOutcome(
                         decision="proceed",
                         reason="orchestrator_fallback_to_plan",
