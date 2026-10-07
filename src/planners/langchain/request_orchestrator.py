@@ -151,6 +151,48 @@ _PROVIDER_HINTS = (
     "cohort b is provider",
 )
 
+# "Grouped by hospital/country" means one series per cohort, which the plan
+# can only express as one MetricSpec per *named* scope -- there is
+# deliberately no HOSPITAL or COUNTRY split kind. Only explicit grouping
+# cues count: a bare "hospital" is not enough, since many metric names
+# contain the word (AA_IMAGING, HOSPITAL_STAY, INHOSPITAL_STROKE ...).
+_HOSPITAL_GROUPING_HINTS = (
+    "by hospital",
+    "per hospital",
+    "across hospital",
+    "between hospital",
+    "each hospital",
+    "hospital by hospital",
+    "podle nemocnic",
+    "mezi nemocnicemi",
+    "ανά νοσοκομεί",
+    "κατά νοσοκομεί",
+)
+_COUNTRY_GROUPING_HINTS = (
+    "by country",
+    "per country",
+    "across countr",
+    "between countr",
+    "each country",
+    "country by country",
+    "podle zem",
+    "podle stát",
+    "mezi zeměmi",
+    "ανά χώρ",
+    "κατά χώρ",
+)
+_MINE_SCOPE_TOKENS = {"mine", "my", "our", "ours", "my hospital", "our hospital"}
+_SCOPE_GROUPING_MESSAGES = {
+    "hospital": (
+        "Grouping by hospital needs the hospitals to compare. Name them, for example "
+        "'my hospital vs <hospital name>', or ask for 'my hospital vs country average'."
+    ),
+    "country": (
+        "Grouping by country needs the countries to compare. Name them, for example "
+        "'Czech Republic vs Spain', or ask for 'my hospital vs country average'."
+    ),
+}
+
 _DECISION_PROMPT = ChatPromptTemplate.from_messages(  # type: ignore[attr-defined]
     [
         ("system", load_prompt_text("decision_system")),
@@ -1139,6 +1181,65 @@ def _validate_risk_factor_filter_support(question: str, entities: Dict[str, Any]
     )
 
 
+def _requested_scope_grouping(question: str) -> Optional[str]:
+    low = (question or "").strip().lower()
+    if not low:
+        return None
+    if any(hint in low for hint in _COUNTRY_GROUPING_HINTS):
+        return "country"
+    # "by hospital group X" scopes the request to a provider group; it is not
+    # a request for one series per hospital.
+    if "hospital group" in low or _question_mentions_provider_group(low):
+        return None
+    if any(hint in low for hint in _HOSPITAL_GROUPING_HINTS):
+        return "hospital"
+    return None
+
+
+def _hospital_cohorts_named(entities: Dict[str, Any]) -> bool:
+    if entities.get("mine"):
+        return True
+    for key in ("hospital_name", "provider_name", "provider_id"):
+        if _extract_string_list(entities.get(key)):
+            return True
+    # Only a reference to a specific hospital counts; "all hospitals" is a
+    # single aggregated scope, not a set of cohorts.
+    scope_refs = _extract_string_list(entities.get("hospital_scope_reference")) + _extract_string_list(entities.get("scope"))
+    return any(ref.strip().lower() in _MINE_SCOPE_TOKENS for ref in scope_refs)
+
+
+def _country_cohorts_named(entities: Dict[str, Any]) -> bool:
+    return bool(_extract_string_list(entities.get("country_code")) or entities.get("country_average"))
+
+
+def _validate_scope_grouping_cohorts(question: str, entities: Dict[str, Any]) -> Optional[VisualizationRequestOutcome]:
+    # Without named cohorts there is no plan the planner can build for a
+    # per-hospital/per-country chart: the critique pass rejects every attempt
+    # and the degraded fallback either drops the grouping silently or folds
+    # every accessible provider into one query. Ask instead. Statistical
+    # tests define their cohorts through their own validators.
+    has_chart_type = bool(_extract_string_list(entities.get("chart_type")))
+    if not has_chart_type and _has_statistical_test_signal(question, entities):
+        return None
+
+    grouping = _requested_scope_grouping(question)
+    if grouping is None:
+        return None
+    if grouping == "hospital" and _hospital_cohorts_named(entities):
+        return None
+    if grouping == "country" and _country_cohorts_named(entities):
+        return None
+
+    return VisualizationRequestOutcome(
+        decision="clarify",
+        reason="missing_scope_grouping_cohorts",
+        message=_SCOPE_GROUPING_MESSAGES[grouping],
+        clarification_type="analysis_plan",
+        clarification_options=[],
+        missing_fields=[],
+    )
+
+
 def _validate_group_by_support(question: str, entities: Dict[str, Any]) -> Optional[VisualizationRequestOutcome]:
     # Statistical-test plans compare cohorts via OriginScope/DataOrigin on each
     # MetricSpec (see _build_deterministic_statistical_plan) -- they never use
@@ -1176,7 +1277,8 @@ def _validate_group_by_support(question: str, entities: Dict[str, Any]) -> Optio
         # entries with their own originScope (see
         # example_dtn_my_hospital_vs_named_hospital_quarterly_line), which
         # resolve_plan_metric_origins already executes generically for both
-        # charts and statistical tests. Nothing to validate here.
+        # charts and statistical tests. Whether those entries can be named at
+        # all is checked by _validate_scope_grouping_cohorts.
         if token == "HOSPITAL":
             continue
         if ssot_loader.resolve_groupby_canonical(token) is not None:
@@ -1724,6 +1826,14 @@ def orchestrate_visualization_request(
                     group_by_validation.reason,
                 )
                 return group_by_validation
+
+            scope_grouping_validation = _validate_scope_grouping_cohorts(question, normalized_entities)
+            if scope_grouping_validation is not None:
+                logger.info(
+                    "Orchestrator clarification: %s",
+                    scope_grouping_validation.reason,
+                )
+                return scope_grouping_validation
 
             stats_entity_validation = _validate_statistical_entity_readiness(question, normalized_entities)
             if stats_entity_validation is not None:
