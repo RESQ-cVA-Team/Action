@@ -1838,6 +1838,24 @@ def _decision_stage(
             clarification_options=[],
             missing_fields=[],
         )
+    # Deterministic safeguard: a chart request is not a statistical test.
+    # Observed on the hosted dev: "admission nihss of only patients older
+    # than 60 years" answered "What statistical test would you like to
+    # perform?". Without test wording or a test entity, neither the test
+    # type nor the chart type is a required field.
+    if outcome.decision == "clarify" and outcome.missing_fields and _entity_present(entities, "metric") and not _has_statistical_test_signal(question, entities):
+        claimed = [field.strip().lower() for field in outcome.missing_fields]
+        if "statistical_test_type" in claimed and all(field in {"statistical_test_type", "chart_type"} for field in claimed):
+            logger.info("Clarification asks for a statistical test on a chart request; proceeding", extra={"missing_fields": outcome.missing_fields})
+            return VisualizationRequestOutcome(
+                decision="proceed",
+                reason="all_required_fields_present",
+                message=None,
+                clarification_type=None,
+                clarification_options=[],
+                missing_fields=[],
+            )
+
     # Deterministic safeguard: a quarter, month or year reference ("Q1 2023",
     # "March 2025", "2024") is a valid period, not a malformed date. Observed
     # live: the same three-quarter request was accepted twice and rejected as
