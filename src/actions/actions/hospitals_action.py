@@ -7,6 +7,7 @@ from rasa_sdk import Action  # type: ignore
 from src.actions.error_messages import friendly_hospital_error
 from src.actions.helpers.hospital import extract_hospital_filters
 from src.actions.i18n import resolve_language_from_tracker, translate
+from src.actions.long_action.long_action import _extract_webapp_job_id, _get_callback_config
 from src.executors.analytics_center.client import get_analytics_center_client
 from src.util import env as env_util
 from src.util.logging_utils import log_context
@@ -128,11 +129,14 @@ class ActionListHospitals(Action):  # pyright: ignore
                 logger.info("Listing hospitals")
                 filters = extract_hospital_filters(tracker)
                 client = get_analytics_center_client()
+                callback_url = _get_callback_config(tracker)  # type: ignore[arg-type]
+                job_id = _extract_webapp_job_id(callback_url) if callback_url else None
 
                 raw_country = filters.get("country_code")
                 if isinstance(raw_country, str) and raw_country.strip():
                     resolved_country = client.resolve_country_code(
                         user_sub=user_sub,
+                        job_id=job_id,
                         country_input=raw_country,
                         trace_id=trace_id,
                         raise_on_error=True,
@@ -151,6 +155,7 @@ class ActionListHospitals(Action):  # pyright: ignore
 
                 provider_page = client.list_providers(
                     user_sub=user_sub,
+                    job_id=job_id,
                     limit=filters["limit"],
                     offset=filters["offset"],
                     country_code=filters.get("country_code"),
