@@ -565,9 +565,23 @@ def _infer_stroke_type_share_metric(question: str, entities: Dict[str, Any]) -> 
     return out
 
 
+_NLU_ONLY_ENTITY_KEYS = {"kpi"}
+
+
 def _normalize_entities_for_question(question: str, entities: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop training-data annotations that are not fields of a request.
+    "kpi": "percent" read to the decision stage as a second metric
+    ("PERCENT_ISCHEMIC_STROKES") to choose between."""
     _ = question
-    return dict(entities or {})
+    return {key: value for key, value in (entities or {}).items() if key not in _NLU_ONLY_ENTITY_KEYS}
+
+
+def _names_a_metric(option: str) -> bool:
+    token = option.strip().upper().replace(" ", "_")
+    if token in ssot_loader.get_metric_metadata():
+        return True
+    entry = ssot_loader.get_metric_text_lookup().get(ssot_loader.normalize_metric_text_key(option))
+    return isinstance(entry, dict) and bool(entry.get("canonical"))
 
 
 def _extract_date_bounds(entities: Dict[str, Any]) -> Optional[tuple[str, str]]:
@@ -1676,6 +1690,29 @@ def _decision_stage(
             clarification_type="metric",
             clarification_options=metric_clarification_options,
             missing_fields=outcome.missing_fields,
+        )
+
+    # Deterministic safeguard: a metric question nobody can answer. Observed
+    # live with STROKE_TYPE resolved: "which metric, ISHEMIC_STROKES or
+    # PERCENT_ISCHEMIC_STROKES?", neither of which exists. One resolved
+    # metric and no real alternative on offer leaves nothing to clarify.
+    clarification_type_norm = (outcome.clarification_type or "").strip().lower()
+    asks_for_metric = clarification_type_norm == "metric" or (not clarification_type_norm and reason_norm == "ambiguous_request" and bool(outcome.clarification_options))
+    if (
+        outcome.decision == "clarify"
+        and asks_for_metric
+        and not outcome.missing_fields
+        and len(metric_clarification_options) == 1
+        and not any(_names_a_metric(option) for option in outcome.clarification_options)
+    ):
+        logger.info("Metric clarification offers no real metric; proceeding with %s", metric_clarification_options[0], extra={"options": outcome.clarification_options})
+        return VisualizationRequestOutcome(
+            decision="proceed",
+            reason="all_required_fields_present",
+            message=None,
+            clarification_type=None,
+            clarification_options=[],
+            missing_fields=[],
         )
 
     # Deterministic safeguard: don't trust a missing_fields claim that
