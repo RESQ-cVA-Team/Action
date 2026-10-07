@@ -5,6 +5,7 @@ from src.planners.langchain.request_orchestrator import (
     _decision_stage,
     _drop_falsely_missing_fields,
     _entity_present,
+    _normalize_entities_for_question,
 )
 
 
@@ -42,6 +43,15 @@ class DropFalselyMissingFieldsTests(unittest.TestCase):
     def test_entity_present_rejects_empty_list(self) -> None:
         self.assertFalse(_entity_present({"metric": []}, "metric"))
         self.assertFalse(_entity_present({"metric": [""]}, "metric"))
+
+    def test_drops_a_range_bound_claim_when_the_range_was_given(self) -> None:
+        # "over 50 and under 50" arrived as age plus age_upper; the model asked for age_lower.
+        self.assertEqual(_drop_falsely_missing_fields(["age_lower"], {"metric": "DTN", "age": "50", "age_upper": "50"}), [])
+        self.assertEqual(_drop_falsely_missing_fields(["age_upper"], {"metric": "DTN", "age": "60"}), [])
+        self.assertEqual(_drop_falsely_missing_fields(["nihss_lower"], {"metric": "DTN", "nihss_upper": "10"}), [])
+
+    def test_keeps_a_range_bound_claim_when_no_bound_was_given(self) -> None:
+        self.assertEqual(_drop_falsely_missing_fields(["age_lower"], {"metric": "DTN"}), ["age_lower"])
 
 
 class DecisionStageSafeguardTests(unittest.TestCase):
@@ -540,3 +550,116 @@ class RangeEntityMissingFieldTests(unittest.TestCase):
     def test_age_claimed_missing_is_kept_when_no_bound_was_given(self) -> None:
         result = _drop_falsely_missing_fields(["age"], {"metric": "DTN"})
         self.assertEqual(result, ["age"])
+
+
+class MetricClarificationWithoutRealOptionsTests(unittest.TestCase):
+    _INVENTED = {
+        "decision": "clarify",
+        "reason": "ambiguous_request",
+        "missing_fields": None,
+        "clarification_type": "metric",
+        "clarification_options": ["ISHEMIC_STROKES", "PERCENT_ISCHEMIC_STROKES"],
+        "message": "Which metric do you want: ischemic strokes or the percentage of ischemic strokes?",
+    }
+
+    def _run(self, response, entities):
+        with patch("src.planners.langchain.request_orchestrator._invoke_chain", return_value=response):
+            return _decision_stage(
+                question="Make a line chart of percentage of ischemic strokes per quarter",
+                entities=entities,
+                language="en",
+            )
+
+    def test_invented_options_with_one_resolved_metric_proceed(self) -> None:
+        outcome = self._run(self._INVENTED, {"chart_type": "LINE", "stroke_type": "ISCHEMIC", "group_by": "QUARTER", "metric": "STROKE_TYPE"})
+
+        self.assertEqual(outcome.decision, "proceed")
+        self.assertEqual(outcome.reason, "all_required_fields_present")
+
+    def test_invented_options_without_a_type_but_with_an_ambiguous_reason_proceed(self) -> None:
+        response = dict(self._INVENTED, clarification_type=None)
+        outcome = self._run(response, {"chart_type": "LINE", "stroke_type": "ISCHEMIC", "metric": "STROKE_TYPE"})
+
+        self.assertEqual(outcome.decision, "proceed")
+
+    def test_real_metric_options_still_ask(self) -> None:
+        response = dict(self._INVENTED, clarification_options=["ADMISSION_NIHSS", "DISCHARGE_NIHSS"])
+        outcome = self._run(response, {"metric": "ADMISSION_NIHSS", "chart_type": "LINE"})
+
+        self.assertEqual(outcome.decision, "clarify")
+        self.assertEqual(outcome.clarification_options, ["ADMISSION_NIHSS", "DISCHARGE_NIHSS"])
+
+    def test_metric_options_written_as_words_count_as_real(self) -> None:
+        response = dict(self._INVENTED, clarification_options=["admission nihss", "discharge nihss"])
+        outcome = self._run(response, {"metric": "ADMISSION_NIHSS", "chart_type": "LINE"})
+
+        self.assertEqual(outcome.decision, "clarify")
+
+    def test_without_a_resolved_metric_the_question_stands(self) -> None:
+        outcome = self._run(self._INVENTED, {"chart_type": "LINE", "stroke_type": "ISCHEMIC"})
+
+        self.assertEqual(outcome.decision, "clarify")
+
+    def test_a_question_about_something_else_stands(self) -> None:
+        response = dict(self._INVENTED, clarification_type="filter", clarification_options=["ischemic only", "all strokes"])
+        outcome = self._run(response, {"metric": "STROKE_TYPE", "stroke_type": "ISCHEMIC"})
+
+        self.assertEqual(outcome.decision, "clarify")
+
+
+class RangeClarificationTests(unittest.TestCase):
+    _ASKS_WHICH_SIDE = {
+        "decision": "clarify",
+        "reason": "ambiguous_request",
+        "missing_fields": None,
+        "clarification_type": "age_group",
+        "clarification_options": ["over 50", "under 50"],
+        "message": "Please specify if you want data for patients over 50 or under 50.",
+    }
+    _BOTH_SIDES = {"chart_type": "BAR", "metric": "DTN", "age": "50", "age_lower": "50", "age_upper": "50"}
+
+    def _run(self, response, entities):
+        with patch("src.planners.langchain.request_orchestrator._invoke_chain", return_value=response):
+            return _decision_stage(question="Show me a bar chart of dtn for patients over 50 and under 50", entities=entities, language="en")
+
+    def test_asking_which_side_of_a_given_bound_proceeds(self) -> None:
+        outcome = self._run(self._ASKS_WHICH_SIDE, self._BOTH_SIDES)
+
+        self.assertEqual(outcome.decision, "proceed")
+        self.assertEqual(outcome.reason, "all_required_fields_present")
+
+    def test_options_made_of_the_given_bound_count_without_a_type(self) -> None:
+        outcome = self._run(dict(self._ASKS_WHICH_SIDE, clarification_type=None), self._BOTH_SIDES)
+
+        self.assertEqual(outcome.decision, "proceed")
+
+    def test_a_single_given_bound_is_enough(self) -> None:
+        response = dict(self._ASKS_WHICH_SIDE, clarification_type="age_range", clarification_options=["18-50", "50-120"])
+        outcome = self._run(response, {"metric": "DTN", "age": "60", "age_lower": "60"})
+
+        self.assertEqual(outcome.decision, "proceed")
+
+    def test_a_range_question_with_no_bound_given_stands(self) -> None:
+        outcome = self._run(self._ASKS_WHICH_SIDE, {"chart_type": "BAR", "metric": "DTN"})
+
+        self.assertEqual(outcome.decision, "clarify")
+
+    def test_a_type_that_merely_contains_the_letters_is_not_a_range_question(self) -> None:
+        response = dict(self._ASKS_WHICH_SIDE, clarification_type="percentage_type", clarification_options=["share", "count"])
+        outcome = self._run(response, self._BOTH_SIDES)
+
+        self.assertEqual(outcome.decision, "clarify")
+
+
+class NormalizeEntitiesForQuestionTests(unittest.TestCase):
+    def test_kpi_annotation_is_dropped(self) -> None:
+        normalized = _normalize_entities_for_question(
+            "percentage of ischemic strokes per quarter",
+            {"kpi": "percent", "stroke_type": "ISCHEMIC", "chart_type": "LINE"},
+        )
+
+        self.assertEqual(normalized, {"stroke_type": "ISCHEMIC", "chart_type": "LINE"})
+
+
+if __name__ == "__main__":
+    unittest.main()

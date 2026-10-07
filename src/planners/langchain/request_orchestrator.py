@@ -471,8 +471,10 @@ def _drop_falsely_missing_fields(missing_fields: List[str], entities: Dict[str, 
         if key in _SELF_VERIFIABLE_REQUIRED_FIELDS and _entity_present(entities, key):
             continue
         # "over 50 and under 50" arrives as age plus age_lower/age_upper; a
-        # bound present under any of those keys means the range was given.
-        if key in _RANGE_ENTITY_FIELDS and any(_entity_present(entities, k) for k in (key, f"{key}_lower", f"{key}_upper")):
+        # bound present under any of those keys means the range was given,
+        # whichever of the three the claim names.
+        base = re.sub(r"_(lower|upper)$", "", key)
+        if base in _RANGE_ENTITY_FIELDS and any(_entity_present(entities, k) for k in (base, f"{base}_lower", f"{base}_upper")):
             continue
         kept.append(field)
     return kept
@@ -563,9 +565,50 @@ def _infer_stroke_type_share_metric(question: str, entities: Dict[str, Any]) -> 
     return out
 
 
+_NLU_ONLY_ENTITY_KEYS = {"kpi"}
+
+
 def _normalize_entities_for_question(question: str, entities: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop training-data annotations that are not fields of a request.
+    "kpi": "percent" read to the decision stage as a second metric
+    ("PERCENT_ISCHEMIC_STROKES") to choose between."""
     _ = question
-    return dict(entities or {})
+    return {key: value for key, value in (entities or {}).items() if key not in _NLU_ONLY_ENTITY_KEYS}
+
+
+_BOUNDED_RANGE_KEYS = ("age", "nihss")
+
+
+def _number_or_none(value: Any) -> Optional[float]:
+    try:
+        return float(str(value).strip())
+    except ValueError:
+        return None
+
+
+def _range_the_clarification_is_about(outcome: VisualizationRequestOutcome, entities: Dict[str, Any]) -> Optional[str]:
+    """Name the age/nihss range a clarify asks about when a bound for it was given."""
+    clarification_type = (outcome.clarification_type or "").strip().lower().replace("_", " ")
+    option_numbers = {_number_or_none(token) for option in outcome.clarification_options for token in re.findall(r"\d+(?:\.\d+)?", option)}
+    option_numbers.discard(None)
+    for key in _BOUNDED_RANGE_KEYS:
+        given = {_number_or_none(value) for k in (key, f"{key}_lower", f"{key}_upper") for value in _extract_string_list(entities.get(k))}
+        given.discard(None)
+        if not given:
+            continue
+        if re.search(rf"\b{key}\b", clarification_type):
+            return key
+        if option_numbers and option_numbers <= given:
+            return key
+    return None
+
+
+def _names_a_metric(option: str) -> bool:
+    token = option.strip().upper().replace(" ", "_")
+    if token in ssot_loader.get_metric_metadata():
+        return True
+    entry = ssot_loader.get_metric_text_lookup().get(ssot_loader.normalize_metric_text_key(option))
+    return isinstance(entry, dict) and bool(entry.get("canonical"))
 
 
 def _extract_date_bounds(entities: Dict[str, Any]) -> Optional[tuple[str, str]]:
@@ -971,6 +1014,44 @@ def _drop_hospital_scopes_from_metric_words(plan: AnalysisPlan, entities: Dict[s
             charts.append(chart.model_copy(update={"metrics": metrics}))
         else:
             charts.append(chart)
+    if not plan_changed:
+        return plan
+    return plan.model_copy(update={"charts": charts})
+
+
+_PERIOD_MENTION = re.compile(
+    r"\b(?:19|20)\d{2}\b"
+    r"|\bq[1-4]\b"
+    r"|\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\b"
+    r"|\b(?:jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+\d"
+    r"|\b(?:last|past|previous|this|current)\s+(?:\d+\s+)?(?:day|week|month|quarter|year)s?\b"
+    r"|\b(?:ytd|year to date)\b",
+    re.IGNORECASE,
+)
+
+
+def _drop_unrequested_explicit_periods(plan: AnalysisPlan, question: str, entities: Dict[str, Any]) -> AnalysisPlan:
+    """Strip explicit periods the planner made up for a plain "per quarter".
+
+    semantics.time.periods is for periods the user named ("Q1 2023 and Q3
+    2025"); a grain word on its own means the default window. Live,
+    "percentage of AA_DTN_LE60 per quarter" came back as the four quarters
+    of 2023. Any period reference in the question or a date entity keeps
+    the planner's periods.
+    """
+    if _extract_string_list(entities.get("date")) or _PERIOD_MENTION.search(question or ""):
+        return plan
+    plan_changed = False
+    charts: List[ChartSpec] = []
+    for chart in plan.charts or []:
+        semantics = chart.semantics
+        if semantics is None or semantics.time is None or not semantics.time.periods:
+            charts.append(chart)
+            continue
+        logger.info("Dropping explicit periods the question never named", extra={"periods": [period.model_dump() for period in semantics.time.periods]})
+        time_spec = semantics.time.model_copy(update={"periods": None})
+        charts.append(chart.model_copy(update={"semantics": semantics.model_copy(update={"time": time_spec})}))
+        plan_changed = True
     if not plan_changed:
         return plan
     return plan.model_copy(update={"charts": charts})
@@ -1676,6 +1757,46 @@ def _decision_stage(
             missing_fields=outcome.missing_fields,
         )
 
+    # Deterministic safeguard: a metric question nobody can answer. Observed
+    # live with STROKE_TYPE resolved: "which metric, ISHEMIC_STROKES or
+    # PERCENT_ISCHEMIC_STROKES?", neither of which exists. One resolved
+    # metric and no real alternative on offer leaves nothing to clarify.
+    clarification_type_norm = (outcome.clarification_type or "").strip().lower()
+    asks_for_metric = clarification_type_norm == "metric" or (not clarification_type_norm and reason_norm == "ambiguous_request" and bool(outcome.clarification_options))
+    if (
+        outcome.decision == "clarify"
+        and asks_for_metric
+        and not outcome.missing_fields
+        and len(metric_clarification_options) == 1
+        and not any(_names_a_metric(option) for option in outcome.clarification_options)
+    ):
+        logger.info("Metric clarification offers no real metric; proceeding with %s", metric_clarification_options[0], extra={"options": outcome.clarification_options})
+        return VisualizationRequestOutcome(
+            decision="proceed",
+            reason="all_required_fields_present",
+            message=None,
+            clarification_type=None,
+            clarification_options=[],
+            missing_fields=[],
+        )
+
+    # Deterministic safeguard: a bound that was given is not a choice to
+    # make. Observed live with age_lower=50 and age_upper=50 ("over 50 and
+    # under 50"): "Please specify if you want data for patients over 50 or
+    # under 50." The prompt already forbids the question; this enforces it.
+    if outcome.decision == "clarify" and not outcome.missing_fields:
+        range_key = _range_the_clarification_is_about(outcome, entities)
+        if range_key is not None:
+            logger.info("Clarification asks about the %s range that was already given; proceeding", range_key, extra={"options": outcome.clarification_options})
+            return VisualizationRequestOutcome(
+                decision="proceed",
+                reason="all_required_fields_present",
+                message=None,
+                clarification_type=None,
+                clarification_options=[],
+                missing_fields=[],
+            )
+
     # Deterministic safeguard: don't trust a missing_fields claim that
     # contradicts ENTITIES_JSON itself (see _drop_falsely_missing_fields).
     if outcome.decision != "proceed" and outcome.missing_fields:
@@ -1949,6 +2070,7 @@ def orchestrate_visualization_request(
             plan = _normalize_plan_semantic_splits(plan)
             plan = _split_mixed_unit_charts(plan)
             plan = _drop_hospital_scopes_from_metric_words(plan, normalized_entities)
+            plan = _drop_unrequested_explicit_periods(plan, question, normalized_entities)
             logger.info("Plan generation completed successfully", extra={"plan_type": type(plan).__name__})
 
             logger.info("Starting validation of statistical plan readiness")
@@ -2001,6 +2123,7 @@ def orchestrate_visualization_request(
                     plan = _normalize_plan_semantic_splits(plan)
                     plan = _split_mixed_unit_charts(plan)
                     plan = _drop_hospital_scopes_from_metric_words(plan, entities)
+                    plan = _drop_unrequested_explicit_periods(plan, question, entities)
                     return VisualizationRequestOutcome(
                         decision="proceed",
                         reason="orchestrator_fallback_to_plan",
