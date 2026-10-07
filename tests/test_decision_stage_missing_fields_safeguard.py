@@ -607,6 +607,50 @@ class MetricClarificationWithoutRealOptionsTests(unittest.TestCase):
         self.assertEqual(outcome.decision, "clarify")
 
 
+class RangeClarificationTests(unittest.TestCase):
+    _ASKS_WHICH_SIDE = {
+        "decision": "clarify",
+        "reason": "ambiguous_request",
+        "missing_fields": None,
+        "clarification_type": "age_group",
+        "clarification_options": ["over 50", "under 50"],
+        "message": "Please specify if you want data for patients over 50 or under 50.",
+    }
+    _BOTH_SIDES = {"chart_type": "BAR", "metric": "DTN", "age": "50", "age_lower": "50", "age_upper": "50"}
+
+    def _run(self, response, entities):
+        with patch("src.planners.langchain.request_orchestrator._invoke_chain", return_value=response):
+            return _decision_stage(question="Show me a bar chart of dtn for patients over 50 and under 50", entities=entities, language="en")
+
+    def test_asking_which_side_of_a_given_bound_proceeds(self) -> None:
+        outcome = self._run(self._ASKS_WHICH_SIDE, self._BOTH_SIDES)
+
+        self.assertEqual(outcome.decision, "proceed")
+        self.assertEqual(outcome.reason, "all_required_fields_present")
+
+    def test_options_made_of_the_given_bound_count_without_a_type(self) -> None:
+        outcome = self._run(dict(self._ASKS_WHICH_SIDE, clarification_type=None), self._BOTH_SIDES)
+
+        self.assertEqual(outcome.decision, "proceed")
+
+    def test_a_single_given_bound_is_enough(self) -> None:
+        response = dict(self._ASKS_WHICH_SIDE, clarification_type="age_range", clarification_options=["18-50", "50-120"])
+        outcome = self._run(response, {"metric": "DTN", "age": "60", "age_lower": "60"})
+
+        self.assertEqual(outcome.decision, "proceed")
+
+    def test_a_range_question_with_no_bound_given_stands(self) -> None:
+        outcome = self._run(self._ASKS_WHICH_SIDE, {"chart_type": "BAR", "metric": "DTN"})
+
+        self.assertEqual(outcome.decision, "clarify")
+
+    def test_a_type_that_merely_contains_the_letters_is_not_a_range_question(self) -> None:
+        response = dict(self._ASKS_WHICH_SIDE, clarification_type="percentage_type", clarification_options=["share", "count"])
+        outcome = self._run(response, self._BOTH_SIDES)
+
+        self.assertEqual(outcome.decision, "clarify")
+
+
 class NormalizeEntitiesForQuestionTests(unittest.TestCase):
     def test_kpi_annotation_is_dropped(self) -> None:
         normalized = _normalize_entities_for_question(

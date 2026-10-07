@@ -576,6 +576,33 @@ def _normalize_entities_for_question(question: str, entities: Dict[str, Any]) ->
     return {key: value for key, value in (entities or {}).items() if key not in _NLU_ONLY_ENTITY_KEYS}
 
 
+_BOUNDED_RANGE_KEYS = ("age", "nihss")
+
+
+def _number_or_none(value: Any) -> Optional[float]:
+    try:
+        return float(str(value).strip())
+    except ValueError:
+        return None
+
+
+def _range_the_clarification_is_about(outcome: VisualizationRequestOutcome, entities: Dict[str, Any]) -> Optional[str]:
+    """Name the age/nihss range a clarify asks about when a bound for it was given."""
+    clarification_type = (outcome.clarification_type or "").strip().lower().replace("_", " ")
+    option_numbers = {_number_or_none(token) for option in outcome.clarification_options for token in re.findall(r"\d+(?:\.\d+)?", option)}
+    option_numbers.discard(None)
+    for key in _BOUNDED_RANGE_KEYS:
+        given = {_number_or_none(value) for k in (key, f"{key}_lower", f"{key}_upper") for value in _extract_string_list(entities.get(k))}
+        given.discard(None)
+        if not given:
+            continue
+        if re.search(rf"\b{key}\b", clarification_type):
+            return key
+        if option_numbers and option_numbers <= given:
+            return key
+    return None
+
+
 def _names_a_metric(option: str) -> bool:
     token = option.strip().upper().replace(" ", "_")
     if token in ssot_loader.get_metric_metadata():
@@ -1752,6 +1779,23 @@ def _decision_stage(
             clarification_options=[],
             missing_fields=[],
         )
+
+    # Deterministic safeguard: a bound that was given is not a choice to
+    # make. Observed live with age_lower=50 and age_upper=50 ("over 50 and
+    # under 50"): "Please specify if you want data for patients over 50 or
+    # under 50." The prompt already forbids the question; this enforces it.
+    if outcome.decision == "clarify" and not outcome.missing_fields:
+        range_key = _range_the_clarification_is_about(outcome, entities)
+        if range_key is not None:
+            logger.info("Clarification asks about the %s range that was already given; proceeding", range_key, extra={"options": outcome.clarification_options})
+            return VisualizationRequestOutcome(
+                decision="proceed",
+                reason="all_required_fields_present",
+                message=None,
+                clarification_type=None,
+                clarification_options=[],
+                missing_fields=[],
+            )
 
     # Deterministic safeguard: don't trust a missing_fields claim that
     # contradicts ENTITIES_JSON itself (see _drop_falsely_missing_fields).
