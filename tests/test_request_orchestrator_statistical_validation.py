@@ -78,6 +78,29 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
             )
         )
 
+    def test_allows_metric_synonym_when_metric_entity_is_missing(self) -> None:
+        self.assertIsNone(
+            _detect_unsupported_risk_factor_filter(
+                "Show me a line graph of anticoagulants for atrial fibrillation at discharge",
+                {"chart_type": ["LINE"]},
+            )
+        )
+
+    def test_orchestration_does_not_reject_metric_synonym_when_metric_entity_is_missing(self) -> None:
+        question = "Show me a line graph of anticoagulants for atrial fibrillation at discharge"
+        with patch(
+            "src.planners.langchain.request_orchestrator._decision_stage",
+            return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
+        ) as decision_stage:
+            outcome = orchestrate_visualization_request(
+                question=question,
+                entities={"chart_type": ["LINE"]},
+                include_plan=False,
+            )
+
+        self.assertEqual(outcome.decision, "proceed")
+        decision_stage.assert_called_once()
+
     def test_still_rejects_incidental_risk_factor_filter_phrases(self) -> None:
         self.assertEqual(
             _detect_unsupported_risk_factor_filter(
@@ -90,10 +113,19 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
     def test_still_rejects_unrelated_risk_factor_when_metric_synonym_is_present(self) -> None:
         self.assertEqual(
             _detect_unsupported_risk_factor_filter(
-                "Show me anticoagulants for atrial fibrillation at discharge in patients with diabetes",
+                "Show me anticoagulants for atrial fibrillation at discharge for smokers",
                 {"metric": ["DISCHARGE_ANTICOAGULANTS_AFIB"]},
             ),
-            "diabetes",
+            "smoker",
+        )
+
+    def test_detects_unrelated_risk_factor_when_metric_entity_is_missing(self) -> None:
+        self.assertEqual(
+            _detect_unsupported_risk_factor_filter(
+                "Show me a line graph of anticoagulants for atrial fibrillation at discharge for smokers",
+                {"chart_type": ["LINE"]},
+            ),
+            "smoker",
         )
 
     def test_clarifies_when_statistical_entities_do_not_define_two_cohorts(self) -> None:

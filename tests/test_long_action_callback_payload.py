@@ -4,6 +4,7 @@ import types
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 
 def _ensure_package(name: str, path: Path) -> None:
@@ -67,6 +68,13 @@ class LongActionCallbackPayloadTests(unittest.TestCase):
     def setUp(self) -> None:
         self.action = _FakeLongAction()
 
+    def test_get_webapp_job_id_uses_usable_callback_url(self) -> None:
+        tracker = types.SimpleNamespace(latest_message={})
+        callback_url = "https://webapp.example/api/rasa/long-task-callback?jobId=job-abc"
+
+        with patch.object(long_action_module, "_get_callback_config", return_value=callback_url):
+            self.assertEqual(long_action_module.get_webapp_job_id(tracker), "job-abc")
+
     def test_build_callback_payload_wraps_user_visible_message_as_tracker_event(self) -> None:
         ctx = LongActionContext(sender_id="u1:thread:7", tracker_snapshot={})
 
@@ -104,13 +112,15 @@ class LongActionCallbackPayloadTests(unittest.TestCase):
         self.assertEqual(payload["events"], [])
         self.assertEqual(
             payload["controls"],
-            [{
-                "type": "lock",
-                "jobId": "job-abc",
-                "scope": "long_action",
-                "source": "long-task-callback",
-                "traceId": "trace-123",
-            }],
+            [
+                {
+                    "type": "lock",
+                    "jobId": "job-abc",
+                    "scope": "long_action",
+                    "source": "long-task-callback",
+                    "traceId": "trace-123",
+                }
+            ],
         )
 
 
