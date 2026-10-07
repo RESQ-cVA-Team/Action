@@ -1748,7 +1748,9 @@ def _decision_stage(
     # was a real regression caught via CVaLab's webapp_negative_invalid_time_period
     # scenario during this fix's own testing.
     if outcome.decision == "reject" and "out_of_scope" in outcome.reason.strip().lower().replace(" ", "_") and any(_entity_present(entities, key) for key in _SCOPE_PROVING_ENTITY_KEYS):
-        still_missing = [field for field in ("metric", "chart_type") if not _entity_present(entities, field)]
+        # chart_type is not required any more (a missing one means a default
+        # chart), so the only gap that still needs the user is the metric.
+        still_missing = [field for field in ("metric",) if not _entity_present(entities, field)]
         if still_missing:
             # The LLM's own message text ("This request is not related to...")
             # came from the wrong reject/out_of_scope judgment being overridden

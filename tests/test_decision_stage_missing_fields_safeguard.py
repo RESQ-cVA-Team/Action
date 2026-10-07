@@ -146,7 +146,7 @@ class DecisionStageSafeguardTests(unittest.TestCase):
 
 
 class DecisionStageOutOfScopeSafeguardTests(unittest.TestCase):
-    def test_reclassifies_out_of_scope_reject_with_missing_chart_type_as_clarify(self) -> None:
+    def test_reclassifies_out_of_scope_reject_with_missing_chart_type_as_proceed(self) -> None:
         """Regression test for a reported CVaLab failure: 'Make a graph for
         dtn for male ischemic patients from 2025 to 2026' -- a well-formed
         chart request with a real metric, filters, and a date range -- was
@@ -172,9 +172,11 @@ class DecisionStageOutOfScopeSafeguardTests(unittest.TestCase):
                 language="en",
             )
 
-        self.assertEqual(outcome.decision, "clarify")
-        self.assertEqual(outcome.missing_fields, ["chart_type"])
-        self.assertEqual(outcome.reason, "missing_required_fields")
+        # Live, after the default-chart rule: this path still asked "Please
+        # specify the chart type you'd like to use" whenever the model called
+        # the request out of scope, which it does intermittently.
+        self.assertEqual(outcome.decision, "proceed")
+        self.assertEqual(outcome.missing_fields, [])
 
     def test_reclassifies_out_of_scope_reject_as_proceed_when_all_fields_present(self) -> None:
         with patch(
