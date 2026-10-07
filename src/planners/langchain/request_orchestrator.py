@@ -566,14 +566,41 @@ def _infer_stroke_type_share_metric(question: str, entities: Dict[str, Any]) -> 
 
 
 _NLU_ONLY_ENTITY_KEYS = {"kpi"}
+_GROUP_BY_PREFIX_WORDS = re.compile(r"^(?:(?:grouped|split|broken down|divided)\s+)?(?:per|by|for each|each|every|the|an?)\s+", re.IGNORECASE)
 
 
 def _normalize_entities_for_question(question: str, entities: Dict[str, Any]) -> Dict[str, Any]:
-    """Drop training-data annotations that are not fields of a request.
-    "kpi": "percent" read to the decision stage as a second metric
-    ("PERCENT_ISCHEMIC_STROKES") to choose between."""
+    """Drop training-data annotations that are not fields of a request and
+    put group_by values in canonical form. "kpi": "percent" read to the
+    decision stage as a second metric ("PERCENT_ISCHEMIC_STROKES") to choose
+    between; "per quarter" was refused as a grouping nothing supports."""
     _ = question
-    return {key: value for key, value in (entities or {}).items() if key not in _NLU_ONLY_ENTITY_KEYS}
+    out = {key: value for key, value in (entities or {}).items() if key not in _NLU_ONLY_ENTITY_KEYS}
+    raw_group_by = out.get("group_by")
+    values = _extract_string_list(raw_group_by)
+    if values:
+        canonical = [_canonical_group_by(value) for value in values]
+        if canonical != values:
+            out["group_by"] = canonical[0] if isinstance(raw_group_by, str) else canonical
+    return out
+
+
+def _canonical_group_by(value: str) -> str:
+    """"per quarter" names the QUARTER grouping. Rasa's canonicalizer maps the
+    bare word, but an entity that reaches us with its prefix still attached
+    (the LLM intent fallback hands over the words as written) must resolve
+    here, or the request is refused for a grouping it does support."""
+    token = value.strip()
+    for candidate in (token, _GROUP_BY_PREFIX_WORDS.sub("", token, count=1).strip()):
+        if not candidate:
+            continue
+        upper = candidate.upper().replace(" ", "_")
+        if upper in TIME_INTERVALS or upper == "HOSPITAL":
+            return upper
+        resolved = ssot_loader.resolve_groupby_canonical(candidate)
+        if resolved is not None:
+            return resolved
+    return value
 
 
 _BOUNDED_RANGE_KEYS = ("age", "nihss")
