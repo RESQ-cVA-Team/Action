@@ -440,6 +440,7 @@ def _entity_present(entities: Dict[str, Any], key: str) -> bool:
     return value is not None and value is not False
 
 
+_RANGE_ENTITY_FIELDS = {"age", "nihss", "date"}
 _PERIOD_REFERENCE_PATTERNS = (
     re.compile(r"^\d{4}$"),
     re.compile(r"^\d{4}-(0[1-9]|1[0-2])(-(0[1-9]|[12]\d|3[01]))?$"),
@@ -464,7 +465,17 @@ def _drop_falsely_missing_fields(missing_fields: List[str], entities: Dict[str, 
     so this only overrides objectively-false claims, never a field that
     genuinely needs semantic judgment to consider satisfied.
     """
-    return [field for field in missing_fields if not (field.strip().lower() in _SELF_VERIFIABLE_REQUIRED_FIELDS and _entity_present(entities, field.strip().lower()))]
+    kept: List[str] = []
+    for field in missing_fields:
+        key = field.strip().lower()
+        if key in _SELF_VERIFIABLE_REQUIRED_FIELDS and _entity_present(entities, key):
+            continue
+        # "over 50 and under 50" arrives as age plus age_lower/age_upper; a
+        # bound present under any of those keys means the range was given.
+        if key in _RANGE_ENTITY_FIELDS and any(_entity_present(entities, k) for k in (key, f"{key}_lower", f"{key}_upper")):
+            continue
+        kept.append(field)
+    return kept
 
 
 def _has_statistical_test_signal(question: str, entities: Dict[str, Any]) -> bool:
@@ -533,6 +544,23 @@ def _extract_metric_code(entities: Dict[str, Any]) -> Optional[str]:
     if not metrics:
         return None
     return metrics[0].upper()
+
+
+_STROKE_SHARE_WORDING = re.compile(r"\b(percent(age)?|share|proportion|rate)\b.{0,40}\bstrokes?\b", re.IGNORECASE)
+
+
+def _infer_stroke_type_share_metric(question: str, entities: Dict[str, Any]) -> Dict[str, Any]:
+    """"Percentage of ischemic strokes" names no metric that NLU can see: the
+    word it tags is the stroke type. The share of a stroke type among all
+    strokes is the STROKE_TYPE metric plotted as a rate, so fill that in
+    rather than asking which metric was meant."""
+    if _entity_present(entities, "metric") or not _entity_present(entities, "stroke_type"):
+        return entities
+    if not _STROKE_SHARE_WORDING.search(question or ""):
+        return entities
+    out = dict(entities)
+    out["metric"] = "STROKE_TYPE"
+    return out
 
 
 def _normalize_entities_for_question(question: str, entities: Dict[str, Any]) -> Dict[str, Any]:
@@ -1671,6 +1699,24 @@ def _decision_stage(
                 missing_fields=corrected_missing,
             )
 
+    # Deterministic safeguard: a bare metric question ("What is my door to
+    # needle time?") gets a default chart from the planner, not a question
+    # about chart type. Only chart_type is covered; a missing metric still
+    # needs the user.
+    if (
+        outcome.decision == "clarify"
+        and [field.strip().lower() for field in (outcome.missing_fields or [])] == ["chart_type"]
+        and _entity_present(entities, "metric")
+        and not _has_statistical_test_signal(question, entities)
+    ):
+        return VisualizationRequestOutcome(
+            decision="proceed",
+            reason="all_required_fields_present",
+            message=None,
+            clarification_type=None,
+            clarification_options=[],
+            missing_fields=[],
+        )
     # Deterministic safeguard: a quarter, month or year reference ("Q1 2023",
     # "March 2025", "2024") is a valid period, not a malformed date. Observed
     # live: the same three-quarter request was accepted twice and rejected as
@@ -1781,7 +1827,7 @@ def orchestrate_visualization_request(
     pending_clarification: Optional[Dict[str, Any]] = None,
 ) -> VisualizationRequestOutcome:
     with log_context(trace_id=trace_id or "", orchestrator_include_plan=include_plan):
-        normalized_entities = _normalize_entities_for_question(question, entities)
+        normalized_entities = _infer_stroke_type_share_metric(question, _normalize_entities_for_question(question, entities))
         if not _ORCHESTRATOR_ENABLED:
             if not include_plan:
                 return VisualizationRequestOutcome(decision="proceed", reason="orchestrator_disabled")

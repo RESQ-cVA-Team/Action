@@ -89,19 +89,19 @@ class DecisionStageSafeguardTests(unittest.TestCase):
             "src.planners.langchain.request_orchestrator._invoke_chain",
             return_value={
                 "decision": "clarify",
-                "reason": "missing_chart_type",
-                "missing_fields": ["chart_type"],
-                "message": "What chart type would you like?",
+                "reason": "missing_metric",
+                "missing_fields": ["metric"],
+                "message": "What metric would you like?",
             },
         ):
             outcome = _decision_stage(
-                question="show dtn from Czech Republic",
-                entities={"metric": "DTN", "country_code": "CZ"},
+                question="show me a line chart from Czech Republic",
+                entities={"chart_type": "LINE", "country_code": "CZ"},
                 language="en",
             )
 
         self.assertEqual(outcome.decision, "clarify")
-        self.assertEqual(outcome.missing_fields, ["chart_type"])
+        self.assertEqual(outcome.missing_fields, ["metric"])
 
     def test_narrows_missing_fields_to_only_the_genuine_one(self) -> None:
         with patch(
@@ -119,8 +119,10 @@ class DecisionStageSafeguardTests(unittest.TestCase):
                 language="en",
             )
 
-        self.assertEqual(outcome.decision, "clarify")
-        self.assertEqual(outcome.missing_fields, ["chart_type"])
+        # Narrowed to chart_type only, and a missing chart type alone is a
+        # default chart, not a question.
+        self.assertEqual(outcome.decision, "proceed")
+        self.assertEqual(outcome.missing_fields, [])
 
     def test_coerces_reject_to_clarify_when_reason_is_missing_required_fields(self) -> None:
         with patch(
@@ -418,28 +420,30 @@ class PendingClarificationSafeguardTests(unittest.TestCase):
 
     def test_does_not_override_when_the_reply_actually_resolves_it(self) -> None:
         # The reply DID extract a metric this time -- the LLM's own next
-        # question (now legitimately about chart_type) should stand.
+        # question (here a genuine ambiguity between two NIHSS metrics; a
+        # missing chart type alone would be a default chart, not a question)
+        # should stand.
         with patch(
             "src.planners.langchain.request_orchestrator._invoke_chain",
             return_value={
                 "decision": "clarify",
-                "reason": "missing_required_fields",
-                "clarification_type": "chart_type",
-                "clarification_options": ["LINE", "BAR"],
-                "message": "What type of chart would you like for the admission NIHSS data?",
-                "missing_fields": ["chart_type"],
+                "reason": "ambiguous_request",
+                "clarification_type": "metric",
+                "clarification_options": ["ADMISSION_NIHSS", "DISCHARGE_NIHSS"],
+                "message": "Admission or discharge NIHSS?",
+                "missing_fields": [],
             },
         ):
             outcome = _decision_stage(
-                question="admission nihss",
-                entities={"metric": "ADMISSION_NIHSS"},
+                question="nihss",
+                entities={"metric": ["ADMISSION_NIHSS", "DISCHARGE_NIHSS"]},
                 language="en",
                 pending_clarification=self._PENDING_METRIC_CLARIFICATION,
             )
 
         self.assertEqual(outcome.decision, "clarify")
-        self.assertEqual(outcome.missing_fields, ["chart_type"])
-        self.assertEqual(outcome.clarification_type, "chart_type")
+        self.assertEqual(outcome.clarification_type, "metric")
+        self.assertEqual(outcome.message, "Admission or discharge NIHSS?")
 
     def test_no_pending_clarification_leaves_outcome_untouched(self) -> None:
         with patch(
@@ -447,21 +451,21 @@ class PendingClarificationSafeguardTests(unittest.TestCase):
             return_value={
                 "decision": "clarify",
                 "reason": "missing_required_fields",
-                "clarification_type": "chart_type",
-                "clarification_options": ["LINE", "BAR"],
-                "message": "What type of chart would you like?",
-                "missing_fields": ["chart_type"],
+                "clarification_type": "metric",
+                "clarification_options": [],
+                "message": "What metric would you like to see?",
+                "missing_fields": ["metric"],
             },
         ):
             outcome = _decision_stage(
-                question="line chart of dtn",
-                entities={"metric": "DTN"},
+                question="show me a line chart",
+                entities={"chart_type": "LINE"},
                 language="en",
                 pending_clarification=None,
             )
 
         self.assertEqual(outcome.decision, "clarify")
-        self.assertEqual(outcome.missing_fields, ["chart_type"])
+        self.assertEqual(outcome.missing_fields, ["metric"])
 
     def test_overrides_when_llm_only_covers_part_of_two_pending_fields(self) -> None:
         # Live-caught regression: when the pending clarification was asking
@@ -520,3 +524,17 @@ class PendingClarificationSafeguardTests(unittest.TestCase):
             )
 
         self.assertEqual(outcome.missing_fields, ["chart_type"])
+
+
+class RangeEntityMissingFieldTests(unittest.TestCase):
+    def test_age_claimed_missing_is_dropped_when_a_bound_companion_is_present(self) -> None:
+        result = _drop_falsely_missing_fields(["age"], {"metric": "DTN", "age_lower": "50", "age_upper": "50"})
+        self.assertEqual(result, [])
+
+    def test_age_claimed_missing_is_dropped_when_the_flat_key_is_present(self) -> None:
+        result = _drop_falsely_missing_fields(["age"], {"metric": "DTN", "age": "50"})
+        self.assertEqual(result, [])
+
+    def test_age_claimed_missing_is_kept_when_no_bound_was_given(self) -> None:
+        result = _drop_falsely_missing_fields(["age"], {"metric": "DTN"})
+        self.assertEqual(result, ["age"])

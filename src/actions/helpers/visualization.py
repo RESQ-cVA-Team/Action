@@ -277,26 +277,37 @@ def extract_entities_from_latest_message(
             if not _has_metric_request_context(question_text, ent.get("start")):
                 continue
 
-        if key_any not in extracted:
-            extracted[key_any] = value
-            continue
-
-        existing = extracted[key_any]
-        if isinstance(existing, list):
-            existing_list = cast(List[Any], existing)
-            if value not in existing_list:
-                existing_list.append(value)
-        elif value != existing:
-            extracted[key_any] = [existing, value]
-        # else: identical repeat of an already-captured scalar value (e.g.
-        # "male patients DTN" and "female patients DTN" both mention DTN) --
-        # not a second distinct answer, so it must not turn a clean scalar
-        # into a redundant [DTN, DTN] list. That shape previously read to the
-        # decision-stage LLM as two different metric candidates to choose
-        # between, producing a spurious "which metric?" clarification for an
-        # unambiguous request.
+        _accumulate_entity_value(extracted, key_any, value)
+        # Range entities (age/nihss/date) carry a DIET role saying which
+        # bound a number is ("over 50" -> lower, "under 50" -> upper). The
+        # flat key loses that, and "over 50 and under 50" collapses to a
+        # single "50" -- so keep the role as a companion key too.
+        role_any = ent.get("role")
+        if isinstance(role_any, str) and role_any.strip():
+            _accumulate_entity_value(extracted, f"{key_any}_{role_any.strip().lower()}", value)
 
     return extracted
+
+
+def _accumulate_entity_value(extracted: Dict[str, Any], key: str, value: Any) -> None:
+    if key not in extracted:
+        extracted[key] = value
+        return
+
+    existing = extracted[key]
+    if isinstance(existing, list):
+        existing_list = cast(List[Any], existing)
+        if value not in existing_list:
+            existing_list.append(value)
+    elif value != existing:
+        extracted[key] = [existing, value]
+    # else: identical repeat of an already-captured scalar value (e.g.
+    # "male patients DTN" and "female patients DTN" both mention DTN) --
+    # not a second distinct answer, so it must not turn a clean scalar
+    # into a redundant [DTN, DTN] list. That shape previously read to the
+    # decision-stage LLM as two different metric candidates to choose
+    # between, producing a spurious "which metric?" clarification for an
+    # unambiguous request.
 
 
 def resolve_override_language(metadata: Dict[str, Any], slots: Dict[str, Any]) -> Optional[str]:

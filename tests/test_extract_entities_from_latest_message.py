@@ -291,3 +291,46 @@ def test_metric_value_is_remapped_from_parent_metric_when_span_matches_exact_can
     )
 
     assert entities["metric"] == "CRANIECTOMY"
+
+
+def test_role_tagged_range_entities_keep_their_bound_as_companion_keys() -> None:
+    """"over 50 and under 50" is two bounds with the same number. The flat
+    key collapses them to a single "50"; the lower/upper companions keep
+    what each one meant.
+    """
+    entities = extract_entities_from_latest_message(
+        _message(
+            [
+                {"entity": "metric", "value": "DTN"},
+                {"entity": "age", "value": "50", "role": "lower"},
+                {"entity": "age", "value": "50", "role": "upper"},
+            ],
+            text="Show me DTN for patients over 50 and under 50",
+        )
+    )
+
+    assert entities["age"] == "50"
+    assert entities["age_lower"] == "50"
+    assert entities["age_upper"] == "50"
+
+
+def test_role_tagged_range_with_distinct_bounds() -> None:
+    entities = extract_entities_from_latest_message(
+        _message(
+            [
+                {"entity": "age", "value": "40", "role": "lower"},
+                {"entity": "age", "value": "60", "role": "upper"},
+            ],
+            text="Show me DTN for patients between 40 and 60",
+        )
+    )
+
+    assert entities["age"] == ["40", "60"]
+    assert entities["age_lower"] == "40"
+    assert entities["age_upper"] == "60"
+
+
+def test_entities_without_a_role_get_no_companion_keys() -> None:
+    entities = extract_entities_from_latest_message(_message([{"entity": "age", "value": "60"}], text="patients over 60"))
+
+    assert entities == {"age": "60"}

@@ -395,6 +395,16 @@ def _metric_value_axis_label(plan_chart: S.ChartSpec) -> str:
     return f"{display} ({unit})" if unit else display
 
 
+def _is_percent_measure(plan_chart: S.ChartSpec) -> bool:
+    semantics = getattr(plan_chart, "semantics", None)
+    measure = getattr(semantics, "measure", None) if semantics is not None else None
+    return str(getattr(measure, "type", "") or "").upper() == "RATE"
+
+
+def _cases_axis_label(plan_chart: S.ChartSpec) -> str:
+    return "Share of cases (%)" if _is_percent_measure(plan_chart) else "Cases"
+
+
 def _uses_distribution_axes(
     chart_type_upper: str,
     dimensions: List[Dimension],
@@ -430,7 +440,7 @@ def _derive_axes_from_dimensions(
             label=_metric_value_axis_label(plan_chart),
             type=ChartAxis.AxisType.LINEAR,
         )
-        y_axis = ChartAxis(label="Cases", type=ChartAxis.AxisType.LINEAR)
+        y_axis = ChartAxis(label=_cases_axis_label(plan_chart), type=ChartAxis.AxisType.LINEAR)
         return x_axis, y_axis
 
     primary = _primary_dimension_for_axes(dimensions)
@@ -443,7 +453,9 @@ def _derive_axes_from_dimensions(
         x_axis = ChartAxis(label="Category", type=ChartAxis.AxisType.CATEGORY)
 
     if chart_type_upper == ChartType.HISTOGRAM.value:
-        y_axis_label = "Cases"
+        y_axis_label = _cases_axis_label(plan_chart)
+    elif _is_percent_measure(plan_chart):
+        y_axis_label = "Share of cases (%)"
     else:
         y_axis_label = _metric_value_axis_label(plan_chart)
 
