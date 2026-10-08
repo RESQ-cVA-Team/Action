@@ -291,3 +291,131 @@ def test_metric_value_is_remapped_from_parent_metric_when_span_matches_exact_can
     )
 
     assert entities["metric"] == "CRANIECTOMY"
+
+
+def test_role_tagged_range_entities_keep_their_bound_as_companion_keys() -> None:
+    """"over 50 and under 50" is two bounds with the same number. The flat
+    key collapses them to a single "50"; the lower/upper companions keep
+    what each one meant.
+    """
+    entities = extract_entities_from_latest_message(
+        _message(
+            [
+                {"entity": "metric", "value": "DTN"},
+                {"entity": "age", "value": "50", "role": "lower"},
+                {"entity": "age", "value": "50", "role": "upper"},
+            ],
+            text="Show me DTN for patients over 50 and under 50",
+        )
+    )
+
+    assert entities["age"] == "50"
+    assert entities["age_lower"] == "50"
+    assert entities["age_upper"] == "50"
+
+
+def test_role_tagged_range_with_distinct_bounds() -> None:
+    entities = extract_entities_from_latest_message(
+        _message(
+            [
+                {"entity": "age", "value": "40", "role": "lower"},
+                {"entity": "age", "value": "60", "role": "upper"},
+            ],
+            text="Show me DTN for patients between 40 and 60",
+        )
+    )
+
+    assert entities["age"] == ["40", "60"]
+    assert entities["age_lower"] == "40"
+    assert entities["age_upper"] == "60"
+
+
+def test_entities_without_a_role_get_no_companion_keys() -> None:
+    entities = extract_entities_from_latest_message(_message([{"entity": "age", "value": "60"}], text="patients aged 60"))
+
+    assert entities == {"age": "60"}
+
+
+def test_between_wording_decides_the_bounds_when_diet_labels_both_as_lower() -> None:
+    # Live: "between 10 and 30" came back with role=lower on both numbers.
+    entities = extract_entities_from_latest_message(
+        _message(
+            [
+                {"entity": "metric", "value": "ADMISSION_NIHSS"},
+                {"entity": "nihss", "value": "10", "role": "lower"},
+                {"entity": "nihss", "value": "30", "role": "lower"},
+            ],
+            text="show me admission nihss between 10 and 30 in a bar chart",
+        )
+    )
+
+    assert entities["nihss"] == ["10", "30"]
+    assert entities["nihss_lower"] == "10"
+    assert entities["nihss_upper"] == "30"
+
+
+def test_from_to_wording_derives_bounds_without_any_roles() -> None:
+    entities = extract_entities_from_latest_message(
+        _message(
+            [{"entity": "age", "value": "60"}, {"entity": "age", "value": "30"}],
+            text="DTN for patients from 30 to 60 years old",
+        )
+    )
+
+    assert entities["age_lower"] == "30"
+    assert entities["age_upper"] == "60"
+
+
+def test_two_numbers_without_range_wording_keep_whatever_roles_diet_gave() -> None:
+    entities = extract_entities_from_latest_message(
+        _message(
+            [{"entity": "age", "value": "30", "role": "upper"}, {"entity": "age", "value": "50", "role": "lower"}],
+            text="compare patients under 30 with patients over 50",
+        )
+    )
+
+    assert entities["age_upper"] == "30"
+    assert entities["age_lower"] == "50"
+
+
+def test_over_and_under_the_same_number_gives_both_bounds() -> None:
+    # Live: "over 50 and under 50" came back as one "50" with only the upper role.
+    entities = extract_entities_from_latest_message(
+        _message(
+            [{"entity": "metric", "value": "DTN"}, {"entity": "age", "value": "50", "role": "upper"}],
+            text="Show me a bar chart of dtn for patients over 50 and under 50",
+        )
+    )
+
+    assert entities["age"] == "50"
+    assert entities["age_lower"] == "50"
+    assert entities["age_upper"] == "50"
+
+
+def test_wording_overrides_a_role_that_contradicts_it() -> None:
+    entities = extract_entities_from_latest_message(
+        _message([{"entity": "age", "value": "60", "role": "upper"}], text="admission nihss for patients older than 60 years")
+    )
+
+    assert entities["age_lower"] == "60"
+    assert "age_upper" not in entities
+
+
+def test_one_sided_wording_fills_in_a_missing_role() -> None:
+    entities = extract_entities_from_latest_message(_message([{"entity": "nihss", "value": "10"}], text="dtn for patients with nihss under 10"))
+
+    assert entities == {"nihss": "10", "nihss_upper": "10"}
+
+
+def test_a_bound_phrase_about_another_number_is_ignored() -> None:
+    entities = extract_entities_from_latest_message(
+        _message(
+            [{"entity": "age", "value": "60", "role": "lower"}, {"entity": "nihss", "value": "10"}],
+            text="patients over 60 with nihss under 10",
+        )
+    )
+
+    assert entities["age_lower"] == "60"
+    assert "age_upper" not in entities
+    assert entities["nihss_upper"] == "10"
+    assert "nihss_lower" not in entities

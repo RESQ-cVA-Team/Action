@@ -151,6 +151,48 @@ _PROVIDER_HINTS = (
     "cohort b is provider",
 )
 
+# "Grouped by hospital/country" means one series per cohort, which the plan
+# can only express as one MetricSpec per *named* scope -- there is
+# deliberately no HOSPITAL or COUNTRY split kind. Only explicit grouping
+# cues count: a bare "hospital" is not enough, since many metric names
+# contain the word (AA_IMAGING, HOSPITAL_STAY, INHOSPITAL_STROKE ...).
+_HOSPITAL_GROUPING_HINTS = (
+    "by hospital",
+    "per hospital",
+    "across hospital",
+    "between hospital",
+    "each hospital",
+    "hospital by hospital",
+    "podle nemocnic",
+    "mezi nemocnicemi",
+    "ανά νοσοκομεί",
+    "κατά νοσοκομεί",
+)
+_COUNTRY_GROUPING_HINTS = (
+    "by country",
+    "per country",
+    "across countr",
+    "between countr",
+    "each country",
+    "country by country",
+    "podle zem",
+    "podle stát",
+    "mezi zeměmi",
+    "ανά χώρ",
+    "κατά χώρ",
+)
+_MINE_SCOPE_TOKENS = {"mine", "my", "our", "ours", "my hospital", "our hospital"}
+_SCOPE_GROUPING_MESSAGES = {
+    "hospital": (
+        "Grouping by hospital needs the hospitals to compare. Name them, for example "
+        "'my hospital vs <hospital name>', or ask for 'my hospital vs country average'."
+    ),
+    "country": (
+        "Grouping by country needs the countries to compare. Name them, for example "
+        "'Czech Republic vs Spain', or ask for 'my hospital vs country average'."
+    ),
+}
+
 _DECISION_PROMPT = ChatPromptTemplate.from_messages(  # type: ignore[attr-defined]
     [
         ("system", load_prompt_text("decision_system")),
@@ -398,6 +440,7 @@ def _entity_present(entities: Dict[str, Any], key: str) -> bool:
     return value is not None and value is not False
 
 
+_RANGE_ENTITY_FIELDS = {"age", "nihss", "date"}
 _PERIOD_REFERENCE_PATTERNS = (
     re.compile(r"^\d{4}$"),
     re.compile(r"^\d{4}-(0[1-9]|1[0-2])(-(0[1-9]|[12]\d|3[01]))?$"),
@@ -422,7 +465,19 @@ def _drop_falsely_missing_fields(missing_fields: List[str], entities: Dict[str, 
     so this only overrides objectively-false claims, never a field that
     genuinely needs semantic judgment to consider satisfied.
     """
-    return [field for field in missing_fields if not (field.strip().lower() in _SELF_VERIFIABLE_REQUIRED_FIELDS and _entity_present(entities, field.strip().lower()))]
+    kept: List[str] = []
+    for field in missing_fields:
+        key = field.strip().lower()
+        if key in _SELF_VERIFIABLE_REQUIRED_FIELDS and _entity_present(entities, key):
+            continue
+        # "over 50 and under 50" arrives as age plus age_lower/age_upper; a
+        # bound present under any of those keys means the range was given,
+        # whichever of the three the claim names.
+        base = re.sub(r"_(lower|upper)$", "", key)
+        if base in _RANGE_ENTITY_FIELDS and any(_entity_present(entities, k) for k in (base, f"{base}_lower", f"{base}_upper")):
+            continue
+        kept.append(field)
+    return kept
 
 
 def _has_statistical_test_signal(question: str, entities: Dict[str, Any]) -> bool:
@@ -500,10 +555,94 @@ def _extract_metric_code(entities: Dict[str, Any]) -> Optional[str]:
 # grouping). The orchestrator only ever sees chart requests, so drop them.
 _PAGINATION_ENTITY_KEYS = {"limit", "offset", "sort"}
 
+_STROKE_SHARE_WORDING = re.compile(r"\b(percent(age)?|share|proportion|rate)\b.{0,40}\bstrokes?\b", re.IGNORECASE)
+
+
+def _infer_stroke_type_share_metric(question: str, entities: Dict[str, Any]) -> Dict[str, Any]:
+    """"Percentage of ischemic strokes" names no metric that NLU can see: the
+    word it tags is the stroke type. The share of a stroke type among all
+    strokes is the STROKE_TYPE metric plotted as a rate, so fill that in
+    rather than asking which metric was meant."""
+    if _entity_present(entities, "metric") or not _entity_present(entities, "stroke_type"):
+        return entities
+    if not _STROKE_SHARE_WORDING.search(question or ""):
+        return entities
+    out = dict(entities)
+    out["metric"] = "STROKE_TYPE"
+    return out
+
+
+_NLU_ONLY_ENTITY_KEYS = {"kpi"}
+_GROUP_BY_PREFIX_WORDS = re.compile(r"^(?:(?:grouped|split|broken down|divided)\s+)?(?:per|by|for each|each|every|the|an?)\s+", re.IGNORECASE)
+
 
 def _normalize_entities_for_question(question: str, entities: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop training-data annotations that are not fields of a request and
+    put group_by values in canonical form. "kpi": "percent" read to the
+    decision stage as a second metric ("PERCENT_ISCHEMIC_STROKES") to choose
+    between; "per quarter" was refused as a grouping nothing supports."""
     _ = question
-    return {key: value for key, value in (entities or {}).items() if key not in _PAGINATION_ENTITY_KEYS}
+    out = {key: value for key, value in (entities or {}).items() if key not in _PAGINATION_ENTITY_KEYS and key not in _NLU_ONLY_ENTITY_KEYS}
+    raw_group_by = out.get("group_by")
+    values = _extract_string_list(raw_group_by)
+    if values:
+        canonical = [_canonical_group_by(value) for value in values]
+        if canonical != values:
+            out["group_by"] = canonical[0] if isinstance(raw_group_by, str) else canonical
+    return out
+
+
+def _canonical_group_by(value: str) -> str:
+    """"per quarter" names the QUARTER grouping. Rasa's canonicalizer maps the
+    bare word, but an entity that reaches us with its prefix still attached
+    (the LLM intent fallback hands over the words as written) must resolve
+    here, or the request is refused for a grouping it does support."""
+    token = value.strip()
+    for candidate in (token, _GROUP_BY_PREFIX_WORDS.sub("", token, count=1).strip()):
+        if not candidate:
+            continue
+        upper = candidate.upper().replace(" ", "_")
+        if upper in TIME_INTERVALS or upper == "HOSPITAL":
+            return upper
+        resolved = ssot_loader.resolve_groupby_canonical(candidate)
+        if resolved is not None:
+            return resolved
+    return value
+
+
+_BOUNDED_RANGE_KEYS = ("age", "nihss")
+
+
+def _number_or_none(value: Any) -> Optional[float]:
+    try:
+        return float(str(value).strip())
+    except ValueError:
+        return None
+
+
+def _range_the_clarification_is_about(outcome: VisualizationRequestOutcome, entities: Dict[str, Any]) -> Optional[str]:
+    """Name the age/nihss range a clarify asks about when a bound for it was given."""
+    clarification_type = (outcome.clarification_type or "").strip().lower().replace("_", " ")
+    option_numbers = {_number_or_none(token) for option in outcome.clarification_options for token in re.findall(r"\d+(?:\.\d+)?", option)}
+    option_numbers.discard(None)
+    for key in _BOUNDED_RANGE_KEYS:
+        given = {_number_or_none(value) for k in (key, f"{key}_lower", f"{key}_upper") for value in _extract_string_list(entities.get(k))}
+        given.discard(None)
+        if not given:
+            continue
+        if re.search(rf"\b{key}\b", clarification_type):
+            return key
+        if option_numbers and option_numbers <= given:
+            return key
+    return None
+
+
+def _names_a_metric(option: str) -> bool:
+    token = option.strip().upper().replace(" ", "_")
+    if token in ssot_loader.get_metric_metadata():
+        return True
+    entry = ssot_loader.get_metric_text_lookup().get(ssot_loader.normalize_metric_text_key(option))
+    return isinstance(entry, dict) and bool(entry.get("canonical"))
 
 
 def _extract_date_bounds(entities: Dict[str, Any]) -> Optional[tuple[str, str]]:
@@ -914,6 +1053,44 @@ def _drop_hospital_scopes_from_metric_words(plan: AnalysisPlan, entities: Dict[s
     return plan.model_copy(update={"charts": charts})
 
 
+_PERIOD_MENTION = re.compile(
+    r"\b(?:19|20)\d{2}\b"
+    r"|\bq[1-4]\b"
+    r"|\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\b"
+    r"|\b(?:jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+\d"
+    r"|\b(?:last|past|previous|this|current)\s+(?:\d+\s+)?(?:day|week|month|quarter|year)s?\b"
+    r"|\b(?:ytd|year to date)\b",
+    re.IGNORECASE,
+)
+
+
+def _drop_unrequested_explicit_periods(plan: AnalysisPlan, question: str, entities: Dict[str, Any]) -> AnalysisPlan:
+    """Strip explicit periods the planner made up for a plain "per quarter".
+
+    semantics.time.periods is for periods the user named ("Q1 2023 and Q3
+    2025"); a grain word on its own means the default window. Live,
+    "percentage of AA_DTN_LE60 per quarter" came back as the four quarters
+    of 2023. Any period reference in the question or a date entity keeps
+    the planner's periods.
+    """
+    if _extract_string_list(entities.get("date")) or _PERIOD_MENTION.search(question or ""):
+        return plan
+    plan_changed = False
+    charts: List[ChartSpec] = []
+    for chart in plan.charts or []:
+        semantics = chart.semantics
+        if semantics is None or semantics.time is None or not semantics.time.periods:
+            charts.append(chart)
+            continue
+        logger.info("Dropping explicit periods the question never named", extra={"periods": [period.model_dump() for period in semantics.time.periods]})
+        time_spec = semantics.time.model_copy(update={"periods": None})
+        charts.append(chart.model_copy(update={"semantics": semantics.model_copy(update={"time": time_spec})}))
+        plan_changed = True
+    if not plan_changed:
+        return plan
+    return plan.model_copy(update={"charts": charts})
+
+
 def _normalize_plan_semantic_splits(plan: AnalysisPlan) -> AnalysisPlan:
     """Normalize planner split semantics into compiler-supported forms.
 
@@ -1147,6 +1324,65 @@ def _validate_risk_factor_filter_support(question: str, entities: Dict[str, Any]
     )
 
 
+def _requested_scope_grouping(question: str) -> Optional[str]:
+    low = (question or "").strip().lower()
+    if not low:
+        return None
+    if any(hint in low for hint in _COUNTRY_GROUPING_HINTS):
+        return "country"
+    # "by hospital group X" scopes the request to a provider group; it is not
+    # a request for one series per hospital.
+    if "hospital group" in low or _question_mentions_provider_group(low):
+        return None
+    if any(hint in low for hint in _HOSPITAL_GROUPING_HINTS):
+        return "hospital"
+    return None
+
+
+def _hospital_cohorts_named(entities: Dict[str, Any]) -> bool:
+    if entities.get("mine"):
+        return True
+    for key in ("hospital_name", "provider_name", "provider_id"):
+        if _extract_string_list(entities.get(key)):
+            return True
+    # Only a reference to a specific hospital counts; "all hospitals" is a
+    # single aggregated scope, not a set of cohorts.
+    scope_refs = _extract_string_list(entities.get("hospital_scope_reference")) + _extract_string_list(entities.get("scope"))
+    return any(ref.strip().lower() in _MINE_SCOPE_TOKENS for ref in scope_refs)
+
+
+def _country_cohorts_named(entities: Dict[str, Any]) -> bool:
+    return bool(_extract_string_list(entities.get("country_code")) or entities.get("country_average"))
+
+
+def _validate_scope_grouping_cohorts(question: str, entities: Dict[str, Any]) -> Optional[VisualizationRequestOutcome]:
+    # Without named cohorts there is no plan the planner can build for a
+    # per-hospital/per-country chart: the critique pass rejects every attempt
+    # and the degraded fallback either drops the grouping silently or folds
+    # every accessible provider into one query. Ask instead. Statistical
+    # tests define their cohorts through their own validators.
+    has_chart_type = bool(_extract_string_list(entities.get("chart_type")))
+    if not has_chart_type and _has_statistical_test_signal(question, entities):
+        return None
+
+    grouping = _requested_scope_grouping(question)
+    if grouping is None:
+        return None
+    if grouping == "hospital" and _hospital_cohorts_named(entities):
+        return None
+    if grouping == "country" and _country_cohorts_named(entities):
+        return None
+
+    return VisualizationRequestOutcome(
+        decision="clarify",
+        reason="missing_scope_grouping_cohorts",
+        message=_SCOPE_GROUPING_MESSAGES[grouping],
+        clarification_type="analysis_plan",
+        clarification_options=[],
+        missing_fields=[],
+    )
+
+
 def _validate_group_by_support(question: str, entities: Dict[str, Any]) -> Optional[VisualizationRequestOutcome]:
     # Statistical-test plans compare cohorts via OriginScope/DataOrigin on each
     # MetricSpec (see _build_deterministic_statistical_plan) -- they never use
@@ -1184,7 +1420,8 @@ def _validate_group_by_support(question: str, entities: Dict[str, Any]) -> Optio
         # entries with their own originScope (see
         # example_dtn_my_hospital_vs_named_hospital_quarterly_line), which
         # resolve_plan_metric_origins already executes generically for both
-        # charts and statistical tests. Nothing to validate here.
+        # charts and statistical tests. Whether those entries can be named at
+        # all is checked by _validate_scope_grouping_cohorts.
         if token == "HOSPITAL":
             continue
         if ssot_loader.resolve_groupby_canonical(token) is not None:
@@ -1554,6 +1791,46 @@ def _decision_stage(
             missing_fields=outcome.missing_fields,
         )
 
+    # Deterministic safeguard: a metric question nobody can answer. Observed
+    # live with STROKE_TYPE resolved: "which metric, ISHEMIC_STROKES or
+    # PERCENT_ISCHEMIC_STROKES?", neither of which exists. One resolved
+    # metric and no real alternative on offer leaves nothing to clarify.
+    clarification_type_norm = (outcome.clarification_type or "").strip().lower()
+    asks_for_metric = clarification_type_norm == "metric" or (not clarification_type_norm and reason_norm == "ambiguous_request" and bool(outcome.clarification_options))
+    if (
+        outcome.decision == "clarify"
+        and asks_for_metric
+        and not outcome.missing_fields
+        and len(metric_clarification_options) == 1
+        and not any(_names_a_metric(option) for option in outcome.clarification_options)
+    ):
+        logger.info("Metric clarification offers no real metric; proceeding with %s", metric_clarification_options[0], extra={"options": outcome.clarification_options})
+        return VisualizationRequestOutcome(
+            decision="proceed",
+            reason="all_required_fields_present",
+            message=None,
+            clarification_type=None,
+            clarification_options=[],
+            missing_fields=[],
+        )
+
+    # Deterministic safeguard: a bound that was given is not a choice to
+    # make. Observed live with age_lower=50 and age_upper=50 ("over 50 and
+    # under 50"): "Please specify if you want data for patients over 50 or
+    # under 50." The prompt already forbids the question; this enforces it.
+    if outcome.decision == "clarify" and not outcome.missing_fields:
+        range_key = _range_the_clarification_is_about(outcome, entities)
+        if range_key is not None:
+            logger.info("Clarification asks about the %s range that was already given; proceeding", range_key, extra={"options": outcome.clarification_options})
+            return VisualizationRequestOutcome(
+                decision="proceed",
+                reason="all_required_fields_present",
+                message=None,
+                clarification_type=None,
+                clarification_options=[],
+                missing_fields=[],
+            )
+
     # Deterministic safeguard: don't trust a missing_fields claim that
     # contradicts ENTITIES_JSON itself (see _drop_falsely_missing_fields).
     if outcome.decision != "proceed" and outcome.missing_fields:
@@ -1575,6 +1852,42 @@ def _decision_stage(
                 clarification_type=outcome.clarification_type,
                 clarification_options=outcome.clarification_options,
                 missing_fields=corrected_missing,
+            )
+
+    # Deterministic safeguard: a bare metric question ("What is my door to
+    # needle time?") gets a default chart from the planner, not a question
+    # about chart type. Only chart_type is covered; a missing metric still
+    # needs the user.
+    if (
+        outcome.decision == "clarify"
+        and [field.strip().lower() for field in (outcome.missing_fields or [])] == ["chart_type"]
+        and _entity_present(entities, "metric")
+        and not _has_statistical_test_signal(question, entities)
+    ):
+        return VisualizationRequestOutcome(
+            decision="proceed",
+            reason="all_required_fields_present",
+            message=None,
+            clarification_type=None,
+            clarification_options=[],
+            missing_fields=[],
+        )
+    # Deterministic safeguard: a chart request is not a statistical test.
+    # Observed on the hosted dev: "admission nihss of only patients older
+    # than 60 years" answered "What statistical test would you like to
+    # perform?". Without test wording or a test entity, neither the test
+    # type nor the chart type is a required field.
+    if outcome.decision == "clarify" and outcome.missing_fields and _entity_present(entities, "metric") and not _has_statistical_test_signal(question, entities):
+        claimed = [field.strip().lower() for field in outcome.missing_fields]
+        if "statistical_test_type" in claimed and all(field in {"statistical_test_type", "chart_type"} for field in claimed):
+            logger.info("Clarification asks for a statistical test on a chart request; proceeding", extra={"missing_fields": outcome.missing_fields})
+            return VisualizationRequestOutcome(
+                decision="proceed",
+                reason="all_required_fields_present",
+                message=None,
+                clarification_type=None,
+                clarification_options=[],
+                missing_fields=[],
             )
 
     # Deterministic safeguard: a quarter, month or year reference ("Q1 2023",
@@ -1608,7 +1921,9 @@ def _decision_stage(
     # was a real regression caught via CVaLab's webapp_negative_invalid_time_period
     # scenario during this fix's own testing.
     if outcome.decision == "reject" and "out_of_scope" in outcome.reason.strip().lower().replace(" ", "_") and any(_entity_present(entities, key) for key in _SCOPE_PROVING_ENTITY_KEYS):
-        still_missing = [field for field in ("metric", "chart_type") if not _entity_present(entities, field)]
+        # chart_type is not required any more (a missing one means a default
+        # chart), so the only gap that still needs the user is the metric.
+        still_missing = [field for field in ("metric",) if not _entity_present(entities, field)]
         if still_missing:
             # The LLM's own message text ("This request is not related to...")
             # came from the wrong reject/out_of_scope judgment being overridden
@@ -1687,7 +2002,7 @@ def orchestrate_visualization_request(
     pending_clarification: Optional[Dict[str, Any]] = None,
 ) -> VisualizationRequestOutcome:
     with log_context(trace_id=trace_id or "", orchestrator_include_plan=include_plan):
-        normalized_entities = _normalize_entities_for_question(question, entities)
+        normalized_entities = _infer_stroke_type_share_metric(question, _normalize_entities_for_question(question, entities))
         if not _ORCHESTRATOR_ENABLED:
             if not include_plan:
                 return VisualizationRequestOutcome(decision="proceed", reason="orchestrator_disabled")
@@ -1732,6 +2047,14 @@ def orchestrate_visualization_request(
                     group_by_validation.reason,
                 )
                 return group_by_validation
+
+            scope_grouping_validation = _validate_scope_grouping_cohorts(question, normalized_entities)
+            if scope_grouping_validation is not None:
+                logger.info(
+                    "Orchestrator clarification: %s",
+                    scope_grouping_validation.reason,
+                )
+                return scope_grouping_validation
 
             stats_entity_validation = _validate_statistical_entity_readiness(question, normalized_entities)
             if stats_entity_validation is not None:
@@ -1799,6 +2122,7 @@ def orchestrate_visualization_request(
             plan = _normalize_plan_semantic_splits(plan)
             plan = _split_mixed_unit_charts(plan)
             plan = _drop_hospital_scopes_from_metric_words(plan, normalized_entities)
+            plan = _drop_unrequested_explicit_periods(plan, question, normalized_entities)
             logger.info("Plan generation completed successfully", extra={"plan_type": type(plan).__name__})
 
             logger.info("Starting validation of statistical plan readiness")
@@ -1851,6 +2175,7 @@ def orchestrate_visualization_request(
                     plan = _normalize_plan_semantic_splits(plan)
                     plan = _split_mixed_unit_charts(plan)
                     plan = _drop_hospital_scopes_from_metric_words(plan, entities)
+                    plan = _drop_unrequested_explicit_periods(plan, question, entities)
                     return VisualizationRequestOutcome(
                         decision="proceed",
                         reason="orchestrator_fallback_to_plan",

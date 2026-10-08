@@ -150,6 +150,32 @@ def _distribution_points_from_backend(metric_code: str, edges: List[Any], case_c
     return points
 
 
+def _percent_values(percents: Optional[List[Any]], counts: List[Any]) -> List[float]:
+    """Backend percents when they line up with the counts, else each count as a share of their total."""
+    if isinstance(percents, list) and len(percents) == len(counts) and any(p is not None for p in percents):
+        return [float(p) if isinstance(p, (int, float)) else 0.0 for p in percents]
+    total = sum(float(c) for c in counts if isinstance(c, (int, float)))
+    if total <= 0:
+        return [0.0 for _ in counts]
+    return [float(c) / total * 100.0 if isinstance(c, (int, float)) else 0.0 for c in counts]
+
+
+def _first_percent(kpi1: Any) -> Optional[float]:
+    """Share of cases for one grouped row: the backend's first percent (the
+    first category, e.g. the yes of an Angels Awards metric), else the first
+    count over the cohort size."""
+    percents = getattr(kpi1, "percents", None)
+    if isinstance(percents, list):
+        for value in percents:
+            if isinstance(value, (int, float)):
+                return float(value)
+    counts = getattr(kpi1, "case_count", None) or []
+    cohort = getattr(kpi1, "cohort_size", None)
+    if counts and isinstance(counts[0], (int, float)) and isinstance(cohort, (int, float)) and cohort > 0:
+        return float(counts[0]) / float(cohort) * 100.0
+    return None
+
+
 def map_metrics_payload_to_series(
     metrics_payload: Dict[str, Any],
     label_parts: List[str],
@@ -159,6 +185,7 @@ def map_metrics_payload_to_series(
     scope_label: Optional[str] = None,
     batched_time_periods: Optional[List[Any]] = None,
     is_filter_grouped: bool = False,
+    value_mode: str = "count",
 ) -> List[ChartSeries]:
     series: List[ChartSeries] = []
 
@@ -201,7 +228,11 @@ def map_metrics_payload_to_series(
                     x_value = "value"
 
                 y_value: Optional[float] = None
-                if isinstance(kpi.kpi1.median, (int, float)):
+                if value_mode == "percent":
+                    y_value = _first_percent(kpi.kpi1)
+                if y_value is not None:
+                    pass
+                elif isinstance(kpi.kpi1.median, (int, float)):
                     y_value = float(kpi.kpi1.median)
                 elif isinstance(kpi.kpi1.mean, (int, float)):
                     y_value = float(kpi.kpi1.mean)
@@ -242,6 +273,7 @@ def map_metrics_payload_to_series(
             metric_labels = getattr(metric, "labels", None)
             metric_code = _metric_code_from_alias(metric_name)
             case_counts = kpi.kpi1.case_count or []
+            derived_complement = False
 
             if not metric_labels and not kpi.kpi1.d1 and len(case_counts) == 1 and kpi.kpi1.cohort_size is not None:
                 # Boolean-shaped Enum metric (e.g. WAKEUP_STROKE): backend returns a single
@@ -251,6 +283,7 @@ def map_metrics_payload_to_series(
                 if ssot_labels and len(ssot_labels) >= 2:
                     metric_labels = ssot_labels[:2]
                     case_counts = [case_counts[0], kpi.kpi1.cohort_size - case_counts[0]]
+                    derived_complement = True
 
             if not kpi.kpi1.d1 and not metric_labels:
                 raise ValueError(
@@ -282,7 +315,10 @@ def map_metrics_payload_to_series(
             series_name = " — ".join(parts) if parts else metric_label_from_alias(metric_name)
 
             if kpi.kpi1.d1:
-                points = _distribution_points_from_backend(metric_code, kpi.kpi1.d1.edges, kpi.kpi1.d1.case_count)
+                bin_values: List[Any] = list(kpi.kpi1.d1.case_count)
+                if value_mode == "percent":
+                    bin_values = _percent_values(getattr(kpi.kpi1.d1, "percents", None), bin_values)
+                points = _distribution_points_from_backend(metric_code, kpi.kpi1.d1.edges, bin_values)
             else:
                 # Categorical (Enum) metric: labels and caseCount are parallel arrays,
                 # one entry per category (e.g. male/female/unknown), not a numeric histogram.
@@ -290,9 +326,15 @@ def map_metrics_payload_to_series(
                     raise ValueError(
                         "Categorical KPI payload has mismatched labels/caseCount lengths."
                     )
+                category_values: List[Any] = list(case_counts)
+                if value_mode == "percent":
+                    # A boolean-shaped payload carries one backend percent and a
+                    # complement count derived above, so share it out of the counts.
+                    backend_percents = None if derived_complement else getattr(kpi.kpi1, "percents", None)
+                    category_values = _percent_values(backend_percents, category_values)
                 points = [
                     ChartPoint(x=label, y=float(count))
-                    for label, count in zip(cast(List[str], metric_labels), case_counts)
+                    for label, count in zip(cast(List[str], metric_labels), category_values)
                 ]
 
             series.append(

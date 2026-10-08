@@ -10,6 +10,7 @@ from typing import (
     Mapping,
     Optional,
     Protocol,
+    Tuple,
     cast,
     runtime_checkable,
 )
@@ -277,26 +278,119 @@ def extract_entities_from_latest_message(
             if not _has_metric_request_context(question_text, ent.get("start")):
                 continue
 
-        if key_any not in extracted:
-            extracted[key_any] = value
-            continue
+        _accumulate_entity_value(extracted, key_any, value)
+        # Range entities (age/nihss/date) carry a DIET role saying which
+        # bound a number is ("over 50" -> lower, "under 50" -> upper). The
+        # flat key loses that, and "over 50 and under 50" collapses to a
+        # single "50" -- so keep the role as a companion key too.
+        role_any = ent.get("role")
+        if isinstance(role_any, str) and role_any.strip():
+            _accumulate_entity_value(extracted, f"{key_any}_{role_any.strip().lower()}", value)
 
-        existing = extracted[key_any]
-        if isinstance(existing, list):
-            existing_list = cast(List[Any], existing)
-            if value not in existing_list:
-                existing_list.append(value)
-        elif value != existing:
-            extracted[key_any] = [existing, value]
-        # else: identical repeat of an already-captured scalar value (e.g.
-        # "male patients DTN" and "female patients DTN" both mention DTN) --
-        # not a second distinct answer, so it must not turn a clean scalar
-        # into a redundant [DTN, DTN] list. That shape previously read to the
-        # decision-stage LLM as two different metric candidates to choose
-        # between, producing a spurious "which metric?" clarification for an
-        # unambiguous request.
-
+    _derive_range_bounds_from_wording(extracted, question_text)
     return extracted
+
+
+_RANGE_WORDING = re.compile(
+    r"(?:between|from)\s+(\d+(?:\.\d+)?)\s*(?:and|to|-|–|—)\s*(\d+(?:\.\d+)?)"
+    r"|(\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+_LOWER_BOUND_WORDING = re.compile(
+    r"\b(?:over|above|older than|more than|greater than|higher than|at least)\s+(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+_UPPER_BOUND_WORDING = re.compile(
+    r"\b(?:under|below|younger than|less than|lower than|fewer than|at most|up to)\s+(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+
+
+def _derive_range_bounds_from_wording(extracted: Dict[str, Any], question_text: str) -> None:
+    """DIET's lower/upper roles are unreliable: live, "between 10 and 30"
+    came back with both numbers as lower, and "over 50 and under 50" with
+    only the upper role. When the wording states the bounds with numbers
+    NLU extracted, the wording decides them; otherwise the roles stand.
+    """
+    text = question_text or ""
+    for key in ("age", "nihss"):
+        values_any = extracted.get(key)
+        values = cast(List[Any], values_any) if isinstance(values_any, list) else [values_any]
+        try:
+            by_number = {float(str(v)): v for v in values if v is not None}
+        except ValueError:
+            continue
+        if not by_number:
+            continue
+        bounds = _span_bounds(text, by_number) or _one_sided_bounds(text, by_number)
+        if bounds is None:
+            continue
+        lower, upper = bounds
+        extracted.pop(f"{key}_lower", None)
+        extracted.pop(f"{key}_upper", None)
+        if lower is not None:
+            extracted[f"{key}_lower"] = lower
+        if upper is not None:
+            extracted[f"{key}_upper"] = upper
+
+
+def _span_bounds(text: str, by_number: Dict[float, Any]) -> Optional[Tuple[Any, Any]]:
+    """"between 10 and 30", "from 30 to 60", "30-60": both numbers extracted."""
+    if len(by_number) < 2:
+        return None
+    for match in _RANGE_WORDING.finditer(text):
+        first, second = (match.group(1), match.group(2)) if match.group(1) else (match.group(3), match.group(4))
+        try:
+            pair = {float(first), float(second)}
+        except ValueError:
+            continue
+        if len(pair) != 2 or not pair <= set(by_number):
+            continue
+        lower, upper = sorted(pair)
+        return by_number[lower], by_number[upper]
+    return None
+
+
+def _one_sided_bounds(text: str, by_number: Dict[float, Any]) -> Optional[Tuple[Any, Any]]:
+    """"over 50", "under 50", "older than 60 and younger than 60": each phrase
+    names its own bound, so the same number can be both."""
+    lower = _first_extracted_number(_LOWER_BOUND_WORDING, text, by_number)
+    upper = _first_extracted_number(_UPPER_BOUND_WORDING, text, by_number)
+    if lower is None and upper is None:
+        return None
+    return lower, upper
+
+
+def _first_extracted_number(pattern: "re.Pattern[str]", text: str, by_number: Dict[float, Any]) -> Optional[Any]:
+    for match in pattern.finditer(text):
+        try:
+            number = float(match.group(1))
+        except ValueError:
+            continue
+        if number in by_number:
+            return by_number[number]
+    return None
+
+
+def _accumulate_entity_value(extracted: Dict[str, Any], key: str, value: Any) -> None:
+    if key not in extracted:
+        extracted[key] = value
+        return
+
+    existing = extracted[key]
+    if isinstance(existing, list):
+        existing_list = cast(List[Any], existing)
+        if value not in existing_list:
+            existing_list.append(value)
+    elif value != existing:
+        extracted[key] = [existing, value]
+    # else: identical repeat of an already-captured scalar value (e.g.
+    # "male patients DTN" and "female patients DTN" both mention DTN) --
+    # not a second distinct answer, so it must not turn a clean scalar
+    # into a redundant [DTN, DTN] list. That shape previously read to the
+    # decision-stage LLM as two different metric candidates to choose
+    # between, producing a spurious "which metric?" clarification for an
+    # unambiguous request.
 
 
 def resolve_override_language(metadata: Dict[str, Any], slots: Dict[str, Any]) -> Optional[str]:

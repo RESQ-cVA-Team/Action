@@ -35,13 +35,15 @@ Use them as follows:
   which still has enough context to ask for exactly the one missing thing).
 
 Rules:
-- For chart requests, required fields are metric and chart_type.
+- For chart requests, the required field is metric. chart_type is optional: when it is absent the planning stage picks a sensible default chart, so never clarify for chart_type alone.
 - For statistical-test-only requests, required fields are metric and statistical_test_type; chart_type is optional and should not trigger clarification.
+- A request is a statistical test only when it names a test or asks for significance; a chart or metric request that says nothing about a test never needs statistical_test_type, so never ask for one.
 - If required fields for the detected intent are present, return decision="proceed" and message=null.
 - If one required field is missing, return decision="clarify", put the missing field in missing_fields, and write one concise question in message (under 25 words).
 - Never reject a metric because you judge it numeric-incompatible with the requested chart_type (e.g. a categorical/Enum metric like sex or stroke_type charted as a bar/pie/line). Any metric present in ENTITIES_JSON or VALID_METRIC_CANDIDATES_JSON is a valid metric for any chart_type at this stage — chart/metric compatibility is decided by the planning stage, not triage.
 - If out of scope, return decision="reject" with a short message.
 - Never ask the user to clarify or provide time_scope, time_range, grouping_dimension, sex, or stroke_type — these are optional and should be accepted if present, not rejected.
+- Range entities (age, nihss, date) can come with <entity>_lower / <entity>_upper companions taken from phrases like "over 50" / "under 50" / "between 40 and 60". A bound under any of those keys means that part of the request is fully specified: equal lower and upper bounds are a two-group comparison (over X vs under X), different bounds are a range. Never ask which age group or NIHSS range is meant in either case.
 - Prefer resolving metrics from VALID_METRIC_CANDIDATES_JSON before asking.
 - If ENTITIES_JSON already contains a resolved metric, never second-guess or
   re-split that metric based on connector words ("or"/"and") appearing inside

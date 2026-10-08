@@ -1,0 +1,34 @@
+{
+  "user_utterance": "What is my arrival mode?",
+  "entities_detected": {
+    "metric": [
+      "ARRIVAL_MODE"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "BAR",
+        "metrics": [
+          {
+            "metric": "ARRIVAL_MODE"
+          }
+        ],
+        "semantics": {
+          "intent": "DISTRIBUTION",
+          "measure": {
+            "type": "RATE"
+          },
+          "x_axis": {
+            "role": "METRIC_VALUE",
+            "metric": "ARRIVAL_MODE"
+          },
+          "y_axis": {
+            "role": "COUNT",
+            "aggregation": "RATE"
+          }
+        }
+      }
+    ]
+  }
+}

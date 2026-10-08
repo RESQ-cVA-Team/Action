@@ -1,0 +1,41 @@
+{
+  "user_utterance": "Show the percentage of patients treated within 60 minutes per quarter",
+  "entities_detected": {
+    "metric": [
+      "AA_DTN_LE60"
+    ],
+    "group_by": [
+      "QUARTER"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "LINE",
+        "metrics": [
+          {
+            "metric": "AA_DTN_LE60"
+          }
+        ],
+        "semantics": {
+          "intent": "TREND",
+          "measure": {
+            "type": "RATE"
+          },
+          "time": {
+            "grain": "QUARTER"
+          },
+          "x_axis": {
+            "role": "TIME",
+            "grain": "QUARTER"
+          },
+          "y_axis": {
+            "role": "AGGREGATE_VALUE",
+            "metric": "AA_DTN_LE60",
+            "aggregation": "RATE"
+          }
+        }
+      }
+    ]
+  }
+}
