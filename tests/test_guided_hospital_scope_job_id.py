@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest.mock import patch
 
@@ -48,6 +49,12 @@ class GuidedHospitalScopeJobIdTests(unittest.TestCase):
     # Live: the form validation crashed with "list_providers() missing 1
     # required positional argument: 'job_id'", so the guided flow went silent
     # at the hospital-scope step.
+    def setUp(self) -> None:
+        # The callback URL is only accepted from a configured origin.
+        env = patch.dict(os.environ, {"CALLBACK_BASE_URL": "http://webapp:3000"})
+        env.start()
+        self.addCleanup(env.stop)
+
 
     def test_named_hospital_lookup_carries_the_job_id(self) -> None:
         client = _Client()
