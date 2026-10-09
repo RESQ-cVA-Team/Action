@@ -1,4 +1,4 @@
-FROM rasa/rasa-sdk:3.19.0@sha256:39ddf4e684d300f43cdbfbde3d1f445b0a9d64110944f54e36388738486db743 AS deps
+FROM rasa/rasa-sdk:3.20.1@sha256:7c3fb13a2a3791bf0575ca9ea1eeb3d68b2e9dfa518025db26418d8126a1530b AS deps
 
 USER root
 
@@ -9,7 +9,7 @@ COPY requirements.txt .
 RUN pip wheel --no-cache-dir --wheel-dir /tmp/wheels -r requirements.txt
 
 
-FROM rasa/rasa-sdk:3.19.0@sha256:39ddf4e684d300f43cdbfbde3d1f445b0a9d64110944f54e36388738486db743
+FROM rasa/rasa-sdk:3.20.1@sha256:7c3fb13a2a3791bf0575ca9ea1eeb3d68b2e9dfa518025db26418d8126a1530b
 
 USER root
 
