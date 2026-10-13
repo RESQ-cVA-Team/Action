@@ -19,6 +19,7 @@ from src.actions.guided_visualization_validation import (
     validate_guided_hospital_scope,
     validate_optional_catalog_slot,
     validate_required_metric,
+    _job_id_from_tracker,
 )
 from src.actions.helpers.visualization import (
     format_execution_summary,
@@ -154,6 +155,7 @@ class ActionGuidedGenerateVisualization(Action):  # pyright: ignore
                 visualization = await execute_plan_async(
                     plan_obj,
                     user_sub=user_sub,
+                    job_id=_job_id_from_tracker(tracker),
                     max_concurrency=_EXECUTOR_MAX_CONCURRENCY,
                     progress_cb=None,
                     summary_cb=on_summary,

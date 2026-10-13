@@ -1,0 +1,61 @@
+{
+  "user_utterance": "Show me a bar chart of dtn for patients over 50 and under 50",
+  "entities_detected": {
+    "chart_type": [
+      "BAR"
+    ],
+    "metric": [
+      "DTN"
+    ],
+    "age": [
+      "50"
+    ],
+    "age_lower": [
+      "50"
+    ],
+    "age_upper": [
+      "50"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "BAR",
+        "metrics": [
+          {
+            "metric": "DTN"
+          }
+        ],
+        "semantics": {
+          "intent": "COMPARISON",
+          "measure": {
+            "type": "MEDIAN"
+          },
+          "splits": [
+            {
+              "kind": "AGE",
+              "buckets": [
+                {
+                  "min": 0,
+                  "max": 50
+                },
+                {
+                  "min": 50,
+                  "max": 120
+                }
+              ]
+            }
+          ],
+          "x_axis": {
+            "role": "CATEGORY"
+          },
+          "y_axis": {
+            "role": "AGGREGATE_VALUE",
+            "metric": "DTN",
+            "aggregation": "MEDIAN"
+          }
+        }
+      }
+    ]
+  }
+}

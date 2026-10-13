@@ -52,9 +52,11 @@ def _provider_cache_key(
     user_sub: str,
     country_code: Optional[str],
 ) -> tuple[str, str, str]:
+    # Live chat senders look like "<keycloak sub>:thread:<id>"; the provider
+    # list depends on the person, not the thread, so key on the person.
     return (
         cache_type,
-        (user_sub or "").strip(),
+        (user_sub or "").strip().split(":thread:", 1)[0],
         (country_code or "").strip().upper(),
     )
 
@@ -326,6 +328,21 @@ def _list_all_providers_catalog(user_sub: str, job_id: Optional[str], trace_id: 
     )
     if cached is not None:
         return cached[:_MAX_PROVIDER_IDS]
+    # Same endpoint, same parameters as the accessible list (no user filter is
+    # applied on either), so a list fetched for one serves the other too.
+    accessible = _provider_cache_get(
+        cache_type="accessible",
+        user_sub=user_sub,
+        country_code=country_code,
+    )
+    if accessible is not None:
+        _provider_cache_set(
+            cache_type="catalog",
+            user_sub=user_sub,
+            country_code=country_code,
+            providers=accessible,
+        )
+        return accessible[:_MAX_PROVIDER_IDS]
 
     client = get_analytics_center_client()
     out: List[Dict[str, Any]] = []
@@ -380,6 +397,14 @@ def _search_accessible_providers_by_name(
     trace_id: str,
     country_code: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
+    """Match requested names against the accessible-provider list.
+
+    The list comes from _list_accessible_providers, so one scan per user
+    (cached for the provider cache TTL) serves every later name lookup. The
+    previous private paging loop never cached, and a name that matched
+    nothing paged through every provider on every request before the
+    catalog fallback paged through them all again.
+    """
     logger.info(
         "[origin_scope_resolver] searching accessible providers by name",
         extra={
@@ -388,81 +413,22 @@ def _search_accessible_providers_by_name(
             "country_code": country_code or "-",
         },
     )
-    cached = _provider_cache_get(
-        cache_type="accessible",
+    providers = _list_accessible_providers(
         user_sub=user_sub,
+        job_id=job_id,
+        trace_id=trace_id,
         country_code=country_code,
     )
-    if cached is not None:
-        matched: List[Dict[str, Any]] = []
-        seen_ids: set[int] = set()
-        for requested in requested_names:
-            normalized = _normalize_text(requested)
-            for provider in _match_providers_by_name(cached, normalized):
-                provider_id = _provider_id(provider)
-                if provider_id is None or provider_id in seen_ids:
-                    continue
-                matched.append(provider)
-                seen_ids.add(provider_id)
-        return matched
-
-    client = get_analytics_center_client()
     matched: List[Dict[str, Any]] = []
     seen_ids: set[int] = set()
-    exact_found: Dict[str, bool] = {
-        requested: False for requested in requested_names
-    }
-    requested_norms = {
-        requested: _normalize_text(requested) for requested in requested_names
-    }
-    offset = 0
-    limit = 200
-
-    while True:
-        try:
-            page = client.list_providers(
-                user_sub=user_sub,
-                job_id=job_id,
-                trace_id=trace_id,
-                country_code=country_code,
-                limit=limit,
-                offset=offset,
-                raise_on_error=True,
-            )
-        except AnalyticsCenterError as exc:
-            _raise_if_auth_session_error(exc)
-            break
-
-        if not page:
-            break
-
-        results_any = page.get("results", [])
-        providers: List[Dict[str, Any]] = list(results_any)
-        if not providers:
-            break
-
-        for requested, normalized in requested_norms.items():
-            if exact_found.get(requested):
+    for requested in requested_names:
+        normalized = _normalize_text(requested)
+        for provider in _match_providers_by_name(providers, normalized):
+            provider_id = _provider_id(provider)
+            if provider_id is None or provider_id in seen_ids:
                 continue
-            page_matches = _match_providers_by_name(providers, normalized)
-            for provider in page_matches:
-                provider_id = _provider_id(provider)
-                if provider_id is None or provider_id in seen_ids:
-                    continue
-                matched.append(provider)
-                seen_ids.add(provider_id)
-                if _normalize_text(_provider_name(provider)) == normalized:
-                    exact_found[requested] = True
-
-        if all(exact_found.values()):
-            break
-
-        total_any = page.get("count")
-        total = total_any if isinstance(total_any, int) and total_any >= 0 else None
-        offset += len(providers)
-        if total is not None and offset >= total:
-            break
-
+            matched.append(provider)
+            seen_ids.add(provider_id)
     return matched
 
 

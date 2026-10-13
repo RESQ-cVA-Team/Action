@@ -75,6 +75,7 @@ async def run_graphql_request(
     batched_time_periods: Optional[List[Any]] = None,
     query_cb: Optional[GraphQLQueryCallback] = None,
     is_filter_grouped: bool = False,
+    value_mode: str = "count",
 ) -> tuple[List[ChartSeries], Optional[MetricsPayload]]:
     trace_label = trace_id
     request_label = scope_label or " | ".join([part for part in label_parts if part]) or "(none)"
@@ -260,6 +261,7 @@ async def run_graphql_request(
         scope_label=scope_label,
         batched_time_periods=batched_time_periods,
         is_filter_grouped=is_filter_grouped,
+        value_mode=value_mode,
     )
 
     skipped_rows = 0

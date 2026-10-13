@@ -1,0 +1,37 @@
+{
+  "user_utterance": "Show me arrival mode as a bar chart in percent",
+  "entities_detected": {
+    "metric": [
+      "ARRIVAL_MODE"
+    ],
+    "chart_type": [
+      "BAR"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "BAR",
+        "metrics": [
+          {
+            "metric": "ARRIVAL_MODE"
+          }
+        ],
+        "semantics": {
+          "intent": "DISTRIBUTION",
+          "measure": {
+            "type": "RATE"
+          },
+          "x_axis": {
+            "role": "METRIC_VALUE",
+            "metric": "ARRIVAL_MODE"
+          },
+          "y_axis": {
+            "role": "COUNT",
+            "aggregation": "RATE"
+          }
+        }
+      }
+    ]
+  }
+}

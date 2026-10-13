@@ -1124,6 +1124,12 @@ def _request_scope_label(spec: RequestSpec) -> str:
     return "one requested scope"
 
 
+def _chart_value_mode(chart: Any) -> str:
+    semantics = getattr(chart, "semantics", None)
+    measure = getattr(semantics, "measure", None) if semantics is not None else None
+    return "percent" if str(getattr(measure, "type", "") or "").upper() == "RATE" else "count"
+
+
 async def _execute_request_spec(
     spec: RequestSpec,
     request_failures: List[str],
@@ -1149,6 +1155,7 @@ async def _execute_request_spec(
         batched_time_periods=spec.batched_time_periods,
         query_cb=context.query_cb,
         is_filter_grouped=spec.is_filter_grouped,
+        value_mode=spec.value_mode,
     )
     return RequestExecutionResult(spec=spec, series=series, metrics_payload=metrics_payload)
 
@@ -1371,6 +1378,7 @@ async def execute_plan_async(
                 group_by_field=gb_field,
                 metric_scope_labels=metric_scope_labels,
                 include_general_stats=_INCLUDE_GENERAL_STATS,
+                value_mode=_chart_value_mode(planChart),
             )
             total_requests = max(1, len(primary_specs))
             actual_queries += total_requests

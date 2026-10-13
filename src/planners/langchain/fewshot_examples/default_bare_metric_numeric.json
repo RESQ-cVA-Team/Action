@@ -1,0 +1,42 @@
+{
+  "user_utterance": "What is my door to needle time?",
+  "entities_detected": {
+    "metric": [
+      "DTN"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "LINE",
+        "metrics": [
+          {
+            "metric": "DTN"
+          }
+        ],
+        "semantics": {
+          "intent": "TREND",
+          "measure": {
+            "type": "MEDIAN"
+          },
+          "time": {
+            "grain": "QUARTER",
+            "window": {
+              "last_n": 8,
+              "unit": "QUARTER"
+            }
+          },
+          "x_axis": {
+            "role": "TIME",
+            "grain": "QUARTER"
+          },
+          "y_axis": {
+            "role": "AGGREGATE_VALUE",
+            "metric": "DTN",
+            "aggregation": "MEDIAN"
+          }
+        }
+      }
+    ]
+  }
+}
