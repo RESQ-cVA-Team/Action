@@ -50,6 +50,13 @@ def _metric_scope_label(metric: S.MetricSpec) -> Optional[str]:
     return None
 
 
+def numeric_request_bounds(plan_chart: S.ChartSpec, metric_code: str) -> tuple[int, int]:
+    """The value range a Numeric metric is fetched over (kpiOptions lower and
+    upper boundary), after valueDomain overrides and bin-width snapping."""
+    _, lower, upper = _resolve_numeric_request_options(plan_chart, metric_code)
+    return lower, upper
+
+
 def _resolve_numeric_request_options(
     plan_chart: S.ChartSpec,
     metric_code: str,
