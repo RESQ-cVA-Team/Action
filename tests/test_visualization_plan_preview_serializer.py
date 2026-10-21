@@ -82,8 +82,8 @@ class VisualizationPlanPreviewSerializerTests(unittest.TestCase):
             [{"kind": "SEX", "categories": ["MALE", "FEMALE"]}],
         )
 
-        # Ensure raw/internal fields are not leaked.
-        self.assertNotIn("filters", chart)
+        # A filter node without a type is dropped; raw/internal fields are not leaked.
+        self.assertIsNone(chart["filters"])
         self.assertNotIn("title", chart)
         self.assertNotIn("description", chart)
         self.assertNotIn("metadata", payload)
@@ -115,7 +115,7 @@ class VisualizationPlanPreviewSerializerTests(unittest.TestCase):
         self.assertIn("charts", payload)
         charts = cast(List[Dict[str, Any]], payload["charts"])
         self.assertEqual(len(charts), 1)
-        self.assertEqual(charts[0], {"chart_type": "BAR", "metrics": [{"metric": "DIDO"}]})
+        self.assertEqual(charts[0], {"chart_type": "BAR", "metrics": [{"metric": "DIDO"}], "filters": None})
 
     def test_serialize_plan_for_frontend_emits_statistical_test_preview(self) -> None:
         serialize_plan_for_frontend = _load_serialize_plan_for_frontend()
@@ -226,6 +226,41 @@ class VisualizationPlanPreviewSerializerTests(unittest.TestCase):
                 "and": [
                     {"type": "DATEFILTER", "operator": "GE", "value": "2025-10-01"},
                     {"type": "DATEFILTER", "operator": "LE", "value": "2025-12-31"},
+                ],
+            },
+        )
+
+    def test_serialize_plan_for_frontend_keeps_chart_filters(self) -> None:
+        serialize_plan_for_frontend = _load_serialize_plan_for_frontend()
+
+        plan: Dict[str, Any] = {
+            "charts": [
+                {
+                    "chart_type": "line",
+                    "metrics": [{"metric": "DTN"}],
+                    "filters": {
+                        "type": "AndFilter",
+                        "and_": [
+                            {"type": "StrokeFilter", "value": "ischemic"},
+                            {"type": "SexFilter", "value": "female"},
+                            {"type": "BooleanFilter", "boolean_type": "hypertension", "value": True},
+                        ],
+                    },
+                }
+            ]
+        }
+
+        payload = serialize_plan_for_frontend(plan)
+
+        charts = cast(List[Dict[str, Any]], payload["charts"])
+        self.assertEqual(
+            charts[0]["filters"],
+            {
+                "type": "ANDFILTER",
+                "and": [
+                    {"type": "STROKEFILTER", "value": "ischemic"},
+                    {"type": "SEXFILTER", "value": "female"},
+                    {"type": "BOOLEANFILTER", "boolean_type": "HYPERTENSION", "value": True},
                 ],
             },
         )

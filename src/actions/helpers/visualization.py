@@ -521,6 +521,10 @@ def serialize_plan_for_frontend(plan: Any) -> Dict[str, Any]:
         if isinstance(operator, str) and operator.strip():
             out["operator"] = operator.strip().upper()
 
+        boolean_type = filter_node.get("boolean_type")
+        if isinstance(boolean_type, str) and boolean_type.strip():
+            out["boolean_type"] = boolean_type.strip().upper()
+
         value = filter_node.get("value")
         if isinstance(value, (str, int, float, bool)):
             out["value"] = value
@@ -608,6 +612,10 @@ def serialize_plan_for_frontend(plan: Any) -> Dict[str, Any]:
 
             if semantics_out:
                 out["semantics"] = semantics_out
+
+        # Always present on a chart, so "no filters" is distinguishable from a preview without them.
+        if out:
+            out["filters"] = _filter_preview(chart.get("filters")) or None
 
         return out
 
