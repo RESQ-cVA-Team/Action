@@ -29,6 +29,7 @@ from src.planners.langchain.request_orchestrator import (
 )
 from src.shared import ssot_loader
 from src.util import env as env_util
+from src.util.llm_usage import llm_usage_field, start_llm_usage
 from src.util.logging_utils import log_context
 
 logger = logging.getLogger(__name__)
@@ -576,6 +577,7 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
         tracker: TrackerLike,
         domain: DomainDict,
     ) -> RasaEventList:
+        start_llm_usage()
         trace_id = uuid4().hex
         metadata: Dict[str, Any] = {}
         slots: Dict[str, Any] = {}
@@ -649,6 +651,7 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                         json_message={
                             "type": "visualization_query_decision",
                             "trace_id": trace_id,
+                            **llm_usage_field(),
                             "decision": outcome.decision,
                             "reason": outcome.reason,
                             "clarification_type": outcome.clarification_type,
@@ -667,6 +670,7 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                     json_message={
                         "type": "visualization_query_decision",
                         "trace_id": trace_id,
+                        **llm_usage_field(),
                         "decision": outcome.decision,
                         "reason": outcome.reason,
                         "clarification_type": outcome.clarification_type,
@@ -937,6 +941,7 @@ class ActionOneShotGenerateVisualization(LongAction):
         return "action_oneshot_generate_visualization"
 
     async def prework(self, ctx: LongActionContext) -> PreworkResult:
+        start_llm_usage()
         trace_id = _ensure_context_trace_id(ctx)
         with log_context(trace_id=trace_id, action=self.name()):
             logger.info("Starting one-shot prework")
@@ -988,6 +993,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             json_message={
                                 "type": "visualization_query_decision",
                                 "trace_id": trace_id,
+                                **llm_usage_field(),
                                 "decision": outcome.decision,
                                 "reason": outcome.reason,
                                 "clarification_type": outcome.clarification_type,
@@ -1005,6 +1011,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             json_message={
                                 "type": "visualization_query_decision",
                                 "trace_id": trace_id,
+                                **llm_usage_field(),
                                 "decision": outcome.decision,
                                 "reason": outcome.reason,
                                 "clarification_type": outcome.clarification_type,
@@ -1028,6 +1035,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             json_message={
                                 "type": "visualization_query_decision",
                                 "trace_id": trace_id,
+                                **llm_usage_field(),
                                 "decision": "clarify",
                                 "reason": "empty_plan",
                                 "clarification_type": "analysis_plan",
@@ -1118,6 +1126,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         json_message={
                             "type": "visualization_query_decision",
                             "trace_id": trace_id,
+                            **llm_usage_field(),
                             "decision": outcome.decision,
                             "reason": outcome.reason,
                             "clarification_type": outcome.clarification_type,
@@ -1135,6 +1144,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         json_message={
                             "type": "visualization_query_decision",
                             "trace_id": trace_id,
+                            **llm_usage_field(),
                             "decision": outcome.decision,
                             "reason": outcome.reason,
                             "clarification_type": outcome.clarification_type,
@@ -1158,6 +1168,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         json_message={
                             "type": "visualization_query_decision",
                             "trace_id": trace_id,
+                            **llm_usage_field(),
                             "decision": "clarify",
                             "reason": "empty_plan",
                             "clarification_type": "analysis_plan",
@@ -1177,6 +1188,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                     json_message={
                         "type": "visualization_query_decision",
                         "trace_id": trace_id,
+                        **llm_usage_field(),
                         "decision": outcome.decision,
                         "reason": outcome.reason,
                         "clarification_type": outcome.clarification_type,
@@ -1232,6 +1244,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                 return PreworkResult(events=[], proceed=False)
 
     async def work(self, ctx: LongActionContext) -> Any:
+        start_llm_usage()
         completed_successfully = False
         execution_summary: Optional[Any] = None
         plan_obj: Optional[lang_schema.AnalysisPlan] = None
@@ -1335,6 +1348,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             json_message={
                                 "type": "visualization_query_decision",
                                 "trace_id": trace_id,
+                                **llm_usage_field(),
                                 "decision": outcome.decision,
                                 "reason": outcome.reason,
                                 "clarification_type": outcome.clarification_type,
@@ -1357,6 +1371,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             json_message={
                                 "type": "visualization_query_decision",
                                 "trace_id": trace_id,
+                                **llm_usage_field(),
                                 "decision": "clarify",
                                 "reason": "empty_plan",
                                 "clarification_type": "analysis_plan",
@@ -1372,6 +1387,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         "type": "visualization_plan",
                         "trace_id": trace_id,
                         "plan": serialize_plan_for_frontend(plan_obj),
+                        **llm_usage_field(),
                     }
                 )
 
@@ -1448,6 +1464,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         json_message={
                             "type": "visualization_query_decision",
                             "trace_id": trace_id,
+                            **llm_usage_field(),
                             "decision": "clarify",
                             "reason": "missing_time_bounds",
                             "clarification_type": "date",
@@ -1463,6 +1480,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         json_message={
                             "type": "visualization_query_decision",
                             "trace_id": trace_id,
+                            **llm_usage_field(),
                             "decision": "clarify",
                             "reason": e.reason,
                             "clarification_type": e.clarification_type,
