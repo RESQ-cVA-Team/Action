@@ -23,6 +23,7 @@ def _load_visualization_context_helpers():
         "_event_has_visualization_signal",
         "_find_latest_visualization_anchor_user_ordinal",
         "_pending_clarification_payload",
+        "_proceed_decided_for_latest_message",
         "_should_carry_forward_visualization_context",
         "canonicalize_ssot_entities",
     }
@@ -389,3 +390,17 @@ def test_should_not_carry_forward_after_a_completed_request_with_no_pending_clar
     ]
 
     assert should_carry_forward("generate_visualization", events) is False
+
+
+def _decision_event(decision: str, reason: str) -> Dict[str, Any]:
+    return {"event": "bot", "custom": {"type": "visualization_query_decision", "decision": decision, "reason": reason}}
+
+
+def test_a_proceed_decision_sent_for_the_current_message_is_found() -> None:
+    proceed_decided = _load_visualization_context_helpers()["_proceed_decided_for_latest_message"]
+    message = _user_event("show me a line graph of dtn", "generate_visualization", [])
+    assert proceed_decided([message, _decision_event("proceed", "all_required_fields_present")]) == "all_required_fields_present"
+    assert proceed_decided([message, _decision_event("clarify", "missing_required_fields")]) is None
+    # A decision before the current message belongs to an earlier one.
+    assert proceed_decided([_decision_event("proceed", "all_required_fields_present"), message]) is None
+    assert proceed_decided([message]) is None

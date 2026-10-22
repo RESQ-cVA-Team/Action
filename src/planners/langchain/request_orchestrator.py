@@ -2005,6 +2005,63 @@ def _decision_stage(
     return outcome
 
 
+def _triage(
+    question: str,
+    normalized_entities: Dict[str, Any],
+    language: Optional[str],
+    conversation_history: Optional[List[str]],
+    pending_clarification: Optional[Dict[str, Any]],
+) -> VisualizationRequestOutcome:
+    """The deterministic validators, then the decision stage: proceed, clarify or reject."""
+    stat_test_support_validation = _validate_statistical_test_support(question)
+    if stat_test_support_validation is not None:
+        logger.info(
+            "Orchestrator rejection: %s",
+            stat_test_support_validation.reason,
+        )
+        return stat_test_support_validation
+
+    risk_factor_filter_validation = _validate_risk_factor_filter_support(question, normalized_entities)
+    if risk_factor_filter_validation is not None:
+        logger.info(
+            "Orchestrator rejection: %s",
+            risk_factor_filter_validation.reason,
+        )
+        return risk_factor_filter_validation
+
+    group_by_validation = _validate_group_by_support(question, normalized_entities)
+    if group_by_validation is not None:
+        logger.info(
+            "Orchestrator clarification: %s",
+            group_by_validation.reason,
+        )
+        return group_by_validation
+
+    scope_grouping_validation = _validate_scope_grouping_cohorts(question, normalized_entities)
+    if scope_grouping_validation is not None:
+        logger.info(
+            "Orchestrator clarification: %s",
+            scope_grouping_validation.reason,
+        )
+        return scope_grouping_validation
+
+    stats_entity_validation = _validate_statistical_entity_readiness(question, normalized_entities)
+    if stats_entity_validation is not None:
+        logger.info(
+            "Orchestrator clarification: %s",
+            stats_entity_validation.reason,
+        )
+        return stats_entity_validation
+
+    return _decision_stage(
+        question,
+        normalized_entities,
+        language,
+        conversation_history=conversation_history,
+        pending_clarification=pending_clarification,
+    )
+
+
 def orchestrate_visualization_request(
     question: str,
     entities: Dict[str, Any],
@@ -2015,7 +2072,11 @@ def orchestrate_visualization_request(
     conversation_history: Optional[List[str]] = None,
     progress_cb: Optional[Callable[[str], None]] = None,
     pending_clarification: Optional[Dict[str, Any]] = None,
+    decided_proceed: Optional[str] = None,
 ) -> VisualizationRequestOutcome:
+    """decided_proceed: the reason of a proceed decision already taken for this
+    same message (the triage ran in action_clarify_visualization_request);
+    the validators and the decision stage are then skipped."""
     with log_context(trace_id=trace_id or "", orchestrator_include_plan=include_plan):
         normalized_entities = _infer_stroke_type_share_metric(question, _normalize_entities_for_question(question, entities))
         if not _ORCHESTRATOR_ENABLED:
@@ -2039,53 +2100,11 @@ def orchestrate_visualization_request(
             report("Analyzing request intent and feasibility")
             logger.info("Orchestrator input - question: %s, entities: %s", question, normalized_entities)
 
-            stat_test_support_validation = _validate_statistical_test_support(question)
-            if stat_test_support_validation is not None:
-                logger.info(
-                    "Orchestrator rejection: %s",
-                    stat_test_support_validation.reason,
-                )
-                return stat_test_support_validation
-
-            risk_factor_filter_validation = _validate_risk_factor_filter_support(question, normalized_entities)
-            if risk_factor_filter_validation is not None:
-                logger.info(
-                    "Orchestrator rejection: %s",
-                    risk_factor_filter_validation.reason,
-                )
-                return risk_factor_filter_validation
-
-            group_by_validation = _validate_group_by_support(question, normalized_entities)
-            if group_by_validation is not None:
-                logger.info(
-                    "Orchestrator clarification: %s",
-                    group_by_validation.reason,
-                )
-                return group_by_validation
-
-            scope_grouping_validation = _validate_scope_grouping_cohorts(question, normalized_entities)
-            if scope_grouping_validation is not None:
-                logger.info(
-                    "Orchestrator clarification: %s",
-                    scope_grouping_validation.reason,
-                )
-                return scope_grouping_validation
-
-            stats_entity_validation = _validate_statistical_entity_readiness(question, normalized_entities)
-            if stats_entity_validation is not None:
-                logger.info(
-                    "Orchestrator clarification: %s",
-                    stats_entity_validation.reason,
-                )
-                return stats_entity_validation
-
-            stage1 = _decision_stage(
-                question,
-                normalized_entities,
-                language,
-                conversation_history=conversation_history,
-                pending_clarification=pending_clarification,
-            )
+            if decided_proceed is not None:
+                logger.info("Orchestrator decision taken earlier for this message: proceed (%s)", decided_proceed)
+                stage1 = VisualizationRequestOutcome(decision="proceed", reason=decided_proceed)
+            else:
+                stage1 = _triage(question, normalized_entities, language, conversation_history, pending_clarification)
             logger.info(
                 "Orchestrator decision: %s, message: %s, missing: %s",
                 stage1.decision,
