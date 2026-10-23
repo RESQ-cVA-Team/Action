@@ -393,6 +393,12 @@ def _accumulate_entity_value(extracted: Dict[str, Any], key: str, value: Any) ->
     # unambiguous request.
 
 
+def is_plan_only_request(metadata: Mapping[str, Any]) -> bool:
+    """A message whose sender (an evaluation run) wants the plan and no data: the
+    request is triaged and planned as usual, and nothing is fetched upstream."""
+    return metadata.get("plan_only") is True
+
+
 def resolve_override_language(metadata: Dict[str, Any], slots: Dict[str, Any]) -> Optional[str]:
     override_language: Any = None
     lang_meta = metadata.get("language")
