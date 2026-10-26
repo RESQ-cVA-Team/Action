@@ -49,6 +49,7 @@ class ChartBuilderTests(unittest.TestCase):
         self.assertEqual(x_axis.type.value, "linear")
         self.assertEqual(y_axis.label, "Cases")
         self.assertEqual(y_axis.type.value, "linear")
+        self.assertNotIn("angels_awards", chart.model_dump(mode="json")["metadata"])
 
     def test_line_distribution_without_dimensions_uses_metric_and_cases_axes(
         self,
@@ -85,6 +86,50 @@ class ChartBuilderTests(unittest.TestCase):
         self.assertEqual(x_axis.type.value, "linear")
         self.assertEqual(y_axis.label, "Cases")
         self.assertEqual(y_axis.type.value, "linear")
+
+    def test_angels_awards_thresholds_are_in_serialized_chart_metadata(self) -> None:
+        plan_chart = ChartSpec(
+            chart_type="BAR",
+            metrics=[MetricSpec(metric="AA_DTN_LE60")],
+        )
+
+        chart = build_chart_dto(
+            plan_chart=plan_chart,
+            dimensions=[],
+            series=[ChartSeries(name="Door-to-needle", data=[ChartPoint(x="yes", y=50)])],
+            derived_axes=None,
+        )
+
+        self.assertEqual(
+            chart.model_dump(mode="json")["metadata"]["angels_awards"],
+            {"AA_DTN_LE60": {"gold": 50, "platinum": 75, "diamond": 75}},
+        )
+
+    def test_angels_awards_comparison_bounds_are_preserved_in_metadata(self) -> None:
+        plan_chart = ChartSpec(
+            chart_type="BAR",
+            metrics=[
+                MetricSpec(metric="AA_DTN_LE45"),
+                MetricSpec(metric="AA_DTG_LE90"),
+                MetricSpec(metric="AA_STROKE_UNIT"),
+            ],
+        )
+
+        chart = build_chart_dto(
+            plan_chart=plan_chart,
+            dimensions=[],
+            series=[ChartSeries(name="Award metric", data=[ChartPoint(x="yes", y=50)])],
+            derived_axes=None,
+        )
+
+        self.assertEqual(
+            chart.model_dump(mode="json")["metadata"]["angels_awards"],
+            {
+                "AA_DTN_LE45": {"platinum": {"lt": 50}, "diamond": 50},
+                "AA_DTG_LE90": {"platinum": {"lt": 50}, "diamond": 50},
+                "AA_STROKE_UNIT": {"diamond": {"gt": 0}},
+            },
+        )
 
 
 class OperatorSymbolTests(unittest.TestCase):

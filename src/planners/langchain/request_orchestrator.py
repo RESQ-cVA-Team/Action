@@ -12,7 +12,23 @@ from typing import Any, Callable, Dict, List, Literal, Optional, cast
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.domain.langchain.schema import TIME_INTERVALS, AnalysisPlan, AndFilter, ChartSpec, ChartType, DataOriginSpec, DateFilter, MetricSpec, OriginScopeSpec, SplitSpec, StatisticalTestSpec
+from src.domain.langchain.schema import (
+    TIME_INTERVALS,
+    AnalysisPlan,
+    AnalysisSemanticsSpec,
+    AndFilter,
+    ChartSpec,
+    ChartType,
+    DataOriginSpec,
+    DateFilter,
+    MeasureSemanticsSpec,
+    MetricSpec,
+    OriginScopeSpec,
+    SplitSpec,
+    StatisticalTestSpec,
+    TimeSemanticsSpec,
+)
+from src.executors.planning.ssot_metric_defaults import is_angels_awards_metric
 from src.planners.langchain.llm_factory import create_chat_llm
 from src.planners.langchain.pipeline import (
     _PLANNER_REQUEST_TIMEOUT_SECONDS,
@@ -183,14 +199,8 @@ _COUNTRY_GROUPING_HINTS = (
 )
 _MINE_SCOPE_TOKENS = {"mine", "my", "our", "ours", "my hospital", "our hospital"}
 _SCOPE_GROUPING_MESSAGES = {
-    "hospital": (
-        "Grouping by hospital needs the hospitals to compare. Name them, for example "
-        "'my hospital vs <hospital name>', or ask for 'my hospital vs country average'."
-    ),
-    "country": (
-        "Grouping by country needs the countries to compare. Name them, for example "
-        "'Czech Republic vs Spain', or ask for 'my hospital vs country average'."
-    ),
+    "hospital": ("Grouping by hospital needs the hospitals to compare. Name them, for example 'my hospital vs <hospital name>', or ask for 'my hospital vs country average'."),
+    "country": ("Grouping by country needs the countries to compare. Name them, for example 'Czech Republic vs Spain', or ask for 'my hospital vs country average'."),
 }
 
 _DECISION_PROMPT = ChatPromptTemplate.from_messages(  # type: ignore[attr-defined]
@@ -559,7 +569,7 @@ _STROKE_SHARE_WORDING = re.compile(r"\b(percent(age)?|share|proportion|rate)\b.{
 
 
 def _infer_stroke_type_share_metric(question: str, entities: Dict[str, Any]) -> Dict[str, Any]:
-    """"Percentage of ischemic strokes" names no metric that NLU can see: the
+    """ "Percentage of ischemic strokes" names no metric that NLU can see: the
     word it tags is the stroke type. The share of a stroke type among all
     strokes is the STROKE_TYPE metric plotted as a rate, so fill that in
     rather than asking which metric was meant."""
@@ -593,7 +603,7 @@ def _normalize_entities_for_question(question: str, entities: Dict[str, Any]) ->
 
 
 def _canonical_group_by(value: str) -> str:
-    """"per quarter" names the QUARTER grouping. Rasa's canonicalizer maps the
+    """ "per quarter" names the QUARTER grouping. Rasa's canonicalizer maps the
     bare word, but an entity that reaches us with its prefix still attached
     (the LLM intent fallback hands over the words as written) must resolve
     here, or the request is refused for a grouping it does support."""
@@ -1087,6 +1097,40 @@ def _drop_unrequested_explicit_periods(plan: AnalysisPlan, question: str, entiti
         time_spec = semantics.time.model_copy(update={"periods": None})
         charts.append(chart.model_copy(update={"semantics": semantics.model_copy(update={"time": time_spec})}))
         plan_changed = True
+    if not plan_changed:
+        return plan
+    return plan.model_copy(update={"charts": charts})
+
+
+def _apply_aa_quarterly_defaults(plan: AnalysisPlan) -> AnalysisPlan:
+    """Default AA charts to quarterly grain unless time grain or periods are explicit."""
+    plan_changed = False
+    charts: List[ChartSpec] = []
+    for chart in plan.charts or []:
+        if not any(is_angels_awards_metric(metric.metric) for metric in chart.metrics):
+            charts.append(chart)
+            continue
+
+        semantics = chart.semantics
+        if semantics is None:
+            semantics = AnalysisSemanticsSpec(
+                intent="TREND",
+                measure=MeasureSemanticsSpec(type="RATE"),
+                time=TimeSemanticsSpec(grain="QUARTER"),
+            )
+            charts.append(chart.model_copy(update={"semantics": semantics}))
+            plan_changed = True
+            continue
+
+        time = semantics.time
+        if time is not None and (time.grain is not None or time.periods):
+            charts.append(chart)
+            continue
+
+        time = (time or TimeSemanticsSpec()).model_copy(update={"grain": "QUARTER"})
+        charts.append(chart.model_copy(update={"semantics": semantics.model_copy(update={"time": time})}))
+        plan_changed = True
+
     if not plan_changed:
         return plan
     return plan.model_copy(update={"charts": charts})
@@ -2138,6 +2182,7 @@ def orchestrate_visualization_request(
             plan = _split_mixed_unit_charts(plan)
             plan = _drop_hospital_scopes_from_metric_words(plan, normalized_entities)
             plan = _drop_unrequested_explicit_periods(plan, question, normalized_entities)
+            plan = _apply_aa_quarterly_defaults(plan)
             logger.info("Plan generation completed successfully", extra={"plan_type": type(plan).__name__})
 
             logger.info("Starting validation of statistical plan readiness")
@@ -2191,6 +2236,7 @@ def orchestrate_visualization_request(
                     plan = _split_mixed_unit_charts(plan)
                     plan = _drop_hospital_scopes_from_metric_words(plan, entities)
                     plan = _drop_unrequested_explicit_periods(plan, question, entities)
+                    plan = _apply_aa_quarterly_defaults(plan)
                     return VisualizationRequestOutcome(
                         decision="proceed",
                         reason="orchestrator_fallback_to_plan",

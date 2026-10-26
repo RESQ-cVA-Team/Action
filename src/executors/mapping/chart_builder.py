@@ -22,10 +22,14 @@ from src.domain.langchain.schema import (
     GroupByStrokeType,
     GroupByTime,
 )
-from src.executors.planning.metric_request_factory import numeric_request_bounds
 from src.executors.mapping.series_mapper import _grouped_time_period_label
+from src.executors.planning.metric_request_factory import numeric_request_bounds
 from src.executors.planning.query_compiler import Dimension
-from src.executors.planning.ssot_metric_defaults import build_distribution_bin_ranges, is_enum_metric
+from src.executors.planning.ssot_metric_defaults import (
+    build_distribution_bin_ranges,
+    is_angels_awards_metric,
+    is_enum_metric,
+)
 from src.shared.ssot_loader import (
     get_canonical_display_name,
     get_metric_display_name,
@@ -176,6 +180,34 @@ def _metric_codes(plan_chart: S.ChartSpec) -> List[str]:
         if code and code not in out:
             out.append(code)
     return out
+
+
+def _angels_awards_for_chart(plan_chart: S.ChartSpec) -> Optional[dict[str, dict[str, Any]]]:
+    awards_by_metric: dict[str, dict[str, int]] = {}
+    for metric_code in _metric_codes(plan_chart):
+        if not is_angels_awards_metric(metric_code):
+            continue
+        metric_metadata = _METRIC_METADATA.get(metric_code)
+        if not isinstance(metric_metadata, dict):
+            continue
+        awards_any = metric_metadata.get("angels_awards")
+        if not isinstance(awards_any, dict):
+            continue
+        awards = cast(dict[str, Any], awards_any)
+        thresholds: dict[str, Any] = {}
+        for tier in ("gold", "platinum", "diamond"):
+            value = awards.get(tier)
+            if isinstance(value, int):
+                thresholds[tier] = value
+            elif isinstance(value, dict):
+                comparison = cast(dict[str, Any], value)
+                if len(comparison) == 1:
+                    operator, bound = next(iter(comparison.items()))
+                    if operator in {"lt", "gt"} and isinstance(bound, int):
+                        thresholds[tier] = {operator: bound}
+        if thresholds:
+            awards_by_metric[metric_code] = thresholds
+    return awards_by_metric or None
 
 
 def _format_operator(value: str) -> str:
@@ -399,7 +431,17 @@ def _metric_value_axis_label(plan_chart: S.ChartSpec) -> str:
 def _is_percent_measure(plan_chart: S.ChartSpec) -> bool:
     semantics = getattr(plan_chart, "semantics", None)
     measure = getattr(semantics, "measure", None) if semantics is not None else None
-    return str(getattr(measure, "type", "") or "").upper() == "RATE"
+    measure_type = str(getattr(measure, "type", "") or "").upper()
+    is_aa_chart = any(is_angels_awards_metric(code) for code in _metric_codes(plan_chart))
+    if is_aa_chart:
+        return measure_type != "COUNT"
+    return measure_type == "RATE"
+
+
+def _is_aa_count_measure(plan_chart: S.ChartSpec) -> bool:
+    semantics = getattr(plan_chart, "semantics", None)
+    measure = getattr(semantics, "measure", None) if semantics is not None else None
+    return str(getattr(measure, "type", "") or "").upper() == "COUNT" and any(is_angels_awards_metric(code) for code in _metric_codes(plan_chart))
 
 
 def _cases_axis_label(plan_chart: S.ChartSpec) -> str:
@@ -457,6 +499,8 @@ def _derive_axes_from_dimensions(
         y_axis_label = _cases_axis_label(plan_chart)
     elif _is_percent_measure(plan_chart):
         y_axis_label = "Share of cases (%)"
+    elif _is_aa_count_measure(plan_chart):
+        y_axis_label = "Cases"
     else:
         y_axis_label = _metric_value_axis_label(plan_chart)
 
@@ -585,6 +629,7 @@ def build_chart_dto(
         title=title_text,
         x_axis=x_axis,
         y_axis=y_axis,
+        angels_awards=_angels_awards_for_chart(plan_chart),
     )
 
     if chart_type_upper == ChartType.LINE.value:

@@ -43,6 +43,7 @@ from src.executors.planning.request_plan import (
     RequestSpec,
     build_primary_request_specs,
 )
+from src.executors.planning.ssot_metric_defaults import is_angels_awards_metric
 from src.executors.transport.request_runner import run_graphql_request
 from src.shared.ssot_loader import (
     get_statistics_metric_enum_map,
@@ -1127,7 +1128,12 @@ def _request_scope_label(spec: RequestSpec) -> str:
 def _chart_value_mode(chart: Any) -> str:
     semantics = getattr(chart, "semantics", None)
     measure = getattr(semantics, "measure", None) if semantics is not None else None
-    return "percent" if str(getattr(measure, "type", "") or "").upper() == "RATE" else "count"
+    metrics = getattr(chart, "metrics", None) or []
+    is_aa_chart = any(is_angels_awards_metric(getattr(metric, "metric", "")) for metric in metrics)
+    measure_type = str(getattr(measure, "type", "") or "").upper()
+    if is_aa_chart:
+        return "count" if measure_type == "COUNT" else "percent"
+    return "percent" if measure_type == "RATE" else "count"
 
 
 async def _execute_request_spec(
@@ -1156,6 +1162,7 @@ async def _execute_request_spec(
         query_cb=context.query_cb,
         is_filter_grouped=spec.is_filter_grouped,
         value_mode=spec.value_mode,
+        category_detail_metric_codes=spec.category_detail_metric_codes,
     )
     return RequestExecutionResult(spec=spec, series=series, metrics_payload=metrics_payload)
 
@@ -1301,10 +1308,7 @@ async def execute_plan_async(
     for plan_chart in plan_charts:
         dropped_splits = _sanitize_chart_semantics_for_execution(plan_chart, trace_id=trace_id_resolved)
         if dropped_splits > 0:
-            warning_text = (
-                "One or more requested grouping fields were invalid and were ignored. "
-                "The chart was rendered without those groupings."
-            )
+            warning_text = "One or more requested grouping fields were invalid and were ignored. The chart was rendered without those groupings."
             if warning_text not in response.warnings:
                 response.warnings.append(warning_text)
 
@@ -1379,6 +1383,7 @@ async def execute_plan_async(
                 metric_scope_labels=metric_scope_labels,
                 include_general_stats=_INCLUDE_GENERAL_STATS,
                 value_mode=_chart_value_mode(planChart),
+                category_detail_metric_codes=[metric.metric for metric in planChart.metrics if metric.include_category_detail],
             )
             total_requests = max(1, len(primary_specs))
             actual_queries += total_requests

@@ -46,6 +46,35 @@ class SsotLoaderTests(unittest.TestCase):
         self.assertIn("descriptions", metadata["DTN"])
         self.assertTrue(metadata["DTN"]["descriptions"].get("en"))
 
+    def test_angels_award_thresholds_are_available_in_metric_metadata(self) -> None:
+        ssot_loader.get_metric_metadata.cache_clear()
+        metadata = ssot_loader.get_metric_metadata()
+
+        expected_codes = {
+            "AA_DTN_LE60",
+            "AA_DTN_LE45",
+            "AA_DTG_LE120",
+            "AA_DTG_LE90",
+            "AA_RECANALIZATION",
+            "AA_IMAGING",
+            "AA_SWALLOWING_SCREENING",
+            "AA_ANTICOAGULANTS",
+            "AA_ANTITHROMBOTICS",
+            "AA_STROKE_UNIT",
+        }
+        self.assertTrue(expected_codes.issubset(metadata))
+        for code in expected_codes:
+            self.assertIn("angels_awards", metadata[code])
+
+        self.assertEqual(
+            metadata["AA_DTN_LE45"]["angels_awards"]["platinum"],
+            {"lt": 50},
+        )
+        self.assertEqual(
+            metadata["AA_STROKE_UNIT"]["angels_awards"],
+            {"diamond": {"gt": 0}},
+        )
+
     def test_metric_text_lookup_prefers_canonical_key_over_synonym_collision(self) -> None:
         items: List[Dict[str, Any]] = [
             {

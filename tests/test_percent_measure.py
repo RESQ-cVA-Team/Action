@@ -1,5 +1,5 @@
-from types import SimpleNamespace
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.domain.dto.charts.types import ChartPoint, ChartSeries
@@ -48,6 +48,52 @@ class PercentSeriesMappingTests(unittest.TestCase):
         self.assertEqual(counts[0].data[0].y, 80.0)
         self.assertEqual(shares[0].data[0].y, 80.0)
 
+    def test_aa_default_selects_yes_by_label_not_category_order(self) -> None:
+        payload = {
+            "metric_AA_DTN_LE60": SimpleNamespace(
+                kpi_group=[_kpi(case_count=[20, 80], percents=[20.0, 80.0], cohort_size=100)],
+                labels=["no", "yes"],
+            )
+        }
+
+        percent_points = _map(payload, "percent")[0].data
+        count_points = _map(payload, "count")[0].data
+
+        self.assertEqual([(point.x, point.y) for point in percent_points], [("yes", 80.0)])
+        self.assertEqual([(point.x, point.y) for point in count_points], [("yes", 80.0)])
+
+    def test_aa_category_detail_includes_yes_and_no(self) -> None:
+        payload = {
+            "metric_AA_DTN_LE60": SimpleNamespace(
+                kpi_group=[_kpi(case_count=[80, 20], percents=[80.0, 20.0], cohort_size=100)],
+                labels=["yes", "no"],
+            )
+        }
+
+        series = _map(payload, "percent", category_detail_metric_codes=["AA_DTN_LE60"])
+
+        self.assertEqual([(point.x, point.y) for point in series[0].data], [("yes", 80.0), ("no", 20.0)])
+
+    def test_aa_grouped_category_detail_creates_yes_and_no_series(self) -> None:
+        first = _kpi(case_count=[80, 20], percents=[80.0, 20.0], cohort_size=100)
+        first.time_period = SimpleNamespace(start_date="2026-01-01", end_date="2026-03-31")
+        second = _kpi(case_count=[60, 40], percents=[60.0, 40.0], cohort_size=100)
+        second.time_period = SimpleNamespace(start_date="2026-04-01", end_date="2026-06-30")
+        payload = {"metric_AA_DTN_LE60": SimpleNamespace(kpi_group=[first, second], labels=["yes", "no"])}
+
+        series = _map(
+            payload,
+            "percent",
+            add_time_period_labels=True,
+            category_detail_metric_codes=["AA_DTN_LE60"],
+        )
+
+        self.assertEqual(len(series), 4)
+        yes_series = [item for item in series if item.name.endswith("— yes")]
+        no_series = [item for item in series if item.name.endswith("— no")]
+        self.assertEqual([point.y for item in yes_series for point in item.data], [80.0, 60.0])
+        self.assertEqual([point.y for item in no_series for point in item.data], [20.0, 40.0])
+
     def test_grouped_row_falls_back_to_count_over_cohort(self) -> None:
         kpi = _kpi(case_count=[25], cohort_size=200)
         kpi.time_period = SimpleNamespace(start_date="2026-01-01", end_date="2026-03-31")
@@ -67,6 +113,27 @@ class PercentAxisAndModeTests(unittest.TestCase):
         self.assertEqual(_chart_value_mode(self._chart("RATE")), "percent")
         self.assertEqual(_chart_value_mode(self._chart("DISTRIBUTION")), "count")
         self.assertEqual(_chart_value_mode(ChartSpec(chart_type="BAR", metrics=[MetricSpec(metric="DTN")])), "count")
+        self.assertEqual(_chart_value_mode(ChartSpec(chart_type="BAR", metrics=[MetricSpec(metric="AA_DTN_LE60")])), "percent")
+        self.assertEqual(_chart_value_mode(self._chart_for_aa("DISTRIBUTION")), "percent")
+        self.assertEqual(_chart_value_mode(self._chart_for_aa("COUNT")), "count")
+
+    def _chart_for_aa(self, measure: str) -> ChartSpec:
+        return ChartSpec(
+            chart_type="BAR",
+            metrics=[MetricSpec(metric="AA_DTN_LE60")],
+            semantics=AnalysisSemanticsSpec(intent="DISTRIBUTION", measure=MeasureSemanticsSpec(type=measure)),
+        )
+
+    def test_aa_percent_axis_is_default_but_count_measure_is_not_percent(self) -> None:
+        aa_chart = ChartSpec(chart_type="BAR", metrics=[MetricSpec(metric="AA_DTN_LE60")])
+        count_chart = self._chart_for_aa("COUNT")
+        series = [ChartSeries(name="AA", data=[ChartPoint(x="yes", y=80.0)])]
+
+        aa = build_chart_dto(plan_chart=aa_chart, dimensions=[], series=series, derived_axes=None)
+        count = build_chart_dto(plan_chart=count_chart, dimensions=[], series=series, derived_axes=None)
+
+        self.assertEqual(aa.metadata.y_axis.label, "Share of cases (%)")
+        self.assertEqual(count.metadata.y_axis.label, "Cases")
 
     def test_percent_chart_labels_its_y_axis_as_a_share(self) -> None:
         series = [ChartSeries(name="arrival mode", data=[ChartPoint(x="ems", y=30.0), ChartPoint(x="private", y=70.0)])]

@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_serializer
 
 
 class ChartType(str, Enum):
@@ -59,3 +59,11 @@ class ChartMetadata(BaseModel):
     legend: bool = True
     width: Optional[int] = None
     height: Optional[int] = None
+    angels_awards: Optional[Dict[str, Dict[str, Union[int, Dict[str, int]]]]] = None
+
+    @model_serializer(mode="wrap")
+    def omit_absent_angels_awards(self, handler: Any) -> Any:
+        data = handler(self)
+        if self.angels_awards is None:
+            data.pop("angels_awards", None)
+        return data

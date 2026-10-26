@@ -33,6 +33,7 @@ class RequestSpec:
     is_filter_grouped: bool = False
     # "count" plots case counts; "percent" plots the share of cases (measure RATE).
     value_mode: str = "count"
+    category_detail_metric_codes: List[str] = field(default_factory=lambda: cast(List[str], []))
 
 
 def _collect_date_bounds(
@@ -101,6 +102,7 @@ def build_primary_request_specs(
     data_origin: Optional[DataOrigin] = None,
     include_general_stats: bool = False,
     value_mode: str = "count",
+    category_detail_metric_codes: Optional[Sequence[str]] = None,
 ) -> List[RequestSpec]:
     specs: List[RequestSpec] = []
     per_metric_data_origin = any(origin is not None for origin in (metric_data_origins or []))
@@ -144,6 +146,7 @@ def build_primary_request_specs(
                         batched_time_periods=batched_time_periods,
                         is_filter_grouped=bool(filter_dims),
                         value_mode=value_mode,
+                        category_detail_metric_codes=list(category_detail_metric_codes or []),
                     )
                 )
         else:
@@ -169,6 +172,7 @@ def build_primary_request_specs(
                     batched_time_periods=batched_time_periods,
                     is_filter_grouped=bool(filter_dims),
                     value_mode=value_mode,
+                    category_detail_metric_codes=list(category_detail_metric_codes or []),
                 )
             )
 

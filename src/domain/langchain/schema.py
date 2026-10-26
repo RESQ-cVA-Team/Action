@@ -825,6 +825,11 @@ class MetricSpec(BaseModel):
     metric: str  # Should be a value from MetricType
     data_origin: Optional[DataOriginSpec] = Field(default=None, alias="dataOrigin")
     origin_scope: Optional[OriginScopeSpec] = Field(default=None, alias="originScope")
+    include_category_detail: bool = Field(
+        default=False,
+        alias="includeCategoryDetail",
+        description="For AA metrics, set true only when the user explicitly asks to include or compare both Yes and No categories.",
+    )
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -951,9 +956,7 @@ class StatisticalTestSpec(BaseModel):
         if not gb:
             return self
 
-        raise ValueError(
-            "Statistical tests do not support group_by. Define explicit cohorts via metric-level origins/filters."
-        )
+        raise ValueError("Statistical tests do not support group_by. Define explicit cohorts via metric-level origins/filters.")
         return self
 
 
