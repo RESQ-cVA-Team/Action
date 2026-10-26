@@ -13,6 +13,7 @@ from src.actions.helpers.visualization import (
     canonicalize_ssot_entities,
     extract_entities_from_latest_message,
     format_execution_summary,
+    is_plan_only_request,
     pretty_print_graphql_query,
     resolve_override_language,
     serialize_plan_for_frontend,
@@ -414,6 +415,18 @@ def merge_latest_with_thread_entities(
         if key in latest_entities:
             merged[key] = latest_entities[key]
     return merged
+
+
+def _hand_over_plan(ctx: LongActionContext, trace_id: str, plan: lang_schema.AnalysisPlan) -> PreworkResult:
+    """Hands the plan to the work phase, which fetches the data. A plan-only
+    request gets the plan in this reply and ends here: nothing is fetched
+    upstream and no callback follows."""
+    if is_plan_only_request(ctx.metadata):
+        ctx.say(json_message={"type": "visualization_plan", "trace_id": trace_id, "plan": serialize_plan_for_frontend(plan)})
+        ctx.say(json_message={"type": "visualization_plan_only", "trace_id": trace_id})
+        return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=False)
+    ctx.tracker_snapshot[_INTERNAL_PREPARED_PLAN_KEY] = plan
+    return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=True)
 
 
 def _pending_clarification_payload(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -1049,11 +1062,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             proceed=False,
                         )
 
-                    ctx.tracker_snapshot[_INTERNAL_PREPARED_PLAN_KEY] = prepared_plan
-                    return PreworkResult(
-                        events=[SlotSet("awaiting_visualization_clarification", False)],
-                        proceed=True,
-                    )
+                    return _hand_over_plan(ctx, trace_id, prepared_plan)
 
                 latest_any = ctx.tracker_snapshot.get("latest_message")
                 latest_msg = cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
@@ -1182,8 +1191,6 @@ class ActionOneShotGenerateVisualization(LongAction):
                         proceed=False,
                     )
 
-                ctx.tracker_snapshot[_INTERNAL_PREPARED_PLAN_KEY] = prepared_plan
-
                 ctx.say(
                     json_message={
                         "type": "visualization_query_decision",
@@ -1196,10 +1203,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         "message": outcome.message,
                     }
                 )
-                return PreworkResult(
-                    events=[SlotSet("awaiting_visualization_clarification", False)],
-                    proceed=True,
-                )
+                return _hand_over_plan(ctx, trace_id, prepared_plan)
             except Exception as e:
                 logger.exception(
                     "Error generating visualization during prework",
