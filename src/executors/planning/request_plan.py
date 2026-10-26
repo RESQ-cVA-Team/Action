@@ -103,9 +103,19 @@ def build_primary_request_specs(
     include_general_stats: bool = False,
     value_mode: str = "count",
     category_detail_metric_codes: Optional[Sequence[str]] = None,
+    category_detail_metric_flags: Optional[Sequence[bool]] = None,
 ) -> List[RequestSpec]:
     specs: List[RequestSpec] = []
     per_metric_data_origin = any(origin is not None for origin in (metric_data_origins or []))
+
+    def category_detail_codes_for(indices: Sequence[int]) -> List[str]:
+        if category_detail_metric_flags is None:
+            return list(category_detail_metric_codes or [])
+        return [
+            str(metric_requests[idx].metric_type.value)
+            for idx in indices
+            if idx < len(category_detail_metric_flags) and category_detail_metric_flags[idx]
+        ]
 
     for combo in combos_list:
         case_filter, label_parts = _build_case_filter(chart_filter, filter_dims, combo)
@@ -146,7 +156,7 @@ def build_primary_request_specs(
                         batched_time_periods=batched_time_periods,
                         is_filter_grouped=bool(filter_dims),
                         value_mode=value_mode,
-                        category_detail_metric_codes=list(category_detail_metric_codes or []),
+                        category_detail_metric_codes=category_detail_codes_for([idx]),
                     )
                 )
         else:
@@ -172,7 +182,7 @@ def build_primary_request_specs(
                     batched_time_periods=batched_time_periods,
                     is_filter_grouped=bool(filter_dims),
                     value_mode=value_mode,
-                    category_detail_metric_codes=list(category_detail_metric_codes or []),
+                    category_detail_metric_codes=category_detail_codes_for(range(len(metric_requests))),
                 )
             )
 

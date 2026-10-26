@@ -1107,6 +1107,9 @@ def _apply_aa_quarterly_defaults(plan: AnalysisPlan) -> AnalysisPlan:
     plan_changed = False
     charts: List[ChartSpec] = []
     for chart in plan.charts or []:
+        if (chart.chart_type or "").upper() == "PIE":
+            charts.append(chart)
+            continue
         if not any(is_angels_awards_metric(metric.metric) for metric in chart.metrics):
             charts.append(chart)
             continue

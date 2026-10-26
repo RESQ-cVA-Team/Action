@@ -94,6 +94,22 @@ class PercentSeriesMappingTests(unittest.TestCase):
         self.assertEqual([point.y for item in yes_series for point in item.data], [80.0, 60.0])
         self.assertEqual([point.y for item in no_series for point in item.data], [20.0, 40.0])
 
+    def test_aa_grouped_empty_time_bucket_maps_missing_categories(self) -> None:
+        populated = _kpi(case_count=[80, 20], percents=[80.0, 20.0], cohort_size=100)
+        populated.time_period = SimpleNamespace(start_date="2026-01-01", end_date="2026-03-31")
+        empty = _kpi(case_count=[])
+        empty.time_period = SimpleNamespace(start_date="2026-04-01", end_date="2026-06-30")
+        payload = {
+            "metric_AA_DTN_LE60": SimpleNamespace(
+                kpi_group=[populated, empty],
+                labels=["yes", "no"],
+            )
+        }
+
+        series = _map(payload, "percent", add_time_period_labels=True)
+
+        self.assertEqual([(point.x, point.y) for point in series[0].data], [("2026-Q1", 80.0), ("2026-Q2", None)])
+
     def test_grouped_row_falls_back_to_count_over_cohort(self) -> None:
         kpi = _kpi(case_count=[25], cohort_size=200)
         kpi.time_period = SimpleNamespace(start_date="2026-01-01", end_date="2026-03-31")

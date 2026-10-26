@@ -61,6 +61,12 @@ class DropUnrequestedExplicitPeriodsTests(unittest.TestCase):
         plan = AnalysisPlan.model_validate({"charts": [{"chart_type": "LINE", "metrics": [{"metric": "DTN"}]}]})
         self.assertIs(_apply_aa_quarterly_defaults(plan), plan)
 
+    def test_aa_pie_chart_does_not_get_implicit_quarterly_grouping(self) -> None:
+        plan = AnalysisPlan.model_validate({"charts": [{"chart_type": "PIE", "metrics": [{"metric": "AA_DTN_LE60"}]}]})
+
+        self.assertIs(_apply_aa_quarterly_defaults(plan), plan)
+        self.assertIsNone(plan.charts[0].semantics)
+
     def test_periods_the_question_never_named_are_dropped(self) -> None:
         # Live: "percentage of AA_DTN_LE60 per quarter" came back as the four quarters of 2023.
         plan = _drop_unrequested_explicit_periods(_plan(_QUARTERS_2023), "Show me the percentage of AA_DTN_LE60 per quarter", {"metric": "AA_DTN_LE60"})

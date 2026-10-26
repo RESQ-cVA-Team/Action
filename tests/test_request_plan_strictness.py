@@ -107,3 +107,25 @@ def test_build_primary_request_specs_uses_explicit_per_metric_origin() -> None:
     request = specs[0].req
     assert request.data_origin.provider_id == [7]
     assert request.include_general_stats is False
+
+
+def test_build_primary_request_specs_keeps_category_detail_per_metric_origin() -> None:
+    aa_requests = [
+        MetricRequest(metricType=MetricType.AA_DTN_LE60).with_stats().with_categorical()
+        for _ in range(2)
+    ]
+    specs = build_primary_request_specs(
+        metric_requests=aa_requests,
+        metric_data_origins=[DataOrigin(providerId=[7]), DataOrigin(providerId=[8])],
+        chart_filter=None,
+        filter_dims=[],
+        combos_list=[tuple()],
+        batched_time_enabled=False,
+        batched_time_periods=[],
+        include_metric_alias=False,
+        group_by_field=None,
+        include_general_stats=False,
+        category_detail_metric_flags=[True, False],
+    )
+
+    assert [spec.category_detail_metric_codes for spec in specs] == [["AA_DTN_LE60"], []]

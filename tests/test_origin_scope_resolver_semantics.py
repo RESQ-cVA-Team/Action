@@ -6,6 +6,28 @@ from src.executors.planning import origin_scope_resolver
 
 
 class OriginScopeResolverSemanticsTests(unittest.TestCase):
+    def test_resolve_metric_origin_preserves_category_detail(self) -> None:
+        metric = S.MetricSpec(
+            metric="AA_DTN_LE60",
+            originScope=S.OriginScopeSpec(scopeType="provider_id", value=1853),
+            includeCategoryDetail=True,
+        )
+        resolved_origin = S.DataOriginSpec(providerId=[1853])
+
+        with patch.object(origin_scope_resolver, "_resolve_scope", return_value=resolved_origin):
+            resolved = origin_scope_resolver._resolve_metric_origin(
+                metric,
+                default_scope=None,
+                user_sub="user-1",
+                job_id="job-1",
+                trace_id="trace-1",
+                fail_open_for_default_scope=False,
+                inferred_country_code=None,
+            )
+
+        self.assertTrue(resolved.include_category_detail)
+        self.assertEqual(resolved.data_origin.provider_id, [1853])
+
     def test_list_accessible_providers_does_not_apply_user_filter(self) -> None:
         calls = []
 

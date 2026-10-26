@@ -1383,7 +1383,7 @@ async def execute_plan_async(
                 metric_scope_labels=metric_scope_labels,
                 include_general_stats=_INCLUDE_GENERAL_STATS,
                 value_mode=_chart_value_mode(planChart),
-                category_detail_metric_codes=[metric.metric for metric in planChart.metrics if metric.include_category_detail],
+                category_detail_metric_flags=[metric.include_category_detail for metric in planChart.metrics],
             )
             total_requests = max(1, len(primary_specs))
             actual_queries += total_requests
