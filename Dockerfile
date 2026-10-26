@@ -16,6 +16,10 @@ USER root
 # OS packages get security patches independently of the pinned image tag.
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
+# The base image's system Python has its own pip, outside /opt/venv; the
+# certifi it vendors is scanned like any installed package.
+RUN /usr/bin/python3 -m pip install --no-cache-dir --break-system-packages --root-user-action=ignore --upgrade pip==26.2.2
+
 COPY requirements.txt VERSION .
 COPY --from=deps /tmp/wheels /tmp/wheels
 
