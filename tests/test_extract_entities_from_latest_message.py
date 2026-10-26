@@ -419,3 +419,11 @@ def test_a_bound_phrase_about_another_number_is_ignored() -> None:
     assert "age_upper" not in entities
     assert entities["nihss_upper"] == "10"
     assert "nihss_lower" not in entities
+
+
+def test_only_an_explicit_plan_only_flag_skips_fetching_data() -> None:
+    from src.actions.helpers.visualization import is_plan_only_request
+
+    assert is_plan_only_request({"plan_only": True}) is True
+    assert is_plan_only_request({"plan_only": "true"}) is False
+    assert is_plan_only_request({}) is False
