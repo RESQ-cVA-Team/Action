@@ -115,6 +115,17 @@ def _canonical_metric_from_exact_span(text: str, start: Any, end: Any) -> Option
     return _normalized_canonical_metric_keys().get(norm)
 
 
+def _metric_from_exact_synonym_span(text: str, start: Any, end: Any) -> Optional[str]:
+    """Return the canonical metric if the span text is exactly an SSOT metric synonym."""
+    if not isinstance(text, str) or not isinstance(start, int) or not isinstance(end, int):
+        return None
+    if start < 0 or end <= start or end > len(text):
+        return None
+    entry = get_metric_text_lookup().get(normalize_metric_text_key(text[start:end]))
+    canonical = entry.get("canonical") if isinstance(entry, dict) else None
+    return canonical.strip().upper() if isinstance(canonical, str) and canonical.strip() else None
+
+
 def _span_contains(outer: tuple[Any, Any], inner: tuple[Any, Any]) -> bool:
     if not all(isinstance(part, int) for part in outer + inner):
         return False
@@ -233,6 +244,25 @@ def extract_entities_from_latest_message(
                 if entity_type == "metric":
                     diet_metric_spans.append(span)
 
+    # A regex metric span that is exactly an SSOT synonym and contains a DIET
+    # metric span is the more specific reading ("aa recanalization" over
+    # "recanalization"): keep it and drop the DIET span inside it.
+    exact_synonym_spans: Dict[tuple[Any, Any], str] = {}
+    for ent_any in entities_list:
+        if not isinstance(ent_any, dict):
+            continue
+        ent = cast(Dict[str, Any], ent_any)
+        extractors = ent.get("extractors")
+        extractor_names = {e.get("extractor") for e in extractors if isinstance(e, dict)} if isinstance(extractors, list) else set()
+        if ent.get("entity") != "metric" or "DIETClassifier" in extractor_names:
+            continue
+        span = (ent.get("start"), ent.get("end"))
+        if not any(_span_contains(span, metric_span) and metric_span != span for metric_span in diet_metric_spans):
+            continue
+        canonical = _metric_from_exact_synonym_span(question_text, ent.get("start"), ent.get("end"))
+        if canonical is not None:
+            exact_synonym_spans[span] = canonical
+
     extracted: Dict[str, Any] = {}
     for ent_any in entities_list:
         if not isinstance(ent_any, dict):
@@ -251,7 +281,11 @@ def extract_entities_from_latest_message(
             exact_span_canonical = _canonical_metric_from_exact_span(question_text, ent.get("start"), ent.get("end"))
             if exact_span_canonical is not None:
                 value = exact_span_canonical
-        if key_any == "metric" and "DIETClassifier" not in extractor_names:
+        if key_any == "metric" and span in exact_synonym_spans:
+            value = exact_synonym_spans[span]
+        elif key_any == "metric" and any(_span_contains(outer, span) and outer != span for outer in exact_synonym_spans):
+            continue
+        elif key_any == "metric" and "DIETClassifier" not in extractor_names:
             if any(
                 (
                     _span_contains(metric_span, span)
