@@ -289,7 +289,9 @@ def map_metrics_payload_to_series(
                     x_value = "value"
 
                 if is_aa_metric:
-                    if len(case_counts) != len(metric_labels or []):
+                    if len(case_counts) != len(metric_labels or []) and not (
+                        not case_counts and add_time_period_labels and tp_start
+                    ):
                         raise ValueError("AA categorical KPI payload has mismatched labels/caseCount lengths.")
                     for category_index, category_label, _ in aa_categories:
                         y_value = _aa_category_value(
