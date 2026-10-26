@@ -26,6 +26,7 @@ from src.executors import execute_plan_async
 from src.executors.orchestration.plan_executor import VisualizationExecutionError
 from src.planners.langchain.request_orchestrator import (
     _PLANNER_MAX_RETRIES,
+    VisualizationRequestOutcome,
     orchestrate_visualization_request,
 )
 from src.shared import ssot_loader
@@ -417,6 +418,12 @@ def merge_latest_with_thread_entities(
     return merged
 
 
+async def _orchestrate(**kwargs: Any) -> VisualizationRequestOutcome:
+    """The orchestrator blocks on LLM calls for seconds at a time. Run in a worker
+    thread, it leaves the action server free to answer other requests meanwhile."""
+    return await asyncio.to_thread(orchestrate_visualization_request, **kwargs)
+
+
 def _hand_over_plan(ctx: LongActionContext, trace_id: str, plan: lang_schema.AnalysisPlan) -> PreworkResult:
     """Hands the plan to the work phase, which fetches the data. A plan-only
     request gets the plan in this reply and ends here: nothing is fetched
@@ -641,7 +648,7 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
 
                 pending_clarification = _pending_clarification_payload(events) if carry_forward else None
 
-                outcome = orchestrate_visualization_request(
+                outcome = await _orchestrate(
                     question=planner_question,
                     entities=extracted_entities,
                     language=override_language,
@@ -982,7 +989,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                     retry_language = cast(str, request_ctx.get("language") or "en")
                     pending_clarification = cast(Optional[Dict[str, Any]], request_ctx.get("pending_clarification"))
 
-                    outcome = orchestrate_visualization_request(
+                    outcome = await _orchestrate(
                         question=planner_question,
                         entities=extracted_entities,
                         language=override_language,
@@ -1111,7 +1118,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                     )
 
                 request_ctx = _extract_request_context(ctx)
-                outcome = orchestrate_visualization_request(
+                outcome = await _orchestrate(
                     question=str(request_ctx.get("planner_question") or request_ctx.get("user_message") or ""),
                     entities=cast(Dict[str, Any], request_ctx.get("extracted_entities") or {}),
                     language=cast(Optional[str], request_ctx.get("override_language")),
@@ -1325,7 +1332,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                     pending_clarification = cast(Optional[Dict[str, Any]], request_ctx.get("pending_clarification"))
 
                     progress("Calling orchestrator to build a plan")
-                    outcome = orchestrate_visualization_request(
+                    outcome = await _orchestrate(
                         question=planner_question,
                         entities=extracted_entities,
                         language=override_language,
