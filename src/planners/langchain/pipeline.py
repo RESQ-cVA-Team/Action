@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -29,6 +30,7 @@ from src.planners.langchain.examples import get_few_shot_examples
 from src.planners.langchain.llm_factory import create_chat_llm, get_llm_provider
 from src.planners.langchain.prompt_loader import load_prompt_text
 from src.util import env
+from src.util.llm_usage import record_llm_call
 from src.util.logging_utils import bind_current_context, log_context
 
 logger = logging.getLogger(__name__)
@@ -245,13 +247,18 @@ _LAST_CACHE_EVENT: ContextVar[Optional[bool]] = ContextVar("planner_last_cache_e
 
 
 def _invoke_with_timeout(chain: Any, inputs: Dict[str, Any], label: str) -> Any:
+    step = "critique" if label == "plan_critique" else "plan"
+    started_at = time.monotonic()
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(bind_current_context(chain.invoke), inputs)
         try:
-            return future.result(timeout=_PLANNER_REQUEST_TIMEOUT_SECONDS)
+            response = future.result(timeout=_PLANNER_REQUEST_TIMEOUT_SECONDS)
         except FuturesTimeoutError as exc:
             future.cancel()
+            record_llm_call(step, started_at)
             raise PlannerTimeoutError(f"{label} timed out after {_PLANNER_REQUEST_TIMEOUT_SECONDS:.1f}s") from exc
+    record_llm_call(step, started_at, response)
+    return response
 
 
 def _plan_for_cache(plan: AnalysisPlan) -> AnalysisPlan:
