@@ -208,9 +208,59 @@ def pretty_print_graphql_query(query: str) -> str:
 def extract_entities_from_latest_message(
     latest_message: Dict[str, Any],
 ) -> Dict[str, Any]:
+    extracted: Dict[str, Any] = {}
+    for ent in _kept_entities(latest_message):
+        _accumulate_entity_value(extracted, ent["entity"], ent["value"])
+        # Range entities (age/nihss/date) carry a DIET role saying which
+        # bound a number is ("over 50" -> lower, "under 50" -> upper). The
+        # flat key loses that, and "over 50 and under 50" collapses to a
+        # single "50" -- so keep the role as a companion key too.
+        role_any = ent.get("role")
+        if isinstance(role_any, str) and role_any.strip():
+            _accumulate_entity_value(extracted, f"{ent['entity']}_{role_any.strip().lower()}", ent["value"])
+
+    question_text_any = latest_message.get("text")
+    _derive_range_bounds_from_wording(extracted, question_text_any if isinstance(question_text_any, str) else "")
+    return extracted
+
+
+def question_with_resolved_metrics(latest_message: Dict[str, Any]) -> str:
+    """The user's message with each span NLU resolved to a metric written as that
+    metric's canonical code, so planning starts from the resolved metric instead
+    of reading its words again as filters, splits or further series."""
+    text_any = latest_message.get("text")
+    text = text_any if isinstance(text_any, str) else ""
+    spans: List[tuple[int, int, str]] = []
+    for ent in _kept_entities(latest_message):
+        start, end = ent.get("start"), ent.get("end")
+        if ent["entity"] != "metric" or not isinstance(start, int) or not isinstance(end, int) or not 0 <= start < end <= len(text):
+            continue
+        code = canonicalize_ssot_entities({"metric": ent["value"]}).get("metric")
+        if isinstance(code, str) and code.strip():
+            spans.append((start, end, code.strip().upper()))
+
+    parts: List[str] = []
+    position = 0
+    for start, end, code in sorted(spans):
+        if start < position:
+            continue
+        parts.append(text[position:start])
+        parts.append(_resolved_metric_text(text[start:end], code))
+        position = end
+    parts.append(text[position:])
+    return "".join(parts)
+
+
+def _resolved_metric_text(words: str, code: str) -> str:
+    return code
+
+
+def _kept_entities(latest_message: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """NLU entities of the message that survive the extractor-conflict rules
+    below, each with its value, span and role."""
     entities_any = latest_message.get("entities", [])
     if not isinstance(entities_any, list):
-        return {}
+        return []
 
     entities_list = cast(List[Any], entities_any)
     question_text_any = latest_message.get("text")
@@ -263,7 +313,7 @@ def extract_entities_from_latest_message(
         if canonical is not None:
             exact_synonym_spans[span] = canonical
 
-    extracted: Dict[str, Any] = {}
+    kept: List[Dict[str, Any]] = []
     for ent_any in entities_list:
         if not isinstance(ent_any, dict):
             continue
@@ -312,17 +362,9 @@ def extract_entities_from_latest_message(
             if not _has_metric_request_context(question_text, ent.get("start")):
                 continue
 
-        _accumulate_entity_value(extracted, key_any, value)
-        # Range entities (age/nihss/date) carry a DIET role saying which
-        # bound a number is ("over 50" -> lower, "under 50" -> upper). The
-        # flat key loses that, and "over 50 and under 50" collapses to a
-        # single "50" -- so keep the role as a companion key too.
-        role_any = ent.get("role")
-        if isinstance(role_any, str) and role_any.strip():
-            _accumulate_entity_value(extracted, f"{key_any}_{role_any.strip().lower()}", value)
+        kept.append({"entity": key_any, "value": value, "start": ent.get("start"), "end": ent.get("end"), "role": ent.get("role")})
 
-    _derive_range_bounds_from_wording(extracted, question_text)
-    return extracted
+    return kept
 
 
 _RANGE_WORDING = re.compile(

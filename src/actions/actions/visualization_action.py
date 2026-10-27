@@ -12,6 +12,7 @@ from src.actions.helpers.metric import resolve_next_metric_candidate
 from src.actions.helpers.visualization import (
     canonicalize_ssot_entities,
     extract_entities_from_latest_message,
+    question_with_resolved_metrics,
     format_execution_summary,
     is_plan_only_request,
     pretty_print_graphql_query,
@@ -639,7 +640,7 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                 # separately to the orchestrator's own history field), not by joining
                 # raw text here — doing so previously confused the planner into
                 # blending unrelated requests together.
-                planner_question = user_message
+                planner_question = question_with_resolved_metrics(latest_msg)
 
                 if carry_forward:
                     latest_plan_summary = _collect_latest_visualization_plan_summary(events)
@@ -818,7 +819,7 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
     # extracted_entities (structured) and conversation_history (passed separately to
     # the orchestrator's own history field), not by joining raw text here — doing so
     # previously confused the planner into blending unrelated requests together.
-    planner_question = ctx.text
+    planner_question = question_with_resolved_metrics(latest_msg)
 
     if latest_plan_summary:
         planner_question = f"{latest_plan_summary}\n\nUser's newest instruction:\n{planner_question}".strip()
