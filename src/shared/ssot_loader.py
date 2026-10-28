@@ -182,6 +182,10 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
             if val is not None:
                 meta[key] = val
 
+        angels_awards = item.get("angels_awards")
+        if isinstance(angels_awards, dict):
+            meta["angels_awards"] = angels_awards
+
         descriptions = _coerce_description_map(item.get("descriptions"))
         if descriptions:
             meta["descriptions"] = descriptions

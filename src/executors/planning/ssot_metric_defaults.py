@@ -12,7 +12,7 @@ import logging
 import math
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, Optional, cast
+from typing import Any, Dict, List, Optional, cast
 
 from src.domain.dto.charts.types import ChartAxis
 from src.shared.ssot_loader import get_metric_display_name, get_metric_metadata
@@ -35,6 +35,33 @@ class PrettyDistributionBins:
     upper_bound: float
     bin_width: float
     bin_count: int
+
+
+def is_angels_awards_metric(metric_code: str) -> bool:
+    """Recognize AA metric codes from request values or response aliases."""
+    token = (metric_code or "").strip().upper()
+    if token.startswith("METRIC_"):
+        token = token[len("METRIC_") :]
+    return token.startswith("AA_")
+
+
+def get_enum_option_key(metric_code: str, label: str) -> Optional[str]:
+    """Resolve a displayed enum label to its normalized SSOT option key."""
+    code = (metric_code or "").strip().upper()
+    normalized_label = (label or "").strip().casefold()
+    if not code or not normalized_label:
+        return None
+
+    meta = _mapping_to_dict(_METRIC_METADATA.get(code))
+    options = _mapping_to_dict(meta.get("enum_options"))
+    for option_key, option_any in options.items():
+        if option_key.strip().casefold() == normalized_label:
+            return option_key
+        option = _mapping_to_dict(option_any)
+        synonyms = cast(List[str], option.get("synonyms") or [])
+        if any(value.strip().casefold() == normalized_label for value in synonyms):
+            return option_key
+    return None
 
 
 def _format_decimal_label(value: float) -> str:

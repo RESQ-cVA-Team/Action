@@ -13,7 +13,19 @@ from typing import Any, Callable, Dict, List, Literal, Optional, cast
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.domain.langchain.schema import TIME_INTERVALS, AnalysisPlan, AndFilter, ChartSpec, ChartType, DataOriginSpec, DateFilter, MetricSpec, OriginScopeSpec, SplitSpec, StatisticalTestSpec
+from src.domain.langchain.schema import (
+    TIME_INTERVALS,
+    AnalysisPlan,
+    AndFilter,
+    ChartSpec,
+    ChartType,
+    DataOriginSpec,
+    DateFilter,
+    MetricSpec,
+    OriginScopeSpec,
+    SplitSpec,
+    StatisticalTestSpec,
+)
 from src.planners.langchain.llm_factory import create_chat_llm
 from src.planners.langchain.pipeline import (
     _PLANNER_REQUEST_TIMEOUT_SECONDS,
@@ -185,14 +197,8 @@ _COUNTRY_GROUPING_HINTS = (
 )
 _MINE_SCOPE_TOKENS = {"mine", "my", "our", "ours", "my hospital", "our hospital"}
 _SCOPE_GROUPING_MESSAGES = {
-    "hospital": (
-        "Grouping by hospital needs the hospitals to compare. Name them, for example "
-        "'my hospital vs <hospital name>', or ask for 'my hospital vs country average'."
-    ),
-    "country": (
-        "Grouping by country needs the countries to compare. Name them, for example "
-        "'Czech Republic vs Spain', or ask for 'my hospital vs country average'."
-    ),
+    "hospital": ("Grouping by hospital needs the hospitals to compare. Name them, for example 'my hospital vs <hospital name>', or ask for 'my hospital vs country average'."),
+    "country": ("Grouping by country needs the countries to compare. Name them, for example 'Czech Republic vs Spain', or ask for 'my hospital vs country average'."),
 }
 
 _DECISION_PROMPT = ChatPromptTemplate.from_messages(  # type: ignore[attr-defined]
@@ -564,7 +570,7 @@ _STROKE_SHARE_WORDING = re.compile(r"\b(percent(age)?|share|proportion|rate)\b.{
 
 
 def _infer_stroke_type_share_metric(question: str, entities: Dict[str, Any]) -> Dict[str, Any]:
-    """"Percentage of ischemic strokes" names no metric that NLU can see: the
+    """ "Percentage of ischemic strokes" names no metric that NLU can see: the
     word it tags is the stroke type. The share of a stroke type among all
     strokes is the STROKE_TYPE metric plotted as a rate, so fill that in
     rather than asking which metric was meant."""
@@ -598,7 +604,7 @@ def _normalize_entities_for_question(question: str, entities: Dict[str, Any]) ->
 
 
 def _canonical_group_by(value: str) -> str:
-    """"per quarter" names the QUARTER grouping. Rasa's canonicalizer maps the
+    """ "per quarter" names the QUARTER grouping. Rasa's canonicalizer maps the
     bare word, but an entity that reaches us with its prefix still attached
     (the LLM intent fallback hands over the words as written) must resolve
     here, or the request is refused for a grouping it does support."""

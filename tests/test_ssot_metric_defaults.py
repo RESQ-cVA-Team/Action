@@ -5,6 +5,8 @@ from src.executors.planning.ssot_metric_defaults import (
     format_distribution_bin_label,
     format_distribution_point_label,
     get_distribution_defaults,
+    get_enum_option_key,
+    is_angels_awards_metric,
     resolve_implicit_distribution_layout,
     resolve_minutes_distribution_layout,
     resolve_pretty_distribution_bins,
@@ -13,6 +15,15 @@ from src.executors.planning.ssot_metric_defaults import (
 
 
 class PrettyDistributionBinsTests(unittest.TestCase):
+    def test_aa_metric_detection_accepts_codes_and_response_aliases(self) -> None:
+        self.assertTrue(is_angels_awards_metric("AA_DTN_LE60"))
+        self.assertTrue(is_angels_awards_metric("metric_AA_DTN_LE60"))
+        self.assertFalse(is_angels_awards_metric("ARRIVAL_MODE"))
+
+    def test_enum_option_key_resolves_aa_display_labels(self) -> None:
+        self.assertEqual(get_enum_option_key("AA_DTN_LE60", "yes"), "yes")
+        self.assertEqual(get_enum_option_key("AA_DTN_LE60", "No"), "no")
+
     def test_pretty_bins_choose_clean_divisor_close_to_target(self) -> None:
         bins = resolve_pretty_distribution_bins(31, 89, target_bins=6)
 

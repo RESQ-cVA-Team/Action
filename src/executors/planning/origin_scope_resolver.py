@@ -999,6 +999,7 @@ def _resolve_metric_origin(
         metric=metric.metric,
         dataOrigin=resolved_data_origin,
         originScope=scope_ref,
+        include_category_detail=metric.include_category_detail,
     )
 
 

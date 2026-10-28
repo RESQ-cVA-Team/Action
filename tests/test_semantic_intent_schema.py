@@ -6,6 +6,11 @@ from src.domain.langchain.schema import ChartSpec, GroupBySex, MetricSpec, Stati
 
 
 class SemanticIntentSchemaTests(unittest.TestCase):
+    def test_metric_can_request_explicit_category_detail(self) -> None:
+        metric = MetricSpec.model_validate({"metric": "AA_DTN_LE60", "includeCategoryDetail": True})
+
+        self.assertTrue(metric.include_category_detail)
+
     def test_accepts_semantic_distribution_with_split(self) -> None:
         chart = ChartSpec.model_validate(
             {
