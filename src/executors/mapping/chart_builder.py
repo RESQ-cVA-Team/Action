@@ -11,7 +11,7 @@ from src.domain.dto.charts.histogram import Histogram, HistogramBin
 from src.domain.dto.charts.pie import PieChart, PieSlice
 from src.domain.dto.charts.radar import RadarChart
 from src.domain.dto.charts.scatter import ScatterPlot
-from src.domain.dto.charts.types import ChartAxis, ChartMetadata, ChartSeries, ChartType
+from src.domain.dto.charts.types import ChartAxis, ChartMetadata, ChartPoint, ChartSeries, ChartType
 from src.domain.dto.charts.waterfall import WaterfallChart, WaterfallStep
 from src.domain.langchain import schema as S
 from src.domain.langchain.schema import (

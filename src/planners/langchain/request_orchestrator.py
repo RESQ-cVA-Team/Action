@@ -477,8 +477,8 @@ def _drop_falsely_missing_fields(missing_fields: List[str], entities: Dict[str, 
     genuinely needs semantic judgment to consider satisfied.
     """
     kept: List[str] = []
-    for field in missing_fields:
-        key = field.strip().lower()
+    for missing_field in missing_fields:
+        key = missing_field.strip().lower()
         if key in _SELF_VERIFIABLE_REQUIRED_FIELDS and _entity_present(entities, key):
             continue
         # "over 50 and under 50" arrives as age plus age_lower/age_upper; a
@@ -487,7 +487,7 @@ def _drop_falsely_missing_fields(missing_fields: List[str], entities: Dict[str, 
         base = re.sub(r"_(lower|upper)$", "", key)
         if base in _RANGE_ENTITY_FIELDS and any(_entity_present(entities, k) for k in (base, f"{base}_lower", f"{base}_upper")):
             continue
-        kept.append(field)
+        kept.append(missing_field)
     return kept
 
 
