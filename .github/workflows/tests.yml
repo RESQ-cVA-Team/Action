@@ -43,5 +43,8 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements-dev.txt
 
+      - name: Lint
+        run: python -m ruff check src tests
+
       - name: Run the test suite
         run: python -m pytest tests -q -p no:cacheprovider
