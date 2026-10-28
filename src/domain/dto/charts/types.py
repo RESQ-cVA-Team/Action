@@ -59,7 +59,7 @@ class ChartMetadata(BaseModel):
     legend: bool = True
     width: Optional[int] = None
     height: Optional[int] = None
-    angels_awards: Optional[Dict[str, Dict[str, Union[int, Dict[str, int]]]]] = None
+    angels_awards: Optional[Dict[str, Dict[str, Dict[str, Union[bool, int, float]]]]] = None
 
     @model_serializer(mode="wrap")
     def omit_absent_angels_awards(self, handler: Any) -> Any:

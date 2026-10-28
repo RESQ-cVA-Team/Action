@@ -67,12 +67,12 @@ class SsotLoaderTests(unittest.TestCase):
             self.assertIn("angels_awards", metadata[code])
 
         self.assertEqual(
-            metadata["AA_DTN_LE45"]["angels_awards"]["platinum"],
-            {"lt": 50},
+            metadata["AA_DTN_LE45"]["angels_awards"],
+            {"diamond": {"min_percent": 50}},
         )
         self.assertEqual(
             metadata["AA_STROKE_UNIT"]["angels_awards"],
-            {"diamond": {"gt": 0}},
+            {"diamond": {"required": True}},
         )
 
     def test_metric_text_lookup_prefers_canonical_key_over_synonym_collision(self) -> None:

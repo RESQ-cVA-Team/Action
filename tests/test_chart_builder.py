@@ -102,10 +102,10 @@ class ChartBuilderTests(unittest.TestCase):
 
         self.assertEqual(
             chart.model_dump(mode="json")["metadata"]["angels_awards"],
-            {"AA_DTN_LE60": {"gold": 50, "platinum": 75, "diamond": 75}},
+            {"AA_DTN_LE60": {"gold": {"min_percent": 50}, "platinum": {"min_percent": 75}, "diamond": {"min_percent": 75}}},
         )
 
-    def test_angels_awards_comparison_bounds_are_preserved_in_metadata(self) -> None:
+    def test_angels_awards_levels_without_a_requirement_are_left_out(self) -> None:
         plan_chart = ChartSpec(
             chart_type="BAR",
             metrics=[
@@ -125,9 +125,9 @@ class ChartBuilderTests(unittest.TestCase):
         self.assertEqual(
             chart.model_dump(mode="json")["metadata"]["angels_awards"],
             {
-                "AA_DTN_LE45": {"platinum": {"lt": 50}, "diamond": 50},
-                "AA_DTG_LE90": {"platinum": {"lt": 50}, "diamond": 50},
-                "AA_STROKE_UNIT": {"diamond": {"gt": 0}},
+                "AA_DTN_LE45": {"diamond": {"min_percent": 50}},
+                "AA_DTG_LE90": {"diamond": {"min_percent": 50}},
+                "AA_STROKE_UNIT": {"diamond": {"required": True}},
             },
         )
 

@@ -183,7 +183,8 @@ def _metric_codes(plan_chart: S.ChartSpec) -> List[str]:
 
 
 def _angels_awards_for_chart(plan_chart: S.ChartSpec) -> Optional[dict[str, dict[str, Any]]]:
-    awards_by_metric: dict[str, dict[str, int]] = {}
+    """Per AA metric, each award level's requirement: {"min_percent": n} or {"required": True}."""
+    awards_by_metric: dict[str, dict[str, Any]] = {}
     for metric_code in _metric_codes(plan_chart):
         if not is_angels_awards_metric(metric_code):
             continue
@@ -196,15 +197,14 @@ def _angels_awards_for_chart(plan_chart: S.ChartSpec) -> Optional[dict[str, dict
         awards = cast(dict[str, Any], awards_any)
         thresholds: dict[str, Any] = {}
         for tier in ("gold", "platinum", "diamond"):
-            value = awards.get(tier)
-            if isinstance(value, int):
-                thresholds[tier] = value
-            elif isinstance(value, dict):
-                comparison = cast(dict[str, Any], value)
-                if len(comparison) == 1:
-                    operator, bound = next(iter(comparison.items()))
-                    if operator in {"lt", "gt"} and isinstance(bound, int):
-                        thresholds[tier] = {operator: bound}
+            requirement = awards.get(tier)
+            if not isinstance(requirement, dict):
+                continue
+            min_percent = cast(dict[str, Any], requirement).get("min_percent")
+            if isinstance(min_percent, (int, float)) and not isinstance(min_percent, bool):
+                thresholds[tier] = {"min_percent": min_percent}
+            elif cast(dict[str, Any], requirement).get("required") is True:
+                thresholds[tier] = {"required": True}
         if thresholds:
             awards_by_metric[metric_code] = thresholds
     return awards_by_metric or None
