@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -29,6 +30,7 @@ from src.planners.langchain.examples import get_few_shot_examples
 from src.planners.langchain.llm_factory import create_chat_llm, get_llm_provider
 from src.planners.langchain.prompt_loader import load_prompt_text
 from src.util import env
+from src.util.llm_usage import record_llm_call
 from src.util.logging_utils import bind_current_context, log_context
 
 logger = logging.getLogger(__name__)
@@ -245,13 +247,18 @@ _LAST_CACHE_EVENT: ContextVar[Optional[bool]] = ContextVar("planner_last_cache_e
 
 
 def _invoke_with_timeout(chain: Any, inputs: Dict[str, Any], label: str) -> Any:
+    step = "critique" if label == "plan_critique" else "plan"
+    started_at = time.monotonic()
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(bind_current_context(chain.invoke), inputs)
         try:
-            return future.result(timeout=_PLANNER_REQUEST_TIMEOUT_SECONDS)
+            response = future.result(timeout=_PLANNER_REQUEST_TIMEOUT_SECONDS)
         except FuturesTimeoutError as exc:
             future.cancel()
+            record_llm_call(step, started_at)
             raise PlannerTimeoutError(f"{label} timed out after {_PLANNER_REQUEST_TIMEOUT_SECONDS:.1f}s") from exc
+    record_llm_call(step, started_at, response)
+    return response
 
 
 def _plan_for_cache(plan: AnalysisPlan) -> AnalysisPlan:
@@ -588,6 +595,47 @@ def _critique_plan(question: str, entities: Dict[str, Any], plan: AnalysisPlan) 
     return "Plan does not faithfully match the request."
 
 
+_TIME_GRAINS = {"DAY", "WEEK", "MONTH", "QUARTER", "YEAR"}
+_PLAIN_REQUEST_ENTITY_KEYS = {"metric", "chart_type", "group_by"}
+_COUNT_WORDS = re.compile(r"\b(two|three|four|five|six|seven|eight|nine|ten|several|multiple|separate|both)\b", re.IGNORECASE)
+
+
+def _is_plain_request(question: str, entities: Dict[str, Any]) -> bool:
+    """A request that names metrics, at most one chart type and at most a time
+    grain, and nothing the critique pass exists for: no dates, periods or
+    counts (no digits or count words), no cohorts, filters or scopes, no edit
+    of a previous plan. Its plan is checked deterministically instead."""
+    text = question or ""
+    if text.lstrip().startswith("Previous chart plan") or re.search(r"\d", text) or _COUNT_WORDS.search(text):
+        return False
+    entities = entities or {}
+    present = {key for key, value in entities.items() if _entity_values(value)}
+    if not present <= _PLAIN_REQUEST_ENTITY_KEYS or not _entity_values(entities.get("metric")):
+        return False
+    if len(_entity_values(entities.get("chart_type"))) > 1:
+        return False
+    return _entity_values(entities.get("group_by")) <= _TIME_GRAINS
+
+
+def _plain_plan_mismatch(entities: Dict[str, Any], plan: AnalysisPlan) -> Optional[str]:
+    """What the critique pass would check for a plain request: the requested
+    metrics and chart type, and nothing added that was not asked for."""
+    requested = _entity_values((entities or {}).get("metric"))
+    charts = plan.charts or []
+    planned = {str(m.metric).strip().upper() for chart in charts for m in chart.metrics}
+    issues: List[str] = []
+    if requested - planned:
+        issues.append(f"the plan leaves out the requested metric(s) {', '.join(sorted(requested - planned))}")
+    if planned - requested:
+        issues.append(f"the plan adds metric(s) that were not requested: {', '.join(sorted(planned - requested))}")
+    chart_types = _entity_values((entities or {}).get("chart_type"))
+    if chart_types and any(str(chart.chart_type).strip().upper() not in chart_types for chart in charts):
+        issues.append(f"the plan's chart type is not the requested {', '.join(sorted(chart_types))}")
+    if plan.statistical_tests:
+        issues.append("the plan adds a statistical test that was not requested")
+    return "; ".join(issues) or None
+
+
 class GeneratePlanDebug(TypedDict):
     """Typed structure for debug output of generate_analysis_plan."""
 
@@ -733,7 +781,10 @@ def generate_analysis_plan(
                 result = _coerce_analysis_plan(raw_result)
                 _assert_required_semantics(result)
                 _assert_no_redundant_date_encoding(result)
-                critique_issues = _critique_plan(question, entities, result)
+                # The critique pass is an LLM call that often objects to defaults the user never
+                # asked about; a plain request is checked deterministically instead.
+                plain = _is_plain_request(question, entities)
+                critique_issues = _plain_plan_mismatch(entities, result) if plain else _critique_plan(question, entities, result)
                 if critique_issues:
                     raise ValueError(f"Plan does not faithfully match the request: {critique_issues}")
                 break

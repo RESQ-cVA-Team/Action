@@ -12,7 +12,9 @@ from src.actions.helpers.metric import resolve_next_metric_candidate
 from src.actions.helpers.visualization import (
     canonicalize_ssot_entities,
     extract_entities_from_latest_message,
+    question_with_resolved_metrics,
     format_execution_summary,
+    is_plan_only_request,
     pretty_print_graphql_query,
     resolve_override_language,
     serialize_plan_for_frontend,
@@ -25,10 +27,12 @@ from src.executors import execute_plan_async
 from src.executors.orchestration.plan_executor import VisualizationExecutionError
 from src.planners.langchain.request_orchestrator import (
     _PLANNER_MAX_RETRIES,
+    VisualizationRequestOutcome,
     orchestrate_visualization_request,
 )
 from src.shared import ssot_loader
 from src.util import env as env_util
+from src.util.llm_usage import llm_usage_field, start_llm_usage
 from src.util.logging_utils import log_context
 
 logger = logging.getLogger(__name__)
@@ -415,6 +419,24 @@ def merge_latest_with_thread_entities(
     return merged
 
 
+async def _orchestrate(**kwargs: Any) -> VisualizationRequestOutcome:
+    """The orchestrator blocks on LLM calls for seconds at a time. Run in a worker
+    thread, it leaves the action server free to answer other requests meanwhile."""
+    return await asyncio.to_thread(orchestrate_visualization_request, **kwargs)
+
+
+def _hand_over_plan(ctx: LongActionContext, trace_id: str, plan: lang_schema.AnalysisPlan) -> PreworkResult:
+    """Hands the plan to the work phase, which fetches the data. A plan-only
+    request gets the plan in this reply and ends here: nothing is fetched
+    upstream and no callback follows."""
+    if is_plan_only_request(ctx.metadata):
+        ctx.say(json_message={"type": "visualization_plan", "trace_id": trace_id, "plan": serialize_plan_for_frontend(plan)})
+        ctx.say(json_message={"type": "visualization_plan_only", "trace_id": trace_id})
+        return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=False)
+    ctx.tracker_snapshot[_INTERNAL_PREPARED_PLAN_KEY] = plan
+    return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=True)
+
+
 def _pending_clarification_payload(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """The most recent visualization_query_decision payload the bot sent
     before the user's current turn, if that payload was a clarify -- i.e.
@@ -576,6 +598,7 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
         tracker: TrackerLike,
         domain: DomainDict,
     ) -> RasaEventList:
+        start_llm_usage()
         trace_id = uuid4().hex
         metadata: Dict[str, Any] = {}
         slots: Dict[str, Any] = {}
@@ -617,7 +640,7 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                 # separately to the orchestrator's own history field), not by joining
                 # raw text here — doing so previously confused the planner into
                 # blending unrelated requests together.
-                planner_question = user_message
+                planner_question = question_with_resolved_metrics(latest_msg)
 
                 if carry_forward:
                     latest_plan_summary = _collect_latest_visualization_plan_summary(events)
@@ -626,7 +649,7 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
 
                 pending_clarification = _pending_clarification_payload(events) if carry_forward else None
 
-                outcome = orchestrate_visualization_request(
+                outcome = await _orchestrate(
                     question=planner_question,
                     entities=extracted_entities,
                     language=override_language,
@@ -649,6 +672,7 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                         json_message={
                             "type": "visualization_query_decision",
                             "trace_id": trace_id,
+                            **llm_usage_field(),
                             "decision": outcome.decision,
                             "reason": outcome.reason,
                             "clarification_type": outcome.clarification_type,
@@ -667,6 +691,7 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                     json_message={
                         "type": "visualization_query_decision",
                         "trace_id": trace_id,
+                        **llm_usage_field(),
                         "decision": outcome.decision,
                         "reason": outcome.reason,
                         "clarification_type": outcome.clarification_type,
@@ -794,7 +819,7 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
     # extracted_entities (structured) and conversation_history (passed separately to
     # the orchestrator's own history field), not by joining raw text here — doing so
     # previously confused the planner into blending unrelated requests together.
-    planner_question = ctx.text
+    planner_question = question_with_resolved_metrics(latest_msg)
 
     if latest_plan_summary:
         planner_question = f"{latest_plan_summary}\n\nUser's newest instruction:\n{planner_question}".strip()
@@ -937,6 +962,7 @@ class ActionOneShotGenerateVisualization(LongAction):
         return "action_oneshot_generate_visualization"
 
     async def prework(self, ctx: LongActionContext) -> PreworkResult:
+        start_llm_usage()
         trace_id = _ensure_context_trace_id(ctx)
         with log_context(trace_id=trace_id, action=self.name()):
             logger.info("Starting one-shot prework")
@@ -964,7 +990,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                     retry_language = cast(str, request_ctx.get("language") or "en")
                     pending_clarification = cast(Optional[Dict[str, Any]], request_ctx.get("pending_clarification"))
 
-                    outcome = orchestrate_visualization_request(
+                    outcome = await _orchestrate(
                         question=planner_question,
                         entities=extracted_entities,
                         language=override_language,
@@ -988,6 +1014,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             json_message={
                                 "type": "visualization_query_decision",
                                 "trace_id": trace_id,
+                                **llm_usage_field(),
                                 "decision": outcome.decision,
                                 "reason": outcome.reason,
                                 "clarification_type": outcome.clarification_type,
@@ -1005,6 +1032,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             json_message={
                                 "type": "visualization_query_decision",
                                 "trace_id": trace_id,
+                                **llm_usage_field(),
                                 "decision": outcome.decision,
                                 "reason": outcome.reason,
                                 "clarification_type": outcome.clarification_type,
@@ -1028,6 +1056,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             json_message={
                                 "type": "visualization_query_decision",
                                 "trace_id": trace_id,
+                                **llm_usage_field(),
                                 "decision": "clarify",
                                 "reason": "empty_plan",
                                 "clarification_type": "analysis_plan",
@@ -1041,11 +1070,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             proceed=False,
                         )
 
-                    ctx.tracker_snapshot[_INTERNAL_PREPARED_PLAN_KEY] = prepared_plan
-                    return PreworkResult(
-                        events=[SlotSet("awaiting_visualization_clarification", False)],
-                        proceed=True,
-                    )
+                    return _hand_over_plan(ctx, trace_id, prepared_plan)
 
                 latest_any = ctx.tracker_snapshot.get("latest_message")
                 latest_msg = cast(Dict[str, Any], latest_any) if isinstance(latest_any, dict) else {}
@@ -1094,7 +1119,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                     )
 
                 request_ctx = _extract_request_context(ctx)
-                outcome = orchestrate_visualization_request(
+                outcome = await _orchestrate(
                     question=str(request_ctx.get("planner_question") or request_ctx.get("user_message") or ""),
                     entities=cast(Dict[str, Any], request_ctx.get("extracted_entities") or {}),
                     language=cast(Optional[str], request_ctx.get("override_language")),
@@ -1118,6 +1143,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         json_message={
                             "type": "visualization_query_decision",
                             "trace_id": trace_id,
+                            **llm_usage_field(),
                             "decision": outcome.decision,
                             "reason": outcome.reason,
                             "clarification_type": outcome.clarification_type,
@@ -1135,6 +1161,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         json_message={
                             "type": "visualization_query_decision",
                             "trace_id": trace_id,
+                            **llm_usage_field(),
                             "decision": outcome.decision,
                             "reason": outcome.reason,
                             "clarification_type": outcome.clarification_type,
@@ -1158,6 +1185,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         json_message={
                             "type": "visualization_query_decision",
                             "trace_id": trace_id,
+                            **llm_usage_field(),
                             "decision": "clarify",
                             "reason": "empty_plan",
                             "clarification_type": "analysis_plan",
@@ -1171,12 +1199,11 @@ class ActionOneShotGenerateVisualization(LongAction):
                         proceed=False,
                     )
 
-                ctx.tracker_snapshot[_INTERNAL_PREPARED_PLAN_KEY] = prepared_plan
-
                 ctx.say(
                     json_message={
                         "type": "visualization_query_decision",
                         "trace_id": trace_id,
+                        **llm_usage_field(),
                         "decision": outcome.decision,
                         "reason": outcome.reason,
                         "clarification_type": outcome.clarification_type,
@@ -1184,10 +1211,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         "message": outcome.message,
                     }
                 )
-                return PreworkResult(
-                    events=[SlotSet("awaiting_visualization_clarification", False)],
-                    proceed=True,
-                )
+                return _hand_over_plan(ctx, trace_id, prepared_plan)
             except Exception as e:
                 logger.exception(
                     "Error generating visualization during prework",
@@ -1232,6 +1256,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                 return PreworkResult(events=[], proceed=False)
 
     async def work(self, ctx: LongActionContext) -> Any:
+        start_llm_usage()
         completed_successfully = False
         execution_summary: Optional[Any] = None
         plan_obj: Optional[lang_schema.AnalysisPlan] = None
@@ -1308,7 +1333,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                     pending_clarification = cast(Optional[Dict[str, Any]], request_ctx.get("pending_clarification"))
 
                     progress("Calling orchestrator to build a plan")
-                    outcome = orchestrate_visualization_request(
+                    outcome = await _orchestrate(
                         question=planner_question,
                         entities=extracted_entities,
                         language=override_language,
@@ -1335,6 +1360,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             json_message={
                                 "type": "visualization_query_decision",
                                 "trace_id": trace_id,
+                                **llm_usage_field(),
                                 "decision": outcome.decision,
                                 "reason": outcome.reason,
                                 "clarification_type": outcome.clarification_type,
@@ -1357,6 +1383,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             json_message={
                                 "type": "visualization_query_decision",
                                 "trace_id": trace_id,
+                                **llm_usage_field(),
                                 "decision": "clarify",
                                 "reason": "empty_plan",
                                 "clarification_type": "analysis_plan",
@@ -1372,6 +1399,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         "type": "visualization_plan",
                         "trace_id": trace_id,
                         "plan": serialize_plan_for_frontend(plan_obj),
+                        **llm_usage_field(),
                     }
                 )
 
@@ -1448,6 +1476,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         json_message={
                             "type": "visualization_query_decision",
                             "trace_id": trace_id,
+                            **llm_usage_field(),
                             "decision": "clarify",
                             "reason": "missing_time_bounds",
                             "clarification_type": "date",
@@ -1463,6 +1492,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         json_message={
                             "type": "visualization_query_decision",
                             "trace_id": trace_id,
+                            **llm_usage_field(),
                             "decision": "clarify",
                             "reason": e.reason,
                             "clarification_type": e.clarification_type,

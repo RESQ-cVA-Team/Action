@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import re
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -38,6 +39,7 @@ from src.planners.langchain.pipeline import (
 from src.planners.langchain.prompt_loader import load_prompt_text
 from src.shared import ssot_loader
 from src.util import env as env_util
+from src.util.llm_usage import record_llm_call
 from src.util.logging_utils import bind_current_context, log_context
 
 logger = logging.getLogger(__name__)
@@ -284,13 +286,16 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
 
 
 def _invoke_chain(chain: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
+    started_at = time.monotonic()
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(bind_current_context(chain.invoke), payload)
         try:
             response = future.result(timeout=_ORCHESTRATOR_TIMEOUT_SECONDS)
         except FuturesTimeoutError as exc:
             future.cancel()
+            record_llm_call("decision", started_at)
             raise TimeoutError(f"Orchestrator timed out after {_ORCHESTRATOR_TIMEOUT_SECONDS:.1f}s") from exc
+    record_llm_call("decision", started_at, response)
 
     return _extract_json_object(_extract_text(response))
 
@@ -320,7 +325,7 @@ def _generate_plan_with_timeout(
         return cast(AnalysisPlan, result)
 
     with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_call_plan_gen)
+        future = executor.submit(bind_current_context(_call_plan_gen))
         try:
             return future.result(timeout=_PLAN_GENERATION_TIMEOUT_SECONDS)
         except FuturesTimeoutError as exc:
