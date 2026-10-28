@@ -207,35 +207,58 @@ def test_regex_only_nested_metric_span_is_dropped_when_diet_metric_contains_it()
     assert entities["metric"] == "THROMBOLYSIS_DRUG_DOSE"
 
 
-def test_regex_only_wider_metric_span_is_dropped_when_it_contains_diet_metric() -> None:
-    text = "Show me a line graph of ivt dose"
+def _nested_metric_message(text: str, outer: str, outer_value: str, inner: str, inner_value: str):
+    outer_start = text.index(outer)
+    inner_start = text.index(inner, outer_start)
+    return _message(
+        [
+            {
+                "entity": "chart_type",
+                "value": "LINE",
+                "start": 10,
+                "end": 14,
+                "extractors": [{"extractor": "DIETClassifier"}, {"extractor": "RegexEntityExtractor"}],
+            },
+            {
+                "entity": "metric",
+                "value": inner_value,
+                "start": inner_start,
+                "end": inner_start + len(inner),
+                "extractors": [{"extractor": "DIETClassifier"}],
+            },
+            {
+                "entity": "metric",
+                "value": outer_value,
+                "start": outer_start,
+                "end": outer_start + len(outer),
+                "extractors": [{"extractor": "RegexEntityExtractor"}],
+            },
+        ],
+        text=text,
+    )
+
+
+def test_wider_regex_metric_span_wins_when_it_is_an_exact_ssot_synonym() -> None:
     entities = extract_entities_from_latest_message(
-        _message(
-            [
-                {
-                    "entity": "chart_type",
-                    "value": "LINE",
-                    "start": 10,
-                    "end": 14,
-                    "extractors": [{"extractor": "DIETClassifier"}, {"extractor": "RegexEntityExtractor"}],
-                },
-                {
-                    "entity": "metric",
-                    "value": "THROMBOLYSIS",
-                    "start": 24,
-                    "end": 27,
-                    "extractors": [{"extractor": "DIETClassifier"}],
-                },
-                {
-                    "entity": "metric",
-                    "value": "THROMBOLYSIS_DRUG_DOSE",
-                    "start": 24,
-                    "end": 32,
-                    "extractors": [{"extractor": "RegexEntityExtractor"}],
-                },
-            ],
-            text=text,
+        _nested_metric_message("Show me a line graph of ivt dose", "ivt dose", "THROMBOLYSIS_DRUG_DOSE", "ivt", "THROMBOLYSIS")
+    )
+
+    assert entities["metric"] == "THROMBOLYSIS_DRUG_DOSE"
+
+
+def test_angels_awards_synonym_wins_over_the_base_metric_diet_finds_inside_it() -> None:
+    entities = extract_entities_from_latest_message(
+        _nested_metric_message(
+            "Show me a line graph of aa recanalization", "aa recanalization", "AA_RECANALIZATION", "recanalization", "RECANALIZATION"
         )
+    )
+
+    assert entities["metric"] == "AA_RECANALIZATION"
+
+
+def test_wider_regex_metric_span_is_dropped_when_it_is_not_an_exact_ssot_synonym() -> None:
+    entities = extract_entities_from_latest_message(
+        _nested_metric_message("Show me a line graph of ivt dosage", "ivt dosage", "THROMBOLYSIS_DRUG_DOSE", "ivt", "THROMBOLYSIS")
     )
 
     assert entities["metric"] == "THROMBOLYSIS"
@@ -419,3 +442,11 @@ def test_a_bound_phrase_about_another_number_is_ignored() -> None:
     assert "age_upper" not in entities
     assert entities["nihss_upper"] == "10"
     assert "nihss_lower" not in entities
+
+
+def test_only_an_explicit_plan_only_flag_skips_fetching_data() -> None:
+    from src.actions.helpers.visualization import is_plan_only_request
+
+    assert is_plan_only_request({"plan_only": True}) is True
+    assert is_plan_only_request({"plan_only": "true"}) is False
+    assert is_plan_only_request({}) is False

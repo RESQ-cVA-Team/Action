@@ -595,6 +595,47 @@ def _critique_plan(question: str, entities: Dict[str, Any], plan: AnalysisPlan) 
     return "Plan does not faithfully match the request."
 
 
+_TIME_GRAINS = {"DAY", "WEEK", "MONTH", "QUARTER", "YEAR"}
+_PLAIN_REQUEST_ENTITY_KEYS = {"metric", "chart_type", "group_by"}
+_COUNT_WORDS = re.compile(r"\b(two|three|four|five|six|seven|eight|nine|ten|several|multiple|separate|both)\b", re.IGNORECASE)
+
+
+def _is_plain_request(question: str, entities: Dict[str, Any]) -> bool:
+    """A request that names metrics, at most one chart type and at most a time
+    grain, and nothing the critique pass exists for: no dates, periods or
+    counts (no digits or count words), no cohorts, filters or scopes, no edit
+    of a previous plan. Its plan is checked deterministically instead."""
+    text = question or ""
+    if text.lstrip().startswith("Previous chart plan") or re.search(r"\d", text) or _COUNT_WORDS.search(text):
+        return False
+    entities = entities or {}
+    present = {key for key, value in entities.items() if _entity_values(value)}
+    if not present <= _PLAIN_REQUEST_ENTITY_KEYS or not _entity_values(entities.get("metric")):
+        return False
+    if len(_entity_values(entities.get("chart_type"))) > 1:
+        return False
+    return _entity_values(entities.get("group_by")) <= _TIME_GRAINS
+
+
+def _plain_plan_mismatch(entities: Dict[str, Any], plan: AnalysisPlan) -> Optional[str]:
+    """What the critique pass would check for a plain request: the requested
+    metrics and chart type, and nothing added that was not asked for."""
+    requested = _entity_values((entities or {}).get("metric"))
+    charts = plan.charts or []
+    planned = {str(m.metric).strip().upper() for chart in charts for m in chart.metrics}
+    issues: List[str] = []
+    if requested - planned:
+        issues.append(f"the plan leaves out the requested metric(s) {', '.join(sorted(requested - planned))}")
+    if planned - requested:
+        issues.append(f"the plan adds metric(s) that were not requested: {', '.join(sorted(planned - requested))}")
+    chart_types = _entity_values((entities or {}).get("chart_type"))
+    if chart_types and any(str(chart.chart_type).strip().upper() not in chart_types for chart in charts):
+        issues.append(f"the plan's chart type is not the requested {', '.join(sorted(chart_types))}")
+    if plan.statistical_tests:
+        issues.append("the plan adds a statistical test that was not requested")
+    return "; ".join(issues) or None
+
+
 class GeneratePlanDebug(TypedDict):
     """Typed structure for debug output of generate_analysis_plan."""
 
@@ -740,7 +781,10 @@ def generate_analysis_plan(
                 result = _coerce_analysis_plan(raw_result)
                 _assert_required_semantics(result)
                 _assert_no_redundant_date_encoding(result)
-                critique_issues = _critique_plan(question, entities, result)
+                # The critique pass is an LLM call that often objects to defaults the user never
+                # asked about; a plain request is checked deterministically instead.
+                plain = _is_plain_request(question, entities)
+                critique_issues = _plain_plan_mismatch(entities, result) if plain else _critique_plan(question, entities, result)
                 if critique_issues:
                     raise ValueError(f"Plan does not faithfully match the request: {critique_issues}")
                 break
