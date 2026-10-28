@@ -5,7 +5,7 @@ from unittest.mock import patch
 from src.domain.dto.charts.types import ChartPoint, ChartSeries
 from src.domain.langchain.schema import AnalysisSemanticsSpec, ChartSpec, MeasureSemanticsSpec, MetricSpec
 from src.executors.mapping.chart_builder import build_chart_dto
-from src.executors.mapping.series_mapper import map_metrics_payload_to_series
+from src.executors.mapping.series_mapper import map_metrics_payload_to_series, merge_series_by_name
 from src.executors.orchestration.plan_executor import _chart_value_mode
 from src.planners.langchain.request_orchestrator import _decision_stage, _infer_stroke_type_share_metric
 
@@ -106,7 +106,8 @@ class PercentSeriesMappingTests(unittest.TestCase):
             )
         }
 
-        series = _map(payload, "percent", add_time_period_labels=True)
+        # The executor merges the per-quarter series by name, as it does for every request.
+        series = merge_series_by_name(_map(payload, "percent", add_time_period_labels=True))
 
         self.assertEqual([(point.x, point.y) for point in series[0].data], [("2026-Q1", 80.0), ("2026-Q2", None)])
 
