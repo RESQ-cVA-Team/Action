@@ -419,6 +419,28 @@ def merge_latest_with_thread_entities(
     return merged
 
 
+def _proceed_decided_for_latest_message(events: List[Dict[str, Any]]) -> Optional[str]:
+    """The reason of a proceed decision already sent for the user's current
+    message, by action_clarify_visualization_request before it handed over to
+    the one-shot action; None when there is none. The one-shot action then
+    plans without asking the decision stage the same question again."""
+    last_user_idx = -1
+    for idx in range(len(events) - 1, -1, -1):
+        if events[idx].get("event") == "user":
+            last_user_idx = idx
+            break
+    if last_user_idx < 0:
+        return None
+
+    for ev in reversed(events[last_user_idx + 1 :]):
+        if ev.get("event") != "bot":
+            continue
+        payload = _extract_bot_custom_payload(ev)
+        if payload and payload.get("type") == "visualization_query_decision":
+            return str(payload.get("reason") or "sufficient_information") if payload.get("decision") == "proceed" else None
+    return None
+
+
 async def _orchestrate(**kwargs: Any) -> VisualizationRequestOutcome:
     """The orchestrator blocks on LLM calls for seconds at a time. Run in a worker
     thread, it leaves the action server free to answer other requests meanwhile."""
@@ -837,6 +859,7 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
         "conversation_history": conversation_history,
         "latest_plan_summary": latest_plan_summary,
         "pending_clarification": pending_clarification,
+        "decided_proceed": _proceed_decided_for_latest_message(events),
     }
 
 
@@ -1129,6 +1152,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                     conversation_history=cast(List[str], request_ctx.get("conversation_history") or []),
                     progress_cb=None,
                     pending_clarification=cast(Optional[Dict[str, Any]], request_ctx.get("pending_clarification")),
+                    decided_proceed=cast(Optional[str], request_ctx.get("decided_proceed")),
                 )
                 decision_name = str(outcome.decision or "").strip().lower()
                 language = cast(str, request_ctx.get("language") or "en")
@@ -1343,6 +1367,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         conversation_history=conversation_history,
                         progress_cb=progress,
                         pending_clarification=pending_clarification,
+                        decided_proceed=cast(Optional[str], request_ctx.get("decided_proceed")),
                     )
 
                     decision_name = str(outcome.decision or "").strip().lower()
