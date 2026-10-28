@@ -1,10 +1,7 @@
 import unittest
 
 from src.domain.langchain.schema import AnalysisPlan
-from src.planners.langchain.request_orchestrator import (
-    _apply_aa_quarterly_defaults,
-    _drop_unrequested_explicit_periods,
-)
+from src.planners.langchain.request_orchestrator import _drop_unrequested_explicit_periods
 
 _QUARTERS_2023 = [
     {"start_date": "2023-01-01", "end_date": "2023-03-31"},
@@ -29,44 +26,6 @@ def _plan(periods):
 
 
 class DropUnrequestedExplicitPeriodsTests(unittest.TestCase):
-    def test_aa_metrics_default_to_quarterly_rate_when_semantics_are_missing(self) -> None:
-        plan = AnalysisPlan.model_validate({"charts": [{"chart_type": "LINE", "metrics": [{"metric": "AA_DTN_LE60"}]}]})
-
-        normalized = _apply_aa_quarterly_defaults(plan)
-
-        semantics = normalized.charts[0].semantics
-        self.assertEqual(semantics.intent, "TREND")
-        self.assertEqual(semantics.measure.type, "RATE")
-        self.assertEqual(semantics.time.grain, "QUARTER")
-
-    def test_aa_metrics_default_missing_grain_but_preserve_explicit_time(self) -> None:
-        plan = _plan(None)
-        plan.charts[0].semantics.time.grain = None
-        normalized = _apply_aa_quarterly_defaults(plan)
-        self.assertEqual(normalized.charts[0].semantics.time.grain, "QUARTER")
-
-        plan.charts[0].semantics.time.grain = "MONTH"
-        self.assertIs(_apply_aa_quarterly_defaults(plan), plan)
-
-    def test_aa_metrics_preserve_explicit_periods_without_grain(self) -> None:
-        plan = _plan(_QUARTERS_2023)
-        plan.charts[0].semantics.time.grain = None
-
-        normalized = _apply_aa_quarterly_defaults(plan)
-
-        self.assertIsNone(normalized.charts[0].semantics.time.grain)
-        self.assertEqual(len(normalized.charts[0].semantics.time.periods), 4)
-
-    def test_non_aa_chart_without_time_is_unchanged(self) -> None:
-        plan = AnalysisPlan.model_validate({"charts": [{"chart_type": "LINE", "metrics": [{"metric": "DTN"}]}]})
-        self.assertIs(_apply_aa_quarterly_defaults(plan), plan)
-
-    def test_aa_pie_chart_does_not_get_implicit_quarterly_grouping(self) -> None:
-        plan = AnalysisPlan.model_validate({"charts": [{"chart_type": "PIE", "metrics": [{"metric": "AA_DTN_LE60"}]}]})
-
-        self.assertIs(_apply_aa_quarterly_defaults(plan), plan)
-        self.assertIsNone(plan.charts[0].semantics)
-
     def test_periods_the_question_never_named_are_dropped(self) -> None:
         # Live: "percentage of AA_DTN_LE60 per quarter" came back as the four quarters of 2023.
         plan = _drop_unrequested_explicit_periods(_plan(_QUARTERS_2023), "Show me the percentage of AA_DTN_LE60 per quarter", {"metric": "AA_DTN_LE60"})

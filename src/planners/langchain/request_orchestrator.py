@@ -16,20 +16,16 @@ from langchain_core.prompts import ChatPromptTemplate
 from src.domain.langchain.schema import (
     TIME_INTERVALS,
     AnalysisPlan,
-    AnalysisSemanticsSpec,
     AndFilter,
     ChartSpec,
     ChartType,
     DataOriginSpec,
     DateFilter,
-    MeasureSemanticsSpec,
     MetricSpec,
     OriginScopeSpec,
     SplitSpec,
     StatisticalTestSpec,
-    TimeSemanticsSpec,
 )
-from src.executors.planning.ssot_metric_defaults import is_angels_awards_metric
 from src.planners.langchain.llm_factory import create_chat_llm
 from src.planners.langchain.pipeline import (
     _PLANNER_REQUEST_TIMEOUT_SECONDS,
@@ -1107,43 +1103,6 @@ def _drop_unrequested_explicit_periods(plan: AnalysisPlan, question: str, entiti
     return plan.model_copy(update={"charts": charts})
 
 
-def _apply_aa_quarterly_defaults(plan: AnalysisPlan) -> AnalysisPlan:
-    """Default AA charts to quarterly grain unless time grain or periods are explicit."""
-    plan_changed = False
-    charts: List[ChartSpec] = []
-    for chart in plan.charts or []:
-        if (chart.chart_type or "").upper() == "PIE":
-            charts.append(chart)
-            continue
-        if not any(is_angels_awards_metric(metric.metric) for metric in chart.metrics):
-            charts.append(chart)
-            continue
-
-        semantics = chart.semantics
-        if semantics is None:
-            semantics = AnalysisSemanticsSpec(
-                intent="TREND",
-                measure=MeasureSemanticsSpec(type="RATE"),
-                time=TimeSemanticsSpec(grain="QUARTER"),
-            )
-            charts.append(chart.model_copy(update={"semantics": semantics}))
-            plan_changed = True
-            continue
-
-        time = semantics.time
-        if time is not None and (time.grain is not None or time.periods):
-            charts.append(chart)
-            continue
-
-        time = (time or TimeSemanticsSpec()).model_copy(update={"grain": "QUARTER"})
-        charts.append(chart.model_copy(update={"semantics": semantics.model_copy(update={"time": time})}))
-        plan_changed = True
-
-    if not plan_changed:
-        return plan
-    return plan.model_copy(update={"charts": charts})
-
-
 def _normalize_plan_semantic_splits(plan: AnalysisPlan) -> AnalysisPlan:
     """Normalize planner split semantics into compiler-supported forms.
 
@@ -2190,7 +2149,6 @@ def orchestrate_visualization_request(
             plan = _split_mixed_unit_charts(plan)
             plan = _drop_hospital_scopes_from_metric_words(plan, normalized_entities)
             plan = _drop_unrequested_explicit_periods(plan, question, normalized_entities)
-            plan = _apply_aa_quarterly_defaults(plan)
             logger.info("Plan generation completed successfully", extra={"plan_type": type(plan).__name__})
 
             logger.info("Starting validation of statistical plan readiness")
@@ -2244,7 +2202,6 @@ def orchestrate_visualization_request(
                     plan = _split_mixed_unit_charts(plan)
                     plan = _drop_hospital_scopes_from_metric_words(plan, entities)
                     plan = _drop_unrequested_explicit_periods(plan, question, entities)
-                    plan = _apply_aa_quarterly_defaults(plan)
                     return VisualizationRequestOutcome(
                         decision="proceed",
                         reason="orchestrator_fallback_to_plan",
