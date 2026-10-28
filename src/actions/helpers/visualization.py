@@ -245,14 +245,10 @@ def question_with_resolved_metrics(latest_message: Dict[str, Any]) -> str:
         if start < position:
             continue
         parts.append(text[position:start])
-        parts.append(_resolved_metric_text(text[start:end], code))
+        parts.append(code)
         position = end
     parts.append(text[position:])
     return "".join(parts)
-
-
-def _resolved_metric_text(words: str, code: str) -> str:
-    return code
 
 
 def _kept_entities(latest_message: Dict[str, Any]) -> List[Dict[str, Any]]:

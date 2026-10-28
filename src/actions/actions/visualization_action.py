@@ -627,9 +627,6 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
         fallback_limit = 12
         latest_msg = tracker.latest_message
 
-        user_message_any = latest_msg.get("text")
-        user_message = user_message_any if isinstance(user_message_any, str) else ""
-
         metadata_any = latest_msg.get("metadata")
         metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
         trace_id = _trace_id_from_metadata(metadata) or trace_id
@@ -1006,7 +1003,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                 is_retry = bool(metadata.get("is_retry"))
                 if is_retry:
                     request_ctx = _extract_request_context(ctx)
-                    planner_question = str(request_ctx.get("planner_question") or request_ctx.get("user_message") or "")
+                    planner_question = cast(str, request_ctx["planner_question"])
                     extracted_entities = cast(Dict[str, Any], request_ctx.get("extracted_entities") or {})
                     override_language = cast(Optional[str], request_ctx.get("override_language"))
                     conversation_history = cast(List[str], request_ctx.get("conversation_history") or [])
@@ -1143,7 +1140,7 @@ class ActionOneShotGenerateVisualization(LongAction):
 
                 request_ctx = _extract_request_context(ctx)
                 outcome = await _orchestrate(
-                    question=str(request_ctx.get("planner_question") or request_ctx.get("user_message") or ""),
+                    question=cast(str, request_ctx["planner_question"]),
                     entities=cast(Dict[str, Any], request_ctx.get("extracted_entities") or {}),
                     language=cast(Optional[str], request_ctx.get("override_language")),
                     trace_id=trace_id,
@@ -1350,7 +1347,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             outcome="degraded",
                         ),
                     )
-                    planner_question = cast(str, request_ctx.get("planner_question") or user_message)
+                    planner_question = cast(str, request_ctx["planner_question"])
                     extracted_entities = cast(Dict[str, Any], request_ctx["extracted_entities"])
                     override_language = cast(Optional[str], request_ctx["override_language"])
                     conversation_history = cast(List[str], request_ctx.get("conversation_history") or [])
@@ -1456,8 +1453,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             ctx.say(text=f"Note: {warning.strip()}")
 
                 completed_successfully = True
-                planner_question_str = str(request_ctx.get("planner_question") or request_ctx.get("user_message") or "")
-                is_update_flow: bool = planner_question_str.startswith("Previous chart plan")
+                is_update_flow = bool(request_ctx["latest_plan_summary"])
                 confirmation = _build_confirmation_message(plan_obj, is_update=is_update_flow)
                 ctx.say(text=confirmation)
             except asyncio.TimeoutError:
