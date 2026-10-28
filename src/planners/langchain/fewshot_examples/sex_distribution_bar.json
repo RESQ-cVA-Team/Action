@@ -16,7 +16,7 @@
         "semantics": {
           "intent": "DISTRIBUTION",
           "measure": {
-            "type": "DISTRIBUTION",
+            "type": "RATE",
             "percentile": null
           },
           "splits": null,
@@ -34,7 +34,7 @@
             "metric": null,
             "label": null,
             "unit": null,
-            "aggregation": null,
+            "aggregation": "RATE",
             "grain": null
           }
         },

@@ -626,6 +626,12 @@ def get_metric_display_name(metric_code: str) -> str:
     return code
 
 
+def get_metric_data_type(metric_code: str) -> Optional[str]:
+    """SSOT data_type of a metric (Numeric or Enum), None for an unknown code."""
+    data_type = (_metric_meta_cached().get((metric_code or "").upper()) or {}).get("data_type")
+    return str(data_type) if isinstance(data_type, str) and data_type.strip() else None
+
+
 def get_operator_symbol(operator_code: str) -> str:
     """Return SSOT-preferred display symbol for a comparison operator (first synonym), fallback to canonical code."""
     code = (operator_code or "").strip().upper()
