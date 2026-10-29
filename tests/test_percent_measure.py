@@ -130,8 +130,7 @@ class PercentAxisAndModeTests(unittest.TestCase):
         self.assertEqual(_chart_value_mode(self._chart("RATE")), "percent")
         self.assertEqual(_chart_value_mode(self._chart("DISTRIBUTION")), "count")
         self.assertEqual(_chart_value_mode(ChartSpec(chart_type="BAR", metrics=[MetricSpec(metric="DTN")])), "count")
-        self.assertEqual(_chart_value_mode(ChartSpec(chart_type="BAR", metrics=[MetricSpec(metric="AA_DTN_LE60")])), "percent")
-        self.assertEqual(_chart_value_mode(self._chart_for_aa("DISTRIBUTION")), "percent")
+        self.assertEqual(_chart_value_mode(self._chart_for_aa("RATE")), "percent")
         self.assertEqual(_chart_value_mode(self._chart_for_aa("COUNT")), "count")
 
     def _chart_for_aa(self, measure: str) -> ChartSpec:
@@ -141,16 +140,19 @@ class PercentAxisAndModeTests(unittest.TestCase):
             semantics=AnalysisSemanticsSpec(intent="DISTRIBUTION", measure=MeasureSemanticsSpec(type=measure)),
         )
 
-    def test_aa_percent_axis_is_default_but_count_measure_is_not_percent(self) -> None:
-        aa_chart = ChartSpec(chart_type="BAR", metrics=[MetricSpec(metric="AA_DTN_LE60")])
-        count_chart = self._chart_for_aa("COUNT")
+    def test_aa_axis_follows_the_measure(self) -> None:
         series = [ChartSeries(name="AA", data=[ChartPoint(x="yes", y=80.0)])]
 
-        aa = build_chart_dto(plan_chart=aa_chart, dimensions=[], series=series, derived_axes=None)
-        count = build_chart_dto(plan_chart=count_chart, dimensions=[], series=series, derived_axes=None)
+        rate = build_chart_dto(plan_chart=self._chart_for_aa("RATE"), dimensions=[], series=series, derived_axes=None)
+        count = build_chart_dto(plan_chart=self._chart_for_aa("COUNT"), dimensions=[], series=series, derived_axes=None)
 
-        self.assertEqual(aa.metadata.y_axis.label, "Share of cases (%)")
+        self.assertEqual(rate.metadata.y_axis.label, "Share of cases (%)")
         self.assertEqual(count.metadata.y_axis.label, "Cases")
+
+    def test_enum_counts_are_labelled_as_cases(self) -> None:
+        series = [ChartSeries(name="arrival mode", data=[ChartPoint(x="ems", y=30.0)])]
+        counts = build_chart_dto(plan_chart=self._chart("DISTRIBUTION"), dimensions=[], series=series, derived_axes=None)
+        self.assertEqual(counts.metadata.y_axis.label, "Cases")
 
     def test_percent_chart_labels_its_y_axis_as_a_share(self) -> None:
         series = [ChartSeries(name="arrival mode", data=[ChartPoint(x="ems", y=30.0), ChartPoint(x="private", y=70.0)])]
