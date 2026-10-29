@@ -1,4 +1,3 @@
-import hashlib
 import json
 import logging
 import re
@@ -26,7 +25,7 @@ from typing import (
 from langchain_core.prompts import ChatPromptTemplate
 
 from src.domain.langchain.schema import AnalysisPlan
-from src.planners.langchain.examples import get_few_shot_examples
+from src.planners.langchain.examples import FewShotExample, get_few_shot_examples
 from src.planners.langchain.llm_factory import create_chat_llm, get_llm_provider
 from src.planners.langchain.metric_data_types import metric_data_types_json
 from src.planners.langchain.prompt_loader import load_prompt_text
@@ -373,61 +372,6 @@ def _normalize_entities(raw_entities: Dict[str, Any]) -> Dict[str, set[str]]:
     return normalized
 
 
-def _extract_example_entities(example: Dict[str, str]) -> Dict[str, Any]:
-    user_block = example.get("user", "")
-    marker = "ENTITIES_DETECTED(JSON):"
-    idx = user_block.find(marker)
-    if idx == -1:
-        return {}
-
-    payload = user_block[idx + len(marker) :].strip()
-    if not payload:
-        return {}
-
-    example_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
-
-    try:
-        parsed = json.loads(payload)
-        if isinstance(parsed, dict):
-            return cast(Dict[str, Any], parsed)
-    except json.JSONDecodeError:
-        logger.debug(
-            "[Planner] Few-shot example entity JSON parse failed; trying fallback parser",
-            extra={
-                "log_context": {
-                    "event": "planner.example_entities.parse_fallback",
-                    "operation": "extract_example_entities",
-                    "outcome": "degraded",
-                    "error_kind": "json_decode_error",
-                    "example_hash": example_hash,
-                }
-            },
-            exc_info=True,
-        )
-
-    try:
-        parsed_fallback = json.loads(_extract_json_block(payload))
-        if isinstance(parsed_fallback, dict):
-            return cast(Dict[str, Any], parsed_fallback)
-    except (json.JSONDecodeError, ValueError):
-        logger.debug(
-            "[Planner] Few-shot example entity fallback parse failed; skipping entity extraction",
-            extra={
-                "log_context": {
-                    "event": "planner.example_entities.parse_skipped",
-                    "operation": "extract_example_entities",
-                    "outcome": "degraded",
-                    "error_kind": "fallback_parse_failed",
-                    "example_hash": example_hash,
-                }
-            },
-            exc_info=True,
-        )
-        return {}
-
-    return {}
-
-
 def _intent_features(text: str) -> set[str]:
     lowered = (text or "").lower()
     features: set[str] = set()
@@ -447,16 +391,16 @@ class MatchScoreBreakdown(TypedDict):
     total: float
 
 
-def _match_score(question: str, entities: Dict[str, Any], example: Dict[str, str]) -> MatchScoreBreakdown:
+def _match_score(question: str, entities: Dict[str, Any], example: FewShotExample) -> MatchScoreBreakdown:
     query_text = f"{question}\n{json.dumps(entities, ensure_ascii=False, sort_keys=True)}"
     query_tokens = _tokenize(query_text)
-    ex_text = example.get("user", "")
+    ex_text = example["user"]
     ex_tokens = _tokenize(ex_text)
 
     token_overlap_score = float(len(query_tokens & ex_tokens)) * _FEWSHOT_TOKEN_WEIGHT
 
     query_entities = _normalize_entities(entities)
-    example_entities = _normalize_entities(_extract_example_entities(example))
+    example_entities = _normalize_entities(example["entities"])
     query_keys = set(query_entities.keys())
     example_keys = set(example_entities.keys())
     key_overlap = query_keys & example_keys
@@ -479,7 +423,7 @@ def _match_score(question: str, entities: Dict[str, Any], example: Dict[str, str
     }
 
 
-def _select_few_shot_examples(question: str, entities: Dict[str, Any], max_items: int) -> List[Dict[str, str]]:
+def _select_few_shot_examples(question: str, entities: Dict[str, Any], max_items: int) -> List[FewShotExample]:
     if not few_shot_examples:
         return []
 
@@ -512,7 +456,7 @@ def score_few_shot_examples(question: str, entities: Dict[str, Any]) -> List[Dic
     return scored
 
 
-def _build_few_shots_text(examples: List[Dict[str, str]]) -> str:
+def _build_few_shots_text(examples: List[FewShotExample]) -> str:
     parts: List[str] = []
     for idx, ex in enumerate(examples, start=1):
         parts.append(
