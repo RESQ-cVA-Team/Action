@@ -835,7 +835,7 @@ class MetricSpec(BaseModel):
     include_category_detail: bool = Field(
         default=False,
         alias="includeCategoryDetail",
-        description="For AA metrics, set true only when the user explicitly asks to include or compare both Yes and No categories.",
+        description="For a yes/no metric, set true only when the user explicitly asks to include or compare both Yes and No categories.",
     )
 
     model_config = ConfigDict(populate_by_name=True)

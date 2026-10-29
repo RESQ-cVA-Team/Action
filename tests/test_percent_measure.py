@@ -7,6 +7,7 @@ from src.domain.langchain.schema import AnalysisSemanticsSpec, ChartSpec, Measur
 from src.executors.mapping.chart_builder import build_chart_dto
 from src.executors.mapping.series_mapper import map_metrics_payload_to_series, merge_series_by_name
 from src.executors.orchestration.plan_executor import _chart_value_mode
+from src.executors.planning.ssot_metric_defaults import get_enum_labels
 from src.planners.langchain.request_orchestrator import _decision_stage, _infer_stroke_type_share_metric
 
 
@@ -44,6 +45,24 @@ class PercentSeriesMappingTests(unittest.TestCase):
         payload = {"metric_DTN": SimpleNamespace(kpi_group=[kpi], labels=None)}
         self.assertEqual(_map(payload, "count", add_time_period_labels=True)[0].data[0].y, 42.0)
         self.assertEqual(_map(payload, "mean", add_time_period_labels=True)[0].data[0].y, 51.5)
+
+    def test_grouped_multi_category_row_plots_every_category(self) -> None:
+        labels = get_enum_labels("STROKE_TYPE")
+        kpi = _kpi(case_count=list(range(1, len(labels) + 1)), cohort_size=100)
+        kpi.time_period = SimpleNamespace(start_date="2026-01-01", end_date="2026-03-31")
+        payload = {"metric_STROKE_TYPE": SimpleNamespace(kpi_group=[kpi], labels=labels)}
+        series = _map(payload, "count", add_time_period_labels=True)
+        self.assertEqual(len(series), len(labels))
+        self.assertTrue(all(s.name.endswith(label) for s, label in zip(series, labels)))
+        self.assertEqual([s.data[0].y for s in series], [float(n) for n in range(1, len(labels) + 1)])
+
+    def test_grouped_yes_no_row_plots_yes_by_label_not_order(self) -> None:
+        kpi = _kpi(case_count=[30, 70], percents=[30.0, 70.0], cohort_size=100)
+        kpi.time_period = SimpleNamespace(start_date="2026-01-01", end_date="2026-03-31")
+        payload = {"metric_ANTICOAGULANT_REVERSAL_GIVEN": SimpleNamespace(kpi_group=[kpi], labels=["no", "yes"])}
+        series = _map(payload, "percent", add_time_period_labels=True)
+        self.assertEqual(len(series), 1)
+        self.assertEqual(series[0].data[0].y, 70.0)
 
     def test_grouped_row_uses_first_backend_percent(self) -> None:
         # One quarter of an Angels Awards metric: the first percent is the "yes" share.
