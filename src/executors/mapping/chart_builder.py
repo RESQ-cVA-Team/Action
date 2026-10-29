@@ -431,17 +431,7 @@ def _metric_value_axis_label(plan_chart: S.ChartSpec) -> str:
 def _is_percent_measure(plan_chart: S.ChartSpec) -> bool:
     semantics = getattr(plan_chart, "semantics", None)
     measure = getattr(semantics, "measure", None) if semantics is not None else None
-    measure_type = str(getattr(measure, "type", "") or "").upper()
-    is_aa_chart = any(is_angels_awards_metric(code) for code in _metric_codes(plan_chart))
-    if is_aa_chart:
-        return measure_type != "COUNT"
-    return measure_type == "RATE"
-
-
-def _is_aa_count_measure(plan_chart: S.ChartSpec) -> bool:
-    semantics = getattr(plan_chart, "semantics", None)
-    measure = getattr(semantics, "measure", None) if semantics is not None else None
-    return str(getattr(measure, "type", "") or "").upper() == "COUNT" and any(is_angels_awards_metric(code) for code in _metric_codes(plan_chart))
+    return str(getattr(measure, "type", "") or "").upper() == "RATE"
 
 
 def _cases_axis_label(plan_chart: S.ChartSpec) -> str:
@@ -499,7 +489,7 @@ def _derive_axes_from_dimensions(
         y_axis_label = _cases_axis_label(plan_chart)
     elif _is_percent_measure(plan_chart):
         y_axis_label = "Share of cases (%)"
-    elif _is_aa_count_measure(plan_chart):
+    elif any(is_enum_metric(code) for code in _metric_codes(plan_chart)):
         y_axis_label = "Cases"
     else:
         y_axis_label = _metric_value_axis_label(plan_chart)

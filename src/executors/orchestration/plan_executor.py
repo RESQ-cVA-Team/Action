@@ -43,7 +43,6 @@ from src.executors.planning.request_plan import (
     RequestSpec,
     build_primary_request_specs,
 )
-from src.executors.planning.ssot_metric_defaults import is_angels_awards_metric
 from src.executors.transport.request_runner import run_graphql_request
 from src.shared.ssot_loader import (
     get_statistics_metric_enum_map,
@@ -1128,12 +1127,7 @@ def _request_scope_label(spec: RequestSpec) -> str:
 def _chart_value_mode(chart: Any) -> str:
     semantics = getattr(chart, "semantics", None)
     measure = getattr(semantics, "measure", None) if semantics is not None else None
-    metrics = getattr(chart, "metrics", None) or []
-    is_aa_chart = any(is_angels_awards_metric(getattr(metric, "metric", "")) for metric in metrics)
-    measure_type = str(getattr(measure, "type", "") or "").upper()
-    if is_aa_chart:
-        return "count" if measure_type == "COUNT" else "percent"
-    return "percent" if measure_type == "RATE" else "count"
+    return "percent" if str(getattr(measure, "type", "") or "").upper() == "RATE" else "count"
 
 
 async def _execute_request_spec(
