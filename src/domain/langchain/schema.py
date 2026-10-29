@@ -21,6 +21,7 @@ from src.domain.graphql.ssot_enums import (
 from src.domain.graphql.ssot_enums import (
     Operator as OperatorType,
 )
+from src.shared.ssot_loader import resolve_metric
 
 
 def _deep_freeze(value: Any) -> Any:
@@ -67,6 +68,18 @@ def _enum_allowed_values(enum_cls: Any) -> Set[str]:
     for member in members:
         allowed_values.add(str(getattr(member, "value", member)))
     return allowed_values
+
+
+def _metric_code(value: str) -> str:
+    """The MetricType code for a metric given as its code or as an SSOT synonym."""
+    allowed_values = _enum_allowed_values(MetricType)
+    code = value.strip().upper()
+    if code in allowed_values:
+        return code
+    resolved = resolve_metric(value)
+    if resolved in allowed_values:
+        return cast(str, resolved)
+    raise ValueError(f"{value} is not a valid MetricType. Allowed: {sorted(allowed_values)}")
 
 
 def _extract_canonical(entry: Any) -> Optional[str]:
@@ -702,13 +715,7 @@ class AxisSemanticsSpec(BaseModel):
 
     @field_validator("metric")
     def validate_metric(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return v
-        v_norm = (v or "").strip().upper()
-        allowed_values = _enum_allowed_values(MetricType)
-        if v_norm not in allowed_values:
-            raise ValueError(f"{v} is not a valid MetricType. Allowed: {sorted(allowed_values)}")
-        return v_norm
+        return None if v is None else _metric_code(v)
 
 
 class AnalysisSemanticsSpec(BaseModel):
@@ -835,11 +842,7 @@ class MetricSpec(BaseModel):
 
     @field_validator("metric")
     def validate_metric_type(cls, v: str) -> str:
-        v_norm = v.upper()
-        allowed_values = _enum_allowed_values(MetricType)
-        if v_norm not in allowed_values:
-            raise ValueError(f"{v} is not a valid MetricType. Allowed: {sorted(allowed_values)}")
-        return v_norm
+        return _metric_code(v)
 
 
 class NumericValueDomainSpec(BaseModel):
