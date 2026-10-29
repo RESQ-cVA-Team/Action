@@ -38,6 +38,13 @@ class PercentSeriesMappingTests(unittest.TestCase):
         self.assertEqual([p.y for p in _map(payload, "count")[0].data], [8.0, 12.0, 20.0])
         self.assertEqual([p.y for p in _map(payload, "percent")[0].data], [20.0, 30.0, 50.0])
 
+    def test_grouped_numeric_row_plots_the_planned_statistic(self) -> None:
+        kpi = _kpi(median=42.0, mean=51.5, case_count=[120])
+        kpi.time_period = SimpleNamespace(start_date="2026-01-01", end_date="2026-03-31")
+        payload = {"metric_DTN": SimpleNamespace(kpi_group=[kpi], labels=None)}
+        self.assertEqual(_map(payload, "count", add_time_period_labels=True)[0].data[0].y, 42.0)
+        self.assertEqual(_map(payload, "mean", add_time_period_labels=True)[0].data[0].y, 51.5)
+
     def test_grouped_row_uses_first_backend_percent(self) -> None:
         # One quarter of an Angels Awards metric: the first percent is the "yes" share.
         kpi = _kpi(case_count=[80, 20], percents=[80.0, 20.0], cohort_size=100)
@@ -129,6 +136,8 @@ class PercentAxisAndModeTests(unittest.TestCase):
     def test_value_mode_follows_the_measure(self) -> None:
         self.assertEqual(_chart_value_mode(self._chart("RATE")), "percent")
         self.assertEqual(_chart_value_mode(self._chart("DISTRIBUTION")), "count")
+        self.assertEqual(_chart_value_mode(self._chart("MEAN")), "mean")
+        self.assertEqual(_chart_value_mode(self._chart("MEDIAN")), "count")
         self.assertEqual(_chart_value_mode(ChartSpec(chart_type="BAR", metrics=[MetricSpec(metric="DTN")])), "count")
         self.assertEqual(_chart_value_mode(self._chart_for_aa("RATE")), "percent")
         self.assertEqual(_chart_value_mode(self._chart_for_aa("COUNT")), "count")

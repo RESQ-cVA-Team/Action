@@ -31,7 +31,8 @@ class RequestSpec:
     # native groupBy for arbitrary buckets), but the series mapper still needs
     # to know each request represents one category, not an ungrouped whole.
     is_filter_grouped: bool = False
-    # "count" plots case counts; "percent" plots the share of cases (measure RATE).
+    # "count" plots case counts, or the median of a numeric metric; "percent" plots
+    # the share of cases (measure RATE); "mean" plots the mean (measure MEAN).
     value_mode: str = "count"
     category_detail_metric_codes: List[str] = field(default_factory=lambda: cast(List[str], []))
 

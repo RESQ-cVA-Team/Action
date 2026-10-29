@@ -324,16 +324,11 @@ def map_metrics_payload_to_series(
                         )
                     continue
 
-                y_value: Optional[float] = None
-                if value_mode == "percent":
-                    y_value = _first_percent(kpi.kpi1)
-                if y_value is not None:
-                    pass
-                elif isinstance(kpi.kpi1.median, (int, float)):
-                    y_value = float(kpi.kpi1.median)
-                elif isinstance(kpi.kpi1.mean, (int, float)):
-                    y_value = float(kpi.kpi1.mean)
-                elif kpi.kpi1.case_count:
+                y_value = _first_percent(kpi.kpi1) if value_mode == "percent" else None
+                if y_value is None:
+                    statistics = (kpi.kpi1.mean, kpi.kpi1.median) if value_mode == "mean" else (kpi.kpi1.median, kpi.kpi1.mean)
+                    y_value = next((float(s) for s in statistics if isinstance(s, (int, float))), None)
+                if y_value is None and kpi.kpi1.case_count:
                     try:
                         y_value = float(kpi.kpi1.case_count[0])
                     except (TypeError, ValueError, IndexError) as exc:
