@@ -30,6 +30,7 @@ from src.planners.langchain.llm_factory import create_chat_llm
 from src.planners.langchain.pipeline import (
     _PLANNER_REQUEST_TIMEOUT_SECONDS,
     _STAT_TEST_KEYWORDS,
+    entities_json,
     generate_analysis_plan,
 )
 from src.planners.langchain.prompt_loader import load_prompt_text
@@ -1745,7 +1746,7 @@ def _decision_stage(
     payload = {
         "language": (language or "en").strip() or "en",
         "question": question or "",
-        "entities_json": json.dumps(entities or {}, ensure_ascii=False),
+        "entities_json": entities_json(entities or {}),
         "metric_candidates_json": json.dumps(_metric_candidates(question or ""), ensure_ascii=False),
         "chart_types_json": json.dumps(_chart_types(), ensure_ascii=False),
         "conversation_history_json": json.dumps(conversation_history or [], ensure_ascii=False),
