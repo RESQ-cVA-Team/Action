@@ -28,6 +28,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from src.domain.langchain.schema import AnalysisPlan
 from src.planners.langchain.examples import get_few_shot_examples
 from src.planners.langchain.llm_factory import create_chat_llm, get_llm_provider
+from src.planners.langchain.metric_data_types import metric_data_types_json
 from src.planners.langchain.prompt_loader import load_prompt_text
 from src.util import env
 from src.util.llm_usage import record_llm_call
@@ -539,7 +540,7 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
             "system",
             "REASONING (English internal reasoning shown below can differ from output language):\n{reasoning}",
         ),
-        ("user", "USER_UTTERANCE:\n{question}\n\nENTITIES_DETECTED(JSON):\n{entities}"),
+        ("user", "USER_UTTERANCE:\n{question}\n\nENTITIES_DETECTED(JSON):\n{entities}\n\nMETRIC_DATA_TYPES(JSON):\n{metric_data_types}"),
     ]
 )
 
@@ -754,6 +755,7 @@ def generate_analysis_plan(
         plan_inputs: Dict[str, Any] = {
             "question": question,
             "entities": json.dumps(entities),
+            "metric_data_types": metric_data_types_json(question, entities),
             "reasoning": "",
             "few_shots": few_shots_text,
             "language": language,
