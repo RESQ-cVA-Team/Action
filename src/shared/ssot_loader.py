@@ -98,6 +98,7 @@ def get_canonical_values(filename: str) -> Tuple[str, ...]:
 
 
 @lru_cache(maxsize=16)
+@lru_cache(maxsize=16)
 def _canonical_lookup(filename: str) -> Dict[str, str]:
     """Return normalized text -> canonical mapping for an SSOT type file.
 
@@ -144,6 +145,11 @@ def resolve_chart_type(value: str) -> Optional[str]:
 def resolve_groupby_canonical(value: str) -> Optional[str]:
     """Resolve a group-by field (canonical or synonym) to GroupByType canonical value."""
     return _resolve_canonical_value("GroupByType.yml", value)
+
+
+def resolve_metric(value: str) -> Optional[str]:
+    """Resolve a metric (canonical or synonym) to its MetricType canonical value."""
+    return _resolve_canonical_value("MetricType.yml", value)
 
 
 def create_enum(name: str, filename: str) -> Any:
