@@ -341,6 +341,11 @@ def _tokenize(text: str) -> set[str]:
     return set(re.findall(r"[a-z0-9_]+", (text or "").lower()))
 
 
+def entities_json(entities: Dict[str, Any]) -> str:
+    """Entities as an LLM prompt shows them, every value a list, as in the few-shot examples."""
+    return json.dumps({key: value if isinstance(value, list) else [value] for key, value in (entities or {}).items() if value is not None}, ensure_ascii=False)
+
+
 def _entity_values(value: Any) -> set[str]:
     out: set[str] = set()
     if isinstance(value, str):
@@ -521,7 +526,7 @@ def _critique_plan(question: str, entities: Dict[str, Any], plan: AnalysisPlan) 
             critic_chain,
             {
                 "question": question,
-                "entities": json.dumps(entities),
+                "entities": entities_json(entities),
                 "candidate_plan": plan.model_dump_json(indent=2),
             },
             label="plan_critique",
@@ -698,7 +703,7 @@ def generate_analysis_plan(
 
         plan_inputs: Dict[str, Any] = {
             "question": question,
-            "entities": json.dumps(entities),
+            "entities": entities_json(entities),
             "metric_data_types": metric_data_types_json(question, entities),
             "reasoning": "",
             "few_shots": few_shots_text,
