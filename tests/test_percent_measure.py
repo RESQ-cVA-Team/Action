@@ -163,6 +163,19 @@ class PercentAxisAndModeTests(unittest.TestCase):
         counts = build_chart_dto(plan_chart=self._chart("DISTRIBUTION"), dimensions=[], series=series, derived_axes=None)
         self.assertEqual(counts.metadata.y_axis.label, "Cases")
 
+    def test_numeric_value_axis_names_the_plotted_statistic(self) -> None:
+        series = [ChartSeries(name="DTN", data=[ChartPoint(x="2026-Q1", y=42.0)])]
+        labels = {}
+        for measure in ("MEDIAN", "MEAN"):
+            chart = ChartSpec(
+                chart_type="LINE",
+                metrics=[MetricSpec(metric="DTN")],
+                semantics=AnalysisSemanticsSpec(intent="TREND", measure=MeasureSemanticsSpec(type=measure)),
+            )
+            labels[measure] = build_chart_dto(plan_chart=chart, dimensions=[], series=series, derived_axes=None).metadata.y_axis.label
+        self.assertTrue(labels["MEDIAN"].startswith("Median "), labels)
+        self.assertTrue(labels["MEAN"].startswith("Mean "), labels)
+
     def test_percent_chart_labels_its_y_axis_as_a_share(self) -> None:
         series = [ChartSeries(name="arrival mode", data=[ChartPoint(x="ems", y=30.0), ChartPoint(x="private", y=70.0)])]
         percent = build_chart_dto(plan_chart=self._chart("RATE"), dimensions=[], series=series, derived_axes=None)
