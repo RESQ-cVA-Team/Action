@@ -12,6 +12,7 @@ from src.executors.planning.ssot_metric_defaults import (
     get_enum_labels,
     get_enum_option_key,
     is_angels_awards_metric,
+    is_enum_metric,
 )
 from src.shared.ssot_loader import get_enum_option_label, get_metric_display_name
 
@@ -176,26 +177,29 @@ def _first_percent(kpi1: Any) -> Optional[float]:
     return None
 
 
-def _aa_category_indices(
+def _is_yes_no_metric(metric_code: str) -> bool:
+    keys = {get_enum_option_key(metric_code, label) for label in get_enum_labels(metric_code) or []}
+    return {"yes", "no"} <= keys
+
+
+def _category_indices(
     metric_code: str,
     labels: List[str],
     include_category_detail: bool,
-) -> List[tuple[int, str, str]]:
+) -> List[tuple[int, str]]:
+    """Categories a grouped row of an Enum metric plots: the yes of a yes/no
+    metric (and its no when asked for), every category of any other."""
+    if not _is_yes_no_metric(metric_code):
+        return [(index, str(label)) for index, label in enumerate(labels)]
     desired_keys = {"yes", "no"} if include_category_detail else {"yes"}
-    found: List[tuple[int, str, str]] = []
-    for index, label in enumerate(labels):
-        option_key = get_enum_option_key(metric_code, str(label))
-        if option_key in desired_keys:
-            found.append((index, str(label), option_key))
-
-    found_keys = {option_key for _, _, option_key in found}
-    missing_keys = desired_keys - found_keys
+    found: List[tuple[int, str, Optional[str]]] = [(index, str(label), get_enum_option_key(metric_code, str(label))) for index, label in enumerate(labels)]
+    missing_keys = desired_keys - {key for _, _, key in found}
     if missing_keys:
-        raise ValueError(f"AA metric {metric_code} is missing recognized enum category labels: {sorted(missing_keys)}")
-    return found
+        raise ValueError(f"Enum metric {metric_code} is missing recognized category labels: {sorted(missing_keys)}")
+    return [(index, label) for index, label, key in found if key in desired_keys]
 
 
-def _aa_category_value(
+def _category_value(
     kpi1: Any,
     case_counts: List[Any],
     index: int,
@@ -241,19 +245,19 @@ def map_metrics_payload_to_series(
                 continue
 
             metric_code = _metric_code_from_alias(metric_name)
-            is_aa_metric = is_angels_awards_metric(metric_code)
+            is_enum = is_enum_metric(metric_code)
             include_category_detail = metric_code in category_detail_codes
             metric_labels = getattr(metric, "labels", None)
             case_counts = kpi.kpi1.case_count or []
             derived_complement = False
 
-            if is_aa_metric and not metric_labels:
+            if is_enum and not metric_labels:
                 metric_labels = get_enum_labels(metric_code)
                 if metric_labels and len(case_counts) == 1 and isinstance(kpi.kpi1.cohort_size, (int, float)):
                     case_counts = [case_counts[0], kpi.kpi1.cohort_size - case_counts[0]]
                     derived_complement = True
 
-            aa_categories = _aa_category_indices(metric_code, cast(List[str], metric_labels), include_category_detail) if is_aa_metric and metric_labels else []
+            categories = _category_indices(metric_code, cast(List[str], metric_labels), include_category_detail) if is_enum and metric_labels else []
 
             server_label = kpi.grouped_by.group_item_name if kpi.grouped_by else None
             origin_label = _origin_label_from_kpi_group(kpi)
@@ -288,13 +292,13 @@ def map_metrics_payload_to_series(
                 else:
                     x_value = "value"
 
-                if is_aa_metric:
+                if categories:
                     if len(case_counts) != len(metric_labels or []) and not (
                         not case_counts and add_time_period_labels and tp_start
                     ):
-                        raise ValueError("AA categorical KPI payload has mismatched labels/caseCount lengths.")
-                    for category_index, category_label, _ in aa_categories:
-                        y_value = _aa_category_value(
+                        raise ValueError("Enum KPI payload has mismatched labels/caseCount lengths.")
+                    for category_index, category_label in categories:
+                        y_value = _category_value(
                             kpi.kpi1,
                             case_counts,
                             category_index,
@@ -302,7 +306,7 @@ def map_metrics_payload_to_series(
                             derived_complement,
                         )
                         if y_value is None and not (add_time_period_labels and tp_start):
-                            raise ValueError("Grouped AA KPI row is missing the requested category value.")
+                            raise ValueError("Grouped Enum KPI row is missing the requested category value.")
 
                         name_parts: List[str] = []
                         if include_metric_alias:
@@ -314,7 +318,7 @@ def map_metrics_payload_to_series(
                             name_parts.append(scope_label)
                         if not name_parts:
                             name_parts.append(metric_label_from_alias(metric_name))
-                        if include_category_detail:
+                        if len(categories) > 1:
                             name_parts.append(category_label)
                         series.append(
                             ChartSeries(
@@ -406,11 +410,11 @@ def map_metrics_payload_to_series(
                 if len(case_counts) != len(metric_labels or []):
                     raise ValueError("Categorical KPI payload has mismatched labels/caseCount lengths.")
                 category_values: List[Any] = list(case_counts)
-                if is_aa_metric:
+                if is_angels_awards_metric(metric_code):
                     points = [
                         ChartPoint(
                             x=category_label,
-                            y=_aa_category_value(
+                            y=_category_value(
                                 kpi.kpi1,
                                 case_counts,
                                 category_index,
@@ -418,7 +422,7 @@ def map_metrics_payload_to_series(
                                 derived_complement,
                             ),
                         )
-                        for category_index, category_label, _ in aa_categories
+                        for category_index, category_label in categories
                     ]
                 elif value_mode == "percent":
                     # A boolean-shaped payload carries one backend percent and a
