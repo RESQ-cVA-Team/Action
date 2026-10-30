@@ -237,6 +237,7 @@ class StrokeShareMetricInferenceTests(unittest.TestCase):
     def test_percentage_of_a_stroke_type_becomes_the_stroke_type_metric(self) -> None:
         out = _infer_stroke_type_share_metric("Make a line chart of percentage of ischemic strokes per quarter", {"chart_type": "LINE", "stroke_type": "ISCHEMIC", "group_by": "QUARTER"})
         self.assertEqual(out["metric"], "STROKE_TYPE")
+        self.assertNotIn("stroke_type", out)
 
     def test_a_present_metric_is_never_overridden(self) -> None:
         entities = {"metric": "DTN", "stroke_type": "ISCHEMIC"}
