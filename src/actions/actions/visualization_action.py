@@ -567,6 +567,25 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                     pending_clarification=pending_clarification,
                 )
 
+                # A new request is judged as if there were no previous chart. The
+                # previous plan can still colour a rejection, so a rejected new
+                # request is judged once more without it.
+                if not request["answers_clarification"] and outcome.decision == "reject" and latest_plan_summary and outcome.edits_previous_plan is False:
+                    request = _request_context(events, latest_msg, edits_previous_plan=False)
+                    planner_question = request["planner_question"]
+                    outcome = await _orchestrate(
+                        question=planner_question,
+                        entities=request["extracted_entities"],
+                        language=override_language,
+                        trace_id=trace_id,
+                        max_retries=_PLANNER_MAX_RETRIES,
+                        include_plan=False,
+                        conversation_history=request["conversation_history"],
+                        progress_cb=None,
+                        pending_clarification=request["pending_clarification"],
+                    )
+                    latest_plan_summary = None
+
                 if request["answers_clarification"]:
                     edits_previous_plan = bool(request["edits_previous_plan"])
                 else:
