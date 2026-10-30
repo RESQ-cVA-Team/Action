@@ -237,7 +237,7 @@ def _build_metric_clarification_prompt(
     buttons = [
         {
             "title": display_name,
-            "payload": f'/clarify_visualization{{"metric":"{metric_code}"}}',
+            "payload": f'/generate_visualization{{"metric":"{metric_code}"}}',
         }
         for metric_code, display_name in zip(canonical_options, display_names)
     ]
