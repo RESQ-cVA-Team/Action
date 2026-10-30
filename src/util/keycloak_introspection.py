@@ -1,6 +1,10 @@
+import hashlib
 import logging
 import re
-from typing import Optional
+import time
+from collections import OrderedDict
+from threading import Lock
+from typing import Any, Dict, Optional
 
 import requests
 
@@ -33,22 +37,67 @@ def _has_required_role(introspection_payload: dict) -> bool:
     return REQUIRED_ROLE in roles
 
 
+_VERIFIED_MAX = 1024
+_verified: "OrderedDict[str, tuple[str, float]]" = OrderedDict()
+_verified_lock = Lock()
+
+
+def _reuse_seconds() -> float:
+    """How long a verified token is reused without asking Keycloak again
+    (ACTIONS_TOKEN_CHECK_REUSE_SECONDS, never past the token's own expiry).
+    0, the default, checks every call."""
+    try:
+        return max(0.0, float(env_util.get_env("ACTIONS_TOKEN_CHECK_REUSE_SECONDS", default="") or 0))
+    except ValueError:
+        return 0.0
+
+
+class IntrospectionUnavailable(Exception):
+    """Keycloak could not be asked whether a token is valid."""
+
+
+def _post_introspection(url: str, data: Dict[str, str]) -> Dict[str, Any]:
+    """One retry on a timeout, a connection error or a Keycloak server error."""
+    for attempt in (1, 2):
+        try:
+            resp = requests.post(url, data=data, timeout=5)
+            if resp.status_code < 500:
+                resp.raise_for_status()
+                return resp.json()
+            failure: Exception = requests.HTTPError(f"Keycloak answered {resp.status_code}")
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            failure = exc
+        logger.warning("Keycloak token introspection attempt %d failed: %s", attempt, failure)
+    raise IntrospectionUnavailable("Keycloak token introspection is unavailable") from failure
+
+
 def introspect_token_sync(token: str) -> Optional[str]:
     """Verify a user access token via Keycloak introspection using Action's own
-    confidential client; return the verified sub, or None."""
+    confidential client; return the verified sub, or None for a token Keycloak
+    does not accept. Raises IntrospectionUnavailable when Keycloak cannot be
+    reached."""
     issuer = env_util.get_env("KEYCLOAK_ISSUER")
     client_id = env_util.get_env("KEYCLOAK_CLIENT_ID")
     client_secret = env_util.get_env("KEYCLOAK_CLIENT_SECRET")
     if not (issuer and client_id and client_secret):
         return None
+
+    reuse = _reuse_seconds()
+    key = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    now = time.time()
+    if reuse > 0:
+        with _verified_lock:
+            remembered = _verified.get(key)
+            if remembered and remembered[1] > now:
+                return remembered[0]
+
     try:
-        resp = requests.post(
+        payload = _post_introspection(
             f"{issuer.rstrip('/')}/protocol/openid-connect/token/introspect",
-            data={"token": token, "client_id": client_id, "client_secret": client_secret},
-            timeout=5,
+            {"token": token, "client_id": client_id, "client_secret": client_secret},
         )
-        resp.raise_for_status()
-        payload = resp.json()
+    except IntrospectionUnavailable:
+        raise
     except Exception:
         logger.warning("Keycloak token introspection request failed", exc_info=True)
         return None
@@ -56,4 +105,15 @@ def introspect_token_sync(token: str) -> Optional[str]:
     if not payload.get("active") or not _has_required_role(payload):
         return None
     sub = payload.get("sub")
-    return sub if isinstance(sub, str) and sub else None
+    if not isinstance(sub, str) or not sub:
+        return None
+
+    expires = payload.get("exp")
+    until = min(now + reuse, float(expires)) if isinstance(expires, (int, float)) else now + reuse
+    if until > now:
+        with _verified_lock:
+            _verified[key] = (sub, until)
+            _verified.move_to_end(key)
+            while len(_verified) > _VERIFIED_MAX:
+                _verified.popitem(last=False)
+    return sub

@@ -84,3 +84,11 @@ def test_debug_requires_any_valid_token(gate):
 def test_sender_sub():
     assert keycloak_introspection.sender_sub("abc:thread:12") == "abc"
     assert keycloak_introspection.sender_sub("abc") == "abc"
+
+
+def test_webhook_is_503_when_the_token_cannot_be_checked(gate, monkeypatch):
+    def unavailable(_token):
+        raise keycloak_introspection.IntrospectionUnavailable("down")
+
+    monkeypatch.setattr(rasa_sdk_plugins, "introspect_token_sync", unavailable)
+    assert _run(gate, _request("/webhook", "good", {"sender_id": "user-1"})).status == 503

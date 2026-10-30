@@ -8,7 +8,7 @@ import pluggy
 from sanic import Sanic, response
 from sanic.response import HTTPResponse
 
-from src.util.keycloak_introspection import introspect_token_sync, sender_sub
+from src.util.keycloak_introspection import IntrospectionUnavailable, introspect_token_sync, sender_sub
 
 hookimpl = pluggy.HookimplMarker("rasa_sdk")
 
@@ -52,7 +52,10 @@ def attach_sanic_app_extensions(app: Sanic) -> None:
 
         auth_header = request.headers.get("Authorization", "")
         token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
-        verified_sub = await asyncio.to_thread(introspect_token_sync, token) if token else None
+        try:
+            verified_sub = await asyncio.to_thread(introspect_token_sync, token) if token else None
+        except IntrospectionUnavailable:
+            return response.json({"error": "Token check unavailable"}, status=503)
         if not verified_sub:
             return response.json({"error": "Unauthorized"}, status=401)
 
