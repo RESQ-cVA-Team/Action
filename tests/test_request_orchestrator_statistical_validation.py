@@ -14,10 +14,31 @@ from src.domain.langchain.schema import (
     SplitSpec,
     StatisticalTestSpec,
 )
-from src.planners.langchain.request_orchestrator import VisualizationRequestOutcome, _detect_unsupported_risk_factor_filter, orchestrate_visualization_request
+from src.planners.langchain.request_orchestrator import (
+    VisualizationRequestOutcome,
+    _detect_unsupported_risk_factor_filter,
+    _normalize_plan_semantic_splits,
+    orchestrate_visualization_request,
+)
 
 
 class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
+    def test_drops_a_sex_split_of_the_sex_metric(self) -> None:
+        plan = AnalysisPlan(
+            charts=[
+                ChartSpec(
+                    chart_type="BAR",
+                    metrics=[MetricSpec(metric="SEX")],
+                    semantics=AnalysisSemanticsSpec(
+                        intent="DISTRIBUTION",
+                        measure=MeasureSemanticsSpec(type="RATE"),
+                        splits=[SplitSpec(kind="SEX")],
+                    ),
+                )
+            ]
+        )
+        self.assertIsNone(_normalize_plan_semantic_splits(plan).charts[0].semantics.splits)
+
     def test_drops_redundant_canonical_stroke_type_self_split_before_returning_plan(self) -> None:
         plan = AnalysisPlan(
             charts=[
