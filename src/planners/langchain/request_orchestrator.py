@@ -574,12 +574,14 @@ def _infer_stroke_type_share_metric(question: str, entities: Dict[str, Any]) -> 
     """ "Percentage of ischemic strokes" names no metric that NLU can see: the
     word it tags is the stroke type. The share of a stroke type among all
     strokes is the STROKE_TYPE metric plotted as a rate, so fill that in
-    rather than asking which metric was meant."""
+    rather than asking which metric was meant. The stroke type is then the
+    category whose share is asked, not a filter on the cases, so it is
+    dropped: filtering on it would make its share 100 percent."""
     if _entity_present(entities, "metric") or not _entity_present(entities, "stroke_type"):
         return entities
     if not _STROKE_SHARE_WORDING.search(question or ""):
         return entities
-    out = dict(entities)
+    out = {key: value for key, value in entities.items() if key != "stroke_type"}
     out["metric"] = "STROKE_TYPE"
     return out
 
