@@ -54,6 +54,9 @@ class VisualizationRequestOutcome:
     clarification_options: List[str] = field(default_factory=lambda: cast(List[str], []))
     missing_fields: List[str] = field(default_factory=lambda: cast(List[str], []))
     plan: Optional[AnalysisPlan] = None
+    # Whether the message edits the previous chart rather than asking for a
+    # new one; None when there is no previous chart to edit.
+    edits_previous_plan: Optional[bool] = None
 
 
 _ORCHESTRATOR_ENABLED = env_util.env_flag("ACTIONS_LLM_REQUEST_ORCHESTRATOR_ENABLED", default=True)
@@ -1740,6 +1743,18 @@ def _decision_stage(
     conversation_history: Optional[List[str]] = None,
     pending_clarification: Optional[Dict[str, Any]] = None,
 ) -> VisualizationRequestOutcome:
+    outcome, edits_previous_plan = _ask_decision_model(question, entities, language, conversation_history)
+    outcome = _apply_decision_safeguards(outcome, question, entities, pending_clarification)
+    outcome.edits_previous_plan = edits_previous_plan
+    return outcome
+
+
+def _ask_decision_model(
+    question: str,
+    entities: Dict[str, Any],
+    language: Optional[str],
+    conversation_history: Optional[List[str]],
+) -> tuple[VisualizationRequestOutcome, Optional[bool]]:
     llm = _get_llm()
     if llm is None:
         raise RuntimeError("LLM unavailable")
@@ -1795,7 +1810,16 @@ def _decision_stage(
         clarification_options=clarification_options,
         missing_fields=missing_fields,
     )
+    edits_raw = parsed.get("edits_previous_plan")
+    return outcome, edits_raw if isinstance(edits_raw, bool) else None
 
+
+def _apply_decision_safeguards(
+    outcome: VisualizationRequestOutcome,
+    question: str,
+    entities: Dict[str, Any],
+    pending_clarification: Optional[Dict[str, Any]],
+) -> VisualizationRequestOutcome:
     # Deterministic safeguard: reason taxonomy is authoritative. If the model
     # says missing_required_fields but emits reject, normalize to clarify.
     reason_norm = outcome.reason.strip().lower().replace(" ", "_")
@@ -2138,6 +2162,7 @@ def orchestrate_visualization_request(
                 return VisualizationRequestOutcome(
                     decision="proceed",
                     reason=stage1.reason or "sufficient_information",
+                    edits_previous_plan=stage1.edits_previous_plan,
                 )
 
             report("Generating visualization plan")

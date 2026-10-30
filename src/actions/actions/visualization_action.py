@@ -396,7 +396,7 @@ def merge_latest_with_thread_entities(
     """Merge the current turn's entities with the anchored visualization
     thread's entities. Only called when the caller has already decided the
     thread should carry forward at all (see
-    _should_carry_forward_visualization_context) -- a fresh, unrelated
+    _carries_previous_request) -- a fresh, unrelated
     generate_visualization request skips this entirely rather than being
     merged and then selectively un-merged, so there's nothing here to guard
     against a stale identity entity (hospital, country, ...) leaking into an
@@ -419,11 +419,9 @@ def merge_latest_with_thread_entities(
     return merged
 
 
-def _proceed_decided_for_latest_message(events: List[Dict[str, Any]]) -> Optional[str]:
-    """The reason of a proceed decision already sent for the user's current
-    message, by action_clarify_visualization_request before it handed over to
-    the one-shot action; None when there is none. The one-shot action then
-    plans without asking the decision stage the same question again."""
+def _decision_for_latest_message(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The decision action_clarify_visualization_request already sent for the
+    user's current message, before it handed over to the one-shot action."""
     last_user_idx = -1
     for idx in range(len(events) - 1, -1, -1):
         if events[idx].get("event") == "user":
@@ -437,8 +435,18 @@ def _proceed_decided_for_latest_message(events: List[Dict[str, Any]]) -> Optiona
             continue
         payload = _extract_bot_custom_payload(ev)
         if payload and payload.get("type") == "visualization_query_decision":
-            return str(payload.get("reason") or "sufficient_information") if payload.get("decision") == "proceed" else None
+            return payload
     return None
+
+
+def _proceed_decided_for_latest_message(events: List[Dict[str, Any]]) -> Optional[str]:
+    """The reason of a proceed decision already taken for the user's current
+    message; None when there is none. The one-shot action then plans without
+    asking the decision stage the same question again."""
+    decision = _decision_for_latest_message(events)
+    if decision is None or decision.get("decision") != "proceed":
+        return None
+    return str(decision.get("reason") or "sufficient_information")
 
 
 async def _orchestrate(**kwargs: Any) -> VisualizationRequestOutcome:
@@ -490,24 +498,15 @@ def _pending_clarification_payload(events: List[Dict[str, Any]]) -> Optional[Dic
     return None
 
 
-def _should_carry_forward_visualization_context(intent_name: str, events: List[Dict[str, Any]]) -> bool:
-    """Whether this turn should inherit entities/history from earlier turns
-    in the visualization thread at all.
-
-    A fresh generate_visualization request starts clean: no entities, no
-    conversation history from earlier turns, full stop -- it's a new ask, not
-    a continuation. update_visualization explicitly means "modify the
-    existing plan", so it carries the thread forward by design. A reply while
-    the bot is awaiting clarification is completing the request that's
-    already anchored, not replacing it, so it also carries forward.
-    clarify_visualization carries forward even outside that state: per
-    rules/visualization.yml, its NLU training data is terse follow-on
-    instructions like "group by X" or "filter by Y", which only make sense as
-    a modification of the current chart, never as a standalone request.
-    """
-    if intent_name in ("update_visualization", "clarify_visualization"):
+def _carries_previous_request(events: List[Dict[str, Any]]) -> bool:
+    """Whether this turn continues the visualization request before it, and so
+    inherits its entities, history and plan: it answers a pending
+    clarification, or the decision stage judged it an edit of the previous
+    chart. A new request starts clean."""
+    if _pending_clarification_payload(events) is not None:
         return True
-    return _pending_clarification_payload(events) is not None
+    decision = _decision_for_latest_message(events)
+    return bool(decision and decision.get("edits_previous_plan") is True)
 
 
 def _extract_bot_custom_payload(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -640,18 +639,17 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                 language = resolve_language(metadata=metadata, slots=slots, tracker=tracker)
 
                 events = tracker.events
-                intent_name = _extract_intent_name_from_user_event(latest_msg)
-                carry_forward = _should_carry_forward_visualization_context(intent_name, events)
+                pending_clarification = _pending_clarification_payload(events)
                 latest_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg))
-                if carry_forward:
+                if pending_clarification is not None:
                     extracted_entities = canonicalize_ssot_entities(
                         merge_latest_with_thread_entities(latest_entities, events, fallback_limit=fallback_limit),
                     )
                     conversation_history = _collect_visualization_thread_messages(events, fallback_limit=fallback_limit)
                 else:
-                    # Fresh generate_visualization request, not completing a pending
-                    # clarification: start clean, no entities or history from earlier
-                    # turns (see _should_carry_forward_visualization_context).
+                    # Not answering a pending clarification: the decision stage
+                    # sees this turn's own entities and the previous plan, and
+                    # says whether the message edits that plan or starts anew.
                     extracted_entities = latest_entities
                     conversation_history = []
                 # The current turn's own text is the question; prior turns are carried
@@ -661,12 +659,9 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                 # blending unrelated requests together.
                 planner_question = question_with_resolved_metrics(latest_msg)
 
-                if carry_forward:
-                    latest_plan_summary = _collect_latest_visualization_plan_summary(events)
-                    if latest_plan_summary:
-                        planner_question = f"{latest_plan_summary}\n\nUser's newest instruction:\n{planner_question}".strip()
-
-                pending_clarification = _pending_clarification_payload(events) if carry_forward else None
+                latest_plan_summary = _collect_latest_visualization_plan_summary(events)
+                if latest_plan_summary:
+                    planner_question = f"{latest_plan_summary}\n\nUser's newest instruction:\n{planner_question}".strip()
 
                 outcome = await _orchestrate(
                     question=planner_question,
@@ -679,6 +674,8 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                     progress_cb=None,
                     pending_clarification=pending_clarification,
                 )
+
+                edits_previous_plan = pending_clarification is not None or bool(latest_plan_summary and outcome.edits_previous_plan)
 
                 if outcome.decision == "clarify":
                     clarification_message, clarification_buttons = _build_metric_clarification_prompt(
@@ -698,6 +695,7 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                             "clarification_options": outcome.clarification_options,
                             "message": clarification_message,
                             "missing_fields": outcome.missing_fields,
+                            "edits_previous_plan": edits_previous_plan,
                         }
                     )
                     dispatcher.utter_message(text=clarification_message, buttons=clarification_buttons)
@@ -717,6 +715,7 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                         "clarification_options": outcome.clarification_options,
                         "message": outcome.message,
                         "missing_fields": outcome.missing_fields,
+                        "edits_previous_plan": edits_previous_plan,
                     }
                 )
 
@@ -815,10 +814,8 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
     language = resolve_language(metadata=latest_meta, slots=ctx.slots)
     events = ctx.events
 
-    intent_name = _extract_intent_name_from_user_event(latest_msg)
-    carry_forward = _should_carry_forward_visualization_context(intent_name, events)
     latest_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg))
-    if carry_forward:
+    if _carries_previous_request(events):
         extracted_entities = canonicalize_ssot_entities(
             merge_latest_with_thread_entities(latest_entities, events, fallback_limit=12),
         )
@@ -826,9 +823,8 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
         latest_plan_summary = _collect_latest_visualization_plan_summary(events)
         pending_clarification = _pending_clarification_payload(events)
     else:
-        # Fresh generate_visualization request, not completing a pending
-        # clarification: start clean, no entities or history from earlier
-        # turns (see _should_carry_forward_visualization_context).
+        # A new request starts clean: no entities, history or plan from
+        # earlier turns (see _carries_previous_request).
         extracted_entities = latest_entities
         conversation_history = []
         latest_plan_summary = None

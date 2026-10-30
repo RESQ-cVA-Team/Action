@@ -23,8 +23,9 @@ def _load_visualization_context_helpers():
         "_event_has_visualization_signal",
         "_find_latest_visualization_anchor_user_ordinal",
         "_pending_clarification_payload",
+        "_decision_for_latest_message",
         "_proceed_decided_for_latest_message",
-        "_should_carry_forward_visualization_context",
+        "_carries_previous_request",
         "canonicalize_ssot_entities",
     }
 
@@ -168,7 +169,7 @@ def test_merge_latest_with_thread_entities_keeps_latest_provider_scope_keys() ->
     assert merged["date"] == ["2024-01-01", "2026-12-31"]
     # group_id wasn't restated by the latest turn, but merge_latest_with_thread_entities
     # always carries the thread forward once called -- it's the caller's job
-    # (_should_carry_forward_visualization_context) to decide whether to call it
+    # (_carries_previous_request) to decide whether to call it
     # at all for a given turn, not this function's job to selectively drop keys.
     assert merged["group_id"] == ["provider group 2825", "provider group 3001"]
 
@@ -216,11 +217,11 @@ def test_fresh_generate_visualization_does_not_carry_forward_stale_hospital_scop
     (a "clear on absence" rule for identity keys). It's now enforced one layer
     up: a fresh generate_visualization that isn't completing a pending
     clarification simply never calls merge_latest_with_thread_entities at
-    all -- see _should_carry_forward_visualization_context and its callers in
+    all -- see _carries_previous_request and its callers in
     visualization_action.py.
     """
     helpers = _load_visualization_context_helpers()
-    should_carry_forward = helpers["_should_carry_forward_visualization_context"]
+    carries_previous_request = helpers["_carries_previous_request"]
     events = [
         _user_event(
             "Can you compare my dtn against army alhama de murcia hospital using a mann whitney u test",
@@ -252,7 +253,7 @@ def test_fresh_generate_visualization_does_not_carry_forward_stale_hospital_scop
 
     # A fresh generate_visualization, with no pending clarification in play
     # (no bot decision event at all here), must not carry the thread forward.
-    assert should_carry_forward("generate_visualization", events) is False
+    assert carries_previous_request(events) is False
     # So the caller uses latest_entities as-is -- nothing from the earlier
     # Mann-Whitney turn (hospital, country, comparison group_by) leaks in.
     assert "hospital_name" not in latest_entities
@@ -261,18 +262,20 @@ def test_fresh_generate_visualization_does_not_carry_forward_stale_hospital_scop
     assert latest_entities["metric"] == "STROKE_TYPE"
 
 
-def test_should_carry_forward_true_for_update_and_terse_clarify_intents() -> None:
+def test_carries_forward_when_the_decision_says_the_message_edits_the_previous_chart() -> None:
     helpers = _load_visualization_context_helpers()
-    should_carry_forward = helpers["_should_carry_forward_visualization_context"]
+    carries_previous_request = helpers["_carries_previous_request"]
+    earlier = _user_event("show dtn for female patients", "generate_visualization", [{"entity": "metric", "value": "DTN"}])
 
-    # update_visualization always carries the thread forward: it's explicitly
-    # a request to modify the existing plan.
-    assert should_carry_forward("update_visualization", []) is True
-    # clarify_visualization carries forward even with no pending clarification
-    # in the events -- its NLU training data is terse follow-on instructions
-    # ("group by X") that only make sense as a modification of the current
-    # chart, not a standalone request.
-    assert should_carry_forward("clarify_visualization", []) is True
+    def turn(edits: Any) -> List[Dict[str, Any]]:
+        decision = {"type": "visualization_query_decision", "decision": "proceed", "reason": "all_required_fields_present", "edits_previous_plan": edits}
+        return [earlier, _decision_event("proceed", "all_required_fields_present"), _user_event("as a bar chart", "generate_visualization", []), {"event": "bot", "custom": decision}]
+
+    assert carries_previous_request(turn(True)) is True
+    assert carries_previous_request(turn(False)) is False
+    assert carries_previous_request(turn(None)) is False
+    # The NLU label alone no longer decides: an update label without an edit decision starts clean.
+    assert carries_previous_request([earlier, _user_event("make it a bar chart", "update_visualization", [])]) is False
 
 
 def test_should_carry_forward_true_while_awaiting_clarification_reply() -> None:
@@ -284,7 +287,7 @@ def test_should_carry_forward_true_while_awaiting_clarification_reply() -> None:
     still carry forward.
     """
     helpers = _load_visualization_context_helpers()
-    should_carry_forward = helpers["_should_carry_forward_visualization_context"]
+    carries_previous_request = helpers["_carries_previous_request"]
     events = [
         _user_event(
             "show dtn from Czech Republic",
@@ -305,7 +308,7 @@ def test_should_carry_forward_true_while_awaiting_clarification_reply() -> None:
         _user_event("line chart please", "generate_visualization", [{"entity": "chart_type", "value": "LINE"}]),
     ]
 
-    assert should_carry_forward("generate_visualization", events) is True
+    assert carries_previous_request(events) is True
 
     merge_latest_with_thread_entities = _load_merge_latest_with_thread_entities()
     merged = merge_latest_with_thread_entities(
@@ -319,7 +322,7 @@ def test_should_carry_forward_true_while_awaiting_clarification_reply() -> None:
 
 
 def test_pending_clarification_payload_returns_the_full_prior_clarify_payload() -> None:
-    """_should_carry_forward_visualization_context only needs a bool, but the
+    """_carries_previous_request only needs a bool, but the
     "stay on the pending field" safeguard in request_orchestrator.py needs
     the full payload (missing_fields/clarification_type/message/...) -- this
     is the same traversal as the awaiting-clarification test above, just
@@ -375,7 +378,7 @@ def test_should_not_carry_forward_after_a_completed_request_with_no_pending_clar
     rejected prior request -- not a clarify -- is a fresh ask, even though the
     prior bot turn was itself a visualization_query_decision payload."""
     helpers = _load_visualization_context_helpers()
-    should_carry_forward = helpers["_should_carry_forward_visualization_context"]
+    carries_previous_request = helpers["_carries_previous_request"]
     events = [
         _user_event(
             "compare mine vs Hospital X",
@@ -389,7 +392,7 @@ def test_should_not_carry_forward_after_a_completed_request_with_no_pending_clar
         _user_event("show me a bar chart of stroke type", "generate_visualization", [{"entity": "chart_type", "value": "BAR"}]),
     ]
 
-    assert should_carry_forward("generate_visualization", events) is False
+    assert carries_previous_request(events) is False
 
 
 def _decision_event(decision: str, reason: str) -> Dict[str, Any]:
