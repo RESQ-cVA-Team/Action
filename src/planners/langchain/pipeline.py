@@ -2,12 +2,8 @@ import json
 import logging
 import re
 import time
-from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
-from contextvars import ContextVar
-from datetime import datetime, timezone
-from threading import Lock
 from typing import (
     Any,
     Callable,
@@ -35,7 +31,6 @@ from src.util.logging_utils import bind_current_context, log_context
 
 logger = logging.getLogger(__name__)
 _ENABLE_DYNAMIC_FEW_SHOTS = True
-_ENABLE_PLAN_CACHE = True
 _ENABLE_PLAN_CRITIQUE = True
 
 _FEWSHOT_TOKEN_WEIGHT = 1.0
@@ -79,9 +74,6 @@ try:
 except Exception:
     _PLANNER_REQUEST_TIMEOUT_SECONDS = 45.0
 _MAX_FEW_SHOTS = 3
-_PLAN_CACHE_SIZE = 256
-_PLAN_CACHE_TTL_SECONDS = 900.0
-_PLAN_CACHE_KEY_VERSION = "v4"
 
 LLM_PROVIDER = get_llm_provider()
 _LLM_MODEL = (env.get_env("LLM_MODEL", default="") or "").strip()
@@ -237,13 +229,6 @@ def get_schema_description(model: Type[Any]) -> str:
 SCHEMA_DESCRIPTION: str = get_schema_description(AnalysisPlan)
 
 few_shot_examples = get_few_shot_examples()
-_PLAN_CACHE: "OrderedDict[str, tuple[AnalysisPlan, float]]" = OrderedDict()
-_PLAN_CACHE_LOCK = Lock()
-_plan_cache_hits = 0
-_plan_cache_misses = 0
-_plan_cache_expired = 0
-_PLAN_CACHE_STATS_LOCK = Lock()
-_LAST_CACHE_EVENT: ContextVar[Optional[bool]] = ContextVar("planner_last_cache_event", default=None)
 
 
 def _invoke_with_timeout(chain: Any, inputs: Dict[str, Any], label: str) -> Any:
@@ -259,82 +244,6 @@ def _invoke_with_timeout(chain: Any, inputs: Dict[str, Any], label: str) -> Any:
             raise PlannerTimeoutError(f"{label} timed out after {_PLANNER_REQUEST_TIMEOUT_SECONDS:.1f}s") from exc
     record_llm_call(step, started_at, response)
     return response
-
-
-def _plan_for_cache(plan: AnalysisPlan) -> AnalysisPlan:
-    return plan.model_copy(deep=True)
-
-
-def _cache_key(question: str, entities: Dict[str, Any], language: str) -> str:
-    payload: Dict[str, Any] = {
-        "q": (question or "").strip(),
-        "e": entities,
-        "l": (language or "").strip().lower(),
-        "dfs": _ENABLE_DYNAMIC_FEW_SHOTS,
-        "mfs": _MAX_FEW_SHOTS,
-        "provider": LLM_PROVIDER,
-        "model": _LLM_MODEL,
-        "version": _PLAN_CACHE_KEY_VERSION,
-        "token_w": _FEWSHOT_TOKEN_WEIGHT,
-        "entity_key_w": _FEWSHOT_ENTITY_KEY_WEIGHT,
-        "entity_value_w": _FEWSHOT_ENTITY_VALUE_WEIGHT,
-        "intent_w": _FEWSHOT_INTENT_WEIGHT,
-        "intent_keywords": _INTENT_KEYWORDS,
-    }
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def _cache_get(key: str) -> Optional[AnalysisPlan]:
-    global _plan_cache_expired
-    now = datetime.now(timezone.utc).timestamp()
-    with _PLAN_CACHE_LOCK:
-        item = _PLAN_CACHE.get(key)
-        if item is None:
-            return None
-        cached_plan, cached_at = item
-        if now - cached_at > _PLAN_CACHE_TTL_SECONDS:
-            del _PLAN_CACHE[key]
-            with _PLAN_CACHE_STATS_LOCK:
-                _plan_cache_expired += 1
-            return None
-        _PLAN_CACHE.move_to_end(key)
-        return cached_plan.model_copy(deep=True)
-
-
-def _cache_put(key: str, value: AnalysisPlan) -> None:
-    now = datetime.now(timezone.utc).timestamp()
-    with _PLAN_CACHE_LOCK:
-        _PLAN_CACHE[key] = (_plan_for_cache(value).model_copy(deep=True), now)
-        _PLAN_CACHE.move_to_end(key)
-        while len(_PLAN_CACHE) > _PLAN_CACHE_SIZE:
-            _PLAN_CACHE.popitem(last=False)
-
-
-def _record_cache_event(hit: Optional[bool]) -> None:
-    global _plan_cache_hits, _plan_cache_misses
-    _LAST_CACHE_EVENT.set(hit)
-    if hit is None:
-        return
-    with _PLAN_CACHE_STATS_LOCK:
-        if hit:
-            _plan_cache_hits += 1
-        else:
-            _plan_cache_misses += 1
-
-
-def get_plan_cache_diagnostics() -> Dict[str, Any]:
-    with _PLAN_CACHE_STATS_LOCK, _PLAN_CACHE_LOCK:
-        return {
-            "enabled": _ENABLE_PLAN_CACHE,
-            "last_call_cache_hit": _LAST_CACHE_EVENT.get(),
-            "total_hits": _plan_cache_hits,
-            "total_misses": _plan_cache_misses,
-            "total_expired": _plan_cache_expired,
-            "entries": len(_PLAN_CACHE),
-            "capacity": _PLAN_CACHE_SIZE,
-            "ttl_seconds": _PLAN_CACHE_TTL_SECONDS,
-            "key_version": _PLAN_CACHE_KEY_VERSION,
-        }
 
 
 def _tokenize(text: str) -> set[str]:
@@ -661,20 +570,6 @@ def generate_analysis_plan(
         language = "auto"
 
     with log_context(trace_id=trace_id or "", planner_language=language):
-        _record_cache_event(None)
-
-        cache_key: Optional[str] = None
-        if _ENABLE_PLAN_CACHE and not debug:
-            cache_key = _cache_key(question=question, entities=entities, language=language)
-            cached_plan = _cache_get(cache_key)
-            if cached_plan is not None:
-                _record_cache_event(True)
-                logger.debug("[Planner] Returning cached analysis plan")
-                if progress_cb is not None:
-                    progress_cb("Using cached plan.")
-                return cached_plan
-            _record_cache_event(False)
-
         # High-level notification that planning has started.
         if progress_cb is not None:
             progress_cb("Thinking about a plan.")
@@ -771,8 +666,6 @@ def generate_analysis_plan(
                 progress_cb("Finished thinking about a plan.")
             return debug_payload
 
-        if cache_key is not None:
-            _cache_put(cache_key, result)
         if progress_cb is not None:
             progress_cb("Finished thinking about a plan.")
         return result
