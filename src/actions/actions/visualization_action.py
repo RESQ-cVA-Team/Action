@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional, Protocol, cast
+from typing import Any, Dict, List, Optional, Protocol, Tuple, cast
 from uuid import uuid4
 
 from rasa_sdk import Action  # type: ignore
@@ -43,11 +43,6 @@ _SHOW_EXECUTION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_EXECUTION_SUMMARY", de
 _DEFER_CALLBACK_HANDOFF = env_util.env_flag("LONG_ACTION_DEFER_CALLBACK_HANDOFF", default=False)
 _EMIT_QUERY_DEBUG = env_util.env_flag("ACTIONS_EMIT_QUERY_DEBUG", default=False)
 _VISUALIZATION_CONTINUATION_INTENTS = {
-    "generate_visualization",
-    "update_visualization",
-    "clarify_visualization",
-}
-_VISUALIZATION_THREAD_INTENTS = {
     "generate_visualization",
     "update_visualization",
     "clarify_visualization",
@@ -113,31 +108,6 @@ class TrackerLike(Protocol):
     events: List[Dict[str, Any]]
 
     def current_state(self) -> Dict[str, Any]: ...
-
-
-def _extract_intent_name_from_user_event(event: Dict[str, Any]) -> str:
-    parse_data_any = event.get("parse_data")
-    parse_data = cast(Dict[str, Any], parse_data_any) if isinstance(parse_data_any, dict) else {}
-
-    intent_any = parse_data.get("intent")
-    intent = cast(Dict[str, Any], intent_any) if isinstance(intent_any, dict) else {}
-    name_any = intent.get("name")
-    if isinstance(name_any, str) and name_any.strip():
-        return name_any.strip()
-
-    fallback_intent_any = event.get("intent")
-    fallback_intent = cast(Dict[str, Any], fallback_intent_any) if isinstance(fallback_intent_any, dict) else {}
-    fallback_name_any = fallback_intent.get("name")
-    if isinstance(fallback_name_any, str) and fallback_name_any.strip():
-        return fallback_name_any.strip()
-
-    metadata_any = event.get("metadata")
-    metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
-    metadata_intent_any = metadata.get("intentName")
-    if isinstance(metadata_intent_any, str) and metadata_intent_any.strip():
-        return metadata_intent_any.strip()
-
-    return ""
 
 
 def _emit_next_metric_followup(
@@ -244,37 +214,6 @@ def _build_metric_clarification_prompt(
     return message, buttons
 
 
-def _collect_visualization_thread_messages(events: List[Dict[str, Any]], fallback_limit: int = 12) -> List[str]:
-    user_messages: List[str] = []
-    rejected_indices: set[int] = set()
-    last_user_index: Optional[int] = None
-
-    for ev in events:
-        if ev.get("event") == "user":
-            text_any = ev.get("text")
-            if isinstance(text_any, str) and text_any.strip():
-                user_messages.append(text_any.strip())
-                last_user_index = len(user_messages) - 1
-
-        elif ev.get("event") == "bot":
-            payload = _extract_bot_custom_payload(ev)
-            if payload and payload.get("type") == "visualization_query_decision" and payload.get("decision") == "reject" and last_user_index is not None:
-                rejected_indices.add(last_user_index)
-
-    if not user_messages:
-        return []
-
-    # Use the same topic-boundary rule as _collect_visualization_thread_entities so an
-    # off-topic turn (e.g. misclassified intent) breaks the thread here too, instead of
-    # letting stale, abandoned requests bleed into a brand-new unrelated question.
-    anchor_user_idx = _find_latest_visualization_anchor_user_ordinal(events)
-    thread_start = anchor_user_idx if anchor_user_idx >= 0 else max(0, len(user_messages) - fallback_limit)
-
-    sliced = user_messages[thread_start:][-fallback_limit:]
-    sliced_global_start = max(thread_start, len(user_messages) - fallback_limit)
-    return [msg for i, msg in enumerate(sliced) if (sliced_global_start + i) not in rejected_indices]
-
-
 def _merge_entities(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
     merged: Dict[str, Any] = dict(base)
     for key, value in incoming.items():
@@ -340,33 +279,6 @@ def _extract_entities_from_user_event(event: Dict[str, Any]) -> Dict[str, Any]:
     return extracted
 
 
-def _collect_visualization_thread_entities(events: List[Dict[str, Any]], fallback_limit: int = 12) -> Dict[str, Any]:
-    user_events: List[Dict[str, Any]] = []
-    for ev in events:
-        if ev.get("event") != "user":
-            continue
-        text_any = ev.get("text")
-        if isinstance(text_any, str) and text_any.strip():
-            user_events.append(ev)
-
-    if not user_events:
-        return {}
-
-    anchor_user_idx = _find_latest_visualization_anchor_user_ordinal(events)
-    if anchor_user_idx < 0:
-        anchor_user_idx = max(0, len(user_events) - fallback_limit)
-
-    thread_slice = user_events[anchor_user_idx:]
-    if len(thread_slice) > fallback_limit:
-        thread_slice = thread_slice[-fallback_limit:]
-
-    merged: Dict[str, Any] = {}
-    for user_event in thread_slice:
-        merged = _merge_entities(merged, _extract_entities_from_user_event(user_event))
-
-    return merged
-
-
 def _dedupe_list_values(values: List[Any]) -> List[Any]:
     deduped: List[Any] = []
     seen: set[str] = set()
@@ -386,37 +298,6 @@ _LATEST_ENTITY_PRECEDENCE_KEYS = {
     "group_id",
     "date",
 }
-
-
-def merge_latest_with_thread_entities(
-    latest_entities: Dict[str, Any],
-    events: List[Dict[str, Any]],
-    fallback_limit: int = 12,
-) -> Dict[str, Any]:
-    """Merge the current turn's entities with the anchored visualization
-    thread's entities. Only called when the caller has already decided the
-    thread should carry forward at all (see
-    _carries_previous_request) -- a fresh, unrelated
-    generate_visualization request skips this entirely rather than being
-    merged and then selectively un-merged, so there's nothing here to guard
-    against a stale identity entity (hospital, country, ...) leaking into an
-    unrelated request.
-    """
-    thread_entities = _collect_visualization_thread_entities(events, fallback_limit=fallback_limit)
-    if not thread_entities:
-        return dict(latest_entities)
-
-    merged = _merge_entities(thread_entities, latest_entities)
-    for key, value in list(merged.items()):
-        if isinstance(value, list):
-            merged[key] = _dedupe_list_values(cast(List[Any], value))
-
-    # A restated identity/cohort key in the latest turn is authoritative: it
-    # replaces (not appends to) whatever was inherited from earlier turns.
-    for key in _LATEST_ENTITY_PRECEDENCE_KEYS:
-        if key in latest_entities:
-            merged[key] = latest_entities[key]
-    return merged
 
 
 def _decision_for_latest_message(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -449,6 +330,134 @@ def _proceed_decided_for_latest_message(events: List[Dict[str, Any]]) -> Optiona
     return str(decision.get("reason") or "sufficient_information")
 
 
+def _user_turns(events: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]]:
+    """Each user message with the decision sent for it, if any, oldest first."""
+    turns: List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]] = []
+    for ev in events:
+        if ev.get("event") == "user":
+            turns.append((ev, None))
+        elif ev.get("event") == "bot" and turns and turns[-1][1] is None:
+            payload = _extract_bot_custom_payload(ev)
+            if payload and payload.get("type") == "visualization_query_decision":
+                turns[-1] = (turns[-1][0], payload)
+    return turns
+
+
+def _request_start(turns: List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]], index: int) -> int:
+    """The first turn of the request turn `index` belongs to: back over every
+    earlier turn that was answered with a clarify."""
+    start = index
+    while start > 0 and (turns[start - 1][1] or {}).get("decision") == "clarify":
+        start -= 1
+    return start
+
+
+def _edited_request_entities(turns: List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]], start: int) -> Dict[str, Any]:
+    """The entities of the request whose chart a request starting at `start`
+    edits: the latest earlier request that proceeded."""
+    for index in range(start - 1, -1, -1):
+        if (turns[index][1] or {}).get("decision") == "proceed":
+            return _request_entities(turns, index)
+    return {}
+
+
+def _request_entities(turns: List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]], index: int) -> Dict[str, Any]:
+    """The entities of the request turn `index` belongs to, up to that turn,
+    including those of the request it edits; never those of older, unrelated
+    requests."""
+    start = _request_start(turns, index)
+    edits = (turns[start][1] or {}).get("edits_previous_plan") is True
+    entities = _edited_request_entities(turns, start) if edits else {}
+    for event, _ in turns[start : index + 1]:
+        entities = _merge_entities(entities, _extract_entities_from_user_event(event))
+    return entities
+
+
+def _clarification_exchange(events: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    """The earlier turns of the request the current message answers: each user
+    message that was answered with a clarify decision, oldest first, back to
+    the message that started the request, with that decision. Empty when the
+    current message answers no pending clarification."""
+    turns = _user_turns(events)
+    exchange: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+    for user_event, decision in reversed(turns[:-1]):
+        if not decision or decision.get("decision") != "clarify":
+            break
+        exchange.append((user_event, decision))
+    return list(reversed(exchange))
+
+
+def _merge_request_entities(latest_entities: Dict[str, Any], earlier: Dict[str, Any]) -> Dict[str, Any]:
+    """The current message's entities over those of the earlier turns of the
+    same request; a restated identity or cohort key replaces the earlier one."""
+    merged = _merge_entities(dict(earlier), latest_entities)
+    for key, value in list(merged.items()):
+        if isinstance(value, list):
+            merged[key] = _dedupe_list_values(cast(List[Any], value))
+    for key in _LATEST_ENTITY_PRECEDENCE_KEYS:
+        if key in latest_entities:
+            merged[key] = latest_entities[key]
+    return merged
+
+
+def _planner_text(message: Dict[str, Any]) -> str:
+    """A message as the planner reads it: resolved metrics written as codes,
+    and a button payload ("/intent{...}") as the values it chose."""
+    text_any = message.get("text")
+    text = text_any.strip() if isinstance(text_any, str) else ""
+    if text.startswith("/"):
+        values = [str(e.get("value")) for e in message.get("entities") or [] if isinstance(e, dict) and e.get("value")]
+        return ", ".join(values) or text
+    return question_with_resolved_metrics(message)
+
+
+def _parse_data(event: Dict[str, Any]) -> Dict[str, Any]:
+    parse_data_any = event.get("parse_data")
+    return cast(Dict[str, Any], parse_data_any) if isinstance(parse_data_any, dict) else event
+
+
+def _request_context(events: List[Dict[str, Any]], latest_msg: Dict[str, Any], edits_previous_plan: bool) -> Dict[str, Any]:
+    """Question, entities, history and pending clarification for the request
+    the current message belongs to. A reply to a clarification continues the
+    request that started the exchange: its question is that request with each
+    question asked and answered, its entities those of the exchange, and the
+    previous plan its base only if that request edited it. Otherwise the
+    message stands alone, on top of the previous plan when edits_previous_plan."""
+    latest_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg))
+    exchange = _clarification_exchange(events)
+    if exchange:
+        edits_previous_plan = exchange[0][1].get("edits_previous_plan") is True
+        answers = [_parse_data(event) for event, _ in exchange[1:]] + [latest_msg]
+        lines = [_planner_text(_parse_data(exchange[0][0]))]
+        for (_, decision), answer in zip(exchange, answers):
+            lines.append(f"The assistant asked: {decision.get('message') or ''}".rstrip())
+            lines.append(f"The user answered: {_planner_text(answer)}")
+        question = "\n".join(lines)
+        turns = _user_turns(events)
+        entities = canonicalize_ssot_entities(_merge_request_entities(latest_entities, _request_entities(turns, len(turns) - 2)))
+        history = [str(_parse_data(event).get("text") or "") for event, _ in exchange] + [str(latest_msg.get("text") or "")]
+        pending_clarification: Optional[Dict[str, Any]] = exchange[-1][1]
+    else:
+        question = question_with_resolved_metrics(latest_msg)
+        turns = _user_turns(events)
+        earlier = _edited_request_entities(turns, len(turns) - 1) if edits_previous_plan and turns else {}
+        entities = canonicalize_ssot_entities(_merge_request_entities(latest_entities, earlier)) if earlier else latest_entities
+        history = []
+        pending_clarification = None
+    latest_plan_summary = _collect_latest_visualization_plan_summary(events) if edits_previous_plan else None
+    if latest_plan_summary:
+        question = f"{latest_plan_summary}\n\nUser's newest instruction:\n{question}".strip()
+    return {
+        "planner_question": question,
+        "extracted_entities": entities,
+        "conversation_history": history,
+        "latest_plan_summary": latest_plan_summary,
+        "pending_clarification": pending_clarification,
+        "answers_clarification": bool(exchange),
+        "edits_previous_plan": edits_previous_plan,
+    }
+
+
 async def _orchestrate(**kwargs: Any) -> VisualizationRequestOutcome:
     """The orchestrator blocks on LLM calls for seconds at a time. Run in a worker
     thread, it leaves the action server free to answer other requests meanwhile."""
@@ -467,48 +476,6 @@ def _hand_over_plan(ctx: LongActionContext, trace_id: str, plan: lang_schema.Ana
     return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=True)
 
 
-def _pending_clarification_payload(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """The most recent visualization_query_decision payload the bot sent
-    before the user's current turn, if that payload was a clarify -- i.e.
-    what this turn is hoping to resolve. None if there's no pending
-    clarification (fresh request, or the prior decision wasn't a clarify).
-
-    Deliberately derived from events rather than the
-    awaiting_visualization_clarification slot: action_clarify_visualization_request
-    flips that slot to False as part of its own return events (before its
-    FollowupAction, action_oneshot_generate_visualization, re-derives this same
-    context later in the same turn), so the slot can't be read consistently by
-    both. The events are stable across both reads.
-    """
-    last_user_idx = -1
-    for idx in range(len(events) - 1, -1, -1):
-        if events[idx].get("event") == "user":
-            last_user_idx = idx
-            break
-    if last_user_idx < 0:
-        return None
-
-    for idx in range(last_user_idx - 1, -1, -1):
-        ev = events[idx]
-        if ev.get("event") != "bot":
-            continue
-        payload = _extract_bot_custom_payload(ev)
-        if payload and payload.get("type") == "visualization_query_decision":
-            return payload if payload.get("decision") == "clarify" else None
-    return None
-
-
-def _carries_previous_request(events: List[Dict[str, Any]]) -> bool:
-    """Whether this turn continues the visualization request before it, and so
-    inherits its entities, history and plan: it answers a pending
-    clarification, or the decision stage judged it an edit of the previous
-    chart. A new request starts clean."""
-    if _pending_clarification_payload(events) is not None:
-        return True
-    decision = _decision_for_latest_message(events)
-    return bool(decision and decision.get("edits_previous_plan") is True)
-
-
 def _extract_bot_custom_payload(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     custom_any = event.get("custom")
     if isinstance(custom_any, dict):
@@ -521,65 +488,6 @@ def _extract_bot_custom_payload(event: Dict[str, Any]) -> Optional[Dict[str, Any
         return cast(Dict[str, Any], nested_custom_any)
 
     return None
-
-
-def _is_visualization_payload(payload: Dict[str, Any]) -> bool:
-    payload_type_any = payload.get("type")
-    if isinstance(payload_type_any, str) and payload_type_any.strip() == _VISUALIZATION_PLAN_TYPE:
-        return True
-
-    schema_version_any = payload.get("schema_version")
-    charts_any = payload.get("charts")
-    return schema_version_any == _VISUALIZATION_RESPONSE_SCHEMA_VERSION and isinstance(charts_any, list)
-
-
-def _event_has_visualization_signal(event: Dict[str, Any]) -> bool:
-    event_name_any = event.get("event")
-    event_name = event_name_any.strip() if isinstance(event_name_any, str) else ""
-    if event_name == "user":
-        return _extract_intent_name_from_user_event(event) in _VISUALIZATION_THREAD_INTENTS
-
-    if event_name == "bot":
-        payload = _extract_bot_custom_payload(event)
-        if payload is not None and _is_visualization_payload(payload):
-            return True
-
-    return False
-
-
-def _find_latest_visualization_anchor_user_ordinal(events: List[Dict[str, Any]]) -> int:
-    signal_idx = -1
-    for idx in range(len(events) - 1, -1, -1):
-        if _event_has_visualization_signal(events[idx]):
-            signal_idx = idx
-            break
-
-    if signal_idx < 0:
-        return -1
-
-    user_ordinal = -1
-    for idx, event in enumerate(events):
-        if event.get("event") == "user":
-            user_ordinal += 1
-        if idx == signal_idx:
-            break
-
-    for idx in range(signal_idx, -1, -1):
-        ev = events[idx]
-        if ev.get("event") != "user":
-            continue
-
-        text_any = ev.get("text")
-        if isinstance(text_any, str) and text_any.strip():
-            intent_name = _extract_intent_name_from_user_event(ev)
-            if intent_name not in _VISUALIZATION_THREAD_INTENTS:
-                return user_ordinal + 1
-
-        user_ordinal -= 1
-
-    # If every user turn up to the latest signal is visualization-related,
-    # keep the full thread starting from the first user turn.
-    return 0
 
 
 def _collect_latest_visualization_plan_summary(
@@ -623,7 +531,6 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
         trace_id = uuid4().hex
         metadata: Dict[str, Any] = {}
         slots: Dict[str, Any] = {}
-        fallback_limit = 12
         latest_msg = tracker.latest_message
 
         metadata_any = latest_msg.get("metadata")
@@ -639,29 +546,14 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                 language = resolve_language(metadata=metadata, slots=slots, tracker=tracker)
 
                 events = tracker.events
-                pending_clarification = _pending_clarification_payload(events)
-                latest_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg))
-                if pending_clarification is not None:
-                    extracted_entities = canonicalize_ssot_entities(
-                        merge_latest_with_thread_entities(latest_entities, events, fallback_limit=fallback_limit),
-                    )
-                    conversation_history = _collect_visualization_thread_messages(events, fallback_limit=fallback_limit)
-                else:
-                    # Not answering a pending clarification: the decision stage
-                    # sees this turn's own entities and the previous plan, and
-                    # says whether the message edits that plan or starts anew.
-                    extracted_entities = latest_entities
-                    conversation_history = []
-                # The current turn's own text is the question; prior turns are carried
-                # via extracted_entities (structured) and conversation_history (passed
-                # separately to the orchestrator's own history field), not by joining
-                # raw text here — doing so previously confused the planner into
-                # blending unrelated requests together.
-                planner_question = question_with_resolved_metrics(latest_msg)
-
-                latest_plan_summary = _collect_latest_visualization_plan_summary(events)
-                if latest_plan_summary:
-                    planner_question = f"{latest_plan_summary}\n\nUser's newest instruction:\n{planner_question}".strip()
+                # Judged against the previous plan unless the message answers a
+                # pending clarification; the decision stage says whether it edits it.
+                request = _request_context(events, latest_msg, edits_previous_plan=True)
+                planner_question = request["planner_question"]
+                extracted_entities = request["extracted_entities"]
+                conversation_history = request["conversation_history"]
+                latest_plan_summary = request["latest_plan_summary"]
+                pending_clarification = request["pending_clarification"]
 
                 outcome = await _orchestrate(
                     question=planner_question,
@@ -675,7 +567,29 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                     pending_clarification=pending_clarification,
                 )
 
-                edits_previous_plan = pending_clarification is not None or bool(latest_plan_summary and outcome.edits_previous_plan)
+                # A new request is judged as if there were no previous chart. The
+                # previous plan can still colour a rejection, so a rejected new
+                # request is judged once more without it.
+                if not request["answers_clarification"] and outcome.decision == "reject" and latest_plan_summary and outcome.edits_previous_plan is False:
+                    request = _request_context(events, latest_msg, edits_previous_plan=False)
+                    planner_question = request["planner_question"]
+                    outcome = await _orchestrate(
+                        question=planner_question,
+                        entities=request["extracted_entities"],
+                        language=override_language,
+                        trace_id=trace_id,
+                        max_retries=_PLANNER_MAX_RETRIES,
+                        include_plan=False,
+                        conversation_history=request["conversation_history"],
+                        progress_cb=None,
+                        pending_clarification=request["pending_clarification"],
+                    )
+                    latest_plan_summary = None
+
+                if request["answers_clarification"]:
+                    edits_previous_plan = bool(request["edits_previous_plan"])
+                else:
+                    edits_previous_plan = bool(latest_plan_summary and outcome.edits_previous_plan)
 
                 if outcome.decision == "clarify":
                     clarification_message, clarification_buttons = _build_metric_clarification_prompt(
@@ -814,30 +728,13 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
     language = resolve_language(metadata=latest_meta, slots=ctx.slots)
     events = ctx.events
 
-    latest_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg))
-    if _carries_previous_request(events):
-        extracted_entities = canonicalize_ssot_entities(
-            merge_latest_with_thread_entities(latest_entities, events, fallback_limit=12),
-        )
-        conversation_history = _collect_visualization_thread_messages(events, fallback_limit=12)
-        latest_plan_summary = _collect_latest_visualization_plan_summary(events)
-        pending_clarification = _pending_clarification_payload(events)
-    else:
-        # A new request starts clean: no entities, history or plan from
-        # earlier turns (see _carries_previous_request).
-        extracted_entities = latest_entities
-        conversation_history = []
-        latest_plan_summary = None
-        pending_clarification = None
-
-    # ctx.text is the current turn's own text; prior turns are carried via
-    # extracted_entities (structured) and conversation_history (passed separately to
-    # the orchestrator's own history field), not by joining raw text here — doing so
-    # previously confused the planner into blending unrelated requests together.
-    planner_question = question_with_resolved_metrics(latest_msg)
-
-    if latest_plan_summary:
-        planner_question = f"{latest_plan_summary}\n\nUser's newest instruction:\n{planner_question}".strip()
+    decision = _decision_for_latest_message(events)
+    request = _request_context(events, latest_msg, edits_previous_plan=bool(decision and decision.get("edits_previous_plan") is True))
+    planner_question = request["planner_question"]
+    extracted_entities = request["extracted_entities"]
+    conversation_history = request["conversation_history"]
+    latest_plan_summary = request["latest_plan_summary"]
+    pending_clarification = request["pending_clarification"]
 
     return {
         "user_message": ctx.text,

@@ -1,409 +1,166 @@
-import ast
-import json
-from pathlib import Path
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional
 
+from src.actions.actions import visualization_action as va
 from src.actions.helpers.visualization import canonicalize_ssot_entities
 
 
-def _load_visualization_context_helpers():
-    source_path = Path(__file__).resolve().parents[1] / "src" / "actions" / "actions" / "visualization_action.py"
-    source = source_path.read_text(encoding="utf-8")
-    module_ast = ast.parse(source, filename=str(source_path))
-
-    required = {
-        "_extract_intent_name_from_user_event",
-        "_merge_entities",
-        "_extract_entities_from_user_event",
-        "_collect_visualization_thread_entities",
-        "_dedupe_list_values",
-        "merge_latest_with_thread_entities",
-        "_extract_bot_custom_payload",
-        "_is_visualization_payload",
-        "_event_has_visualization_signal",
-        "_find_latest_visualization_anchor_user_ordinal",
-        "_pending_clarification_payload",
-        "_decision_for_latest_message",
-        "_proceed_decided_for_latest_message",
-        "_carries_previous_request",
-        "canonicalize_ssot_entities",
-    }
-
-    required_assigns = {"_LATEST_ENTITY_PRECEDENCE_KEYS"}
-
-    selected = [
-        node
-        for node in module_ast.body
-        if (isinstance(node, ast.FunctionDef) and node.name in required)
-        or (isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and node.targets[0].id in required_assigns)
-    ]
-
-    isolated_module = ast.Module(body=selected, type_ignores=[])
-    ast.fix_missing_locations(isolated_module)
-    namespace = {
-        "json": json,
-        "cast": cast,
-        "Any": Any,
-        "Dict": Dict,
-        "List": List,
-        "Optional": Optional,
-        "_VISUALIZATION_THREAD_INTENTS": {
-            "generate_visualization",
-            "update_visualization",
-            "clarify_visualization",
-        },
-        "_VISUALIZATION_PLAN_TYPE": "visualization_plan",
-        "_VISUALIZATION_RESPONSE_SCHEMA_VERSION": 1,
-    }
-    exec(compile(isolated_module, filename=str(source_path), mode="exec"), namespace)
-    return namespace
+def _user_event(text: str, entities: List[Dict[str, Any]], intent: str = "generate_visualization") -> Dict[str, Any]:
+    return {"event": "user", "text": text, "parse_data": {"text": text, "intent": {"name": intent}, "entities": entities}}
 
 
-def _load_merge_latest_with_thread_entities():
-    return _load_visualization_context_helpers()["merge_latest_with_thread_entities"]
+def _latest(text: str, entities: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return {"text": text, "intent": {"name": "generate_visualization"}, "entities": entities}
 
 
-def _user_event(text: str, intent: str, entities: List[Dict[str, Any]]) -> Dict[str, Any]:
-    return {
-        "event": "user",
-        "text": text,
-        "parse_data": {
-            "intent": {"name": intent},
-            "entities": entities,
-        },
-    }
+def _decision(decision: str, message: Optional[str] = None, edits: Optional[bool] = None) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"type": "visualization_query_decision", "decision": decision, "reason": "x", "message": message}
+    if edits is not None:
+        payload["edits_previous_plan"] = edits
+    return {"event": "bot", "custom": payload}
 
 
-def test_merge_latest_with_thread_entities_merges_visualization_thread() -> None:
-    merge_latest_with_thread_entities = _load_merge_latest_with_thread_entities()
-    events = [
-        _user_event(
-            "Show DTN by month for past year split by sex",
-            "generate_visualization",
-            [
-                {"entity": "chart_type", "value": "LINE"},
-                {"entity": "metric", "value": "DTN"},
-                {"entity": "time_grain", "value": "month"},
-                {"entity": "split", "value": "sex"},
-                {"entity": "date", "value": "past year"},
-            ],
-        ),
-        _user_event(
-            "line chart",
-            "clarify_visualization",
-            [{"entity": "chart_type", "value": "LINE"}],
-        ),
-        _user_event(
-            "DTN",
-            "clarify_visualization",
-            [{"entity": "metric", "value": "DTN"}],
-        ),
-    ]
-
-    extracted = merge_latest_with_thread_entities(
-        latest_entities={"metric": "DTN"},
-        events=events,
-        fallback_limit=12,
-    )
-
-    assert extracted["metric"] == "DTN"
-    assert extracted["chart_type"] == "LINE"
-    assert extracted["date"] == "past year"
-    assert extracted["time_grain"] == "month"
-    assert extracted["split"] == "sex"
+def _plan(metric: str, sex: Optional[str] = None) -> Dict[str, Any]:
+    chart: Dict[str, Any] = {"chart_type": "LINE", "metrics": [{"metric": metric}]}
+    if sex:
+        chart["filters"] = {"type": "SexFilter", "value": sex}
+    return {"event": "bot", "custom": {"type": "visualization_plan", "plan": {"charts": [chart]}}}
 
 
-def test_merge_latest_with_thread_entities_prefers_latest_value() -> None:
-    merge_latest_with_thread_entities = _load_merge_latest_with_thread_entities()
-    events = [
-        _user_event(
-            "Show AGE as line chart",
-            "generate_visualization",
-            [
-                {"entity": "metric", "value": "AGE"},
-                {"entity": "chart_type", "value": "LINE"},
-            ],
-        ),
-        _user_event(
-            "DTN",
-            "clarify_visualization",
-            [{"entity": "metric", "value": "DTN"}],
-        ),
-    ]
+FEMALE_DTN = [
+    _user_event("Show me DTN for female patients as a line chart", [{"entity": "metric", "value": "DTN"}, {"entity": "sex", "value": "FEMALE"}]),
+    _decision("proceed"),
+    _plan("DTN", "FEMALE"),
+]
 
-    merged = merge_latest_with_thread_entities(
-        latest_entities={"metric": "DTN"},
-        events=events,
-        fallback_limit=12,
-    )
 
+def test_merge_request_entities_combines_the_earlier_turns() -> None:
+    earlier = {"chart_type": "LINE", "metric": "DTN", "date": "past year"}
+    merged = va._merge_request_entities({"metric": "DTN"}, earlier)
     assert merged["metric"] == "DTN"
     assert merged["chart_type"] == "LINE"
+    assert merged["date"] == "past year"
 
 
-def test_merge_latest_with_thread_entities_keeps_latest_provider_scope_keys() -> None:
-    merge_latest_with_thread_entities = _load_merge_latest_with_thread_entities()
-    events = [
-        _user_event(
-            "Run Mann-Whitney for old provider groups",
-            "generate_visualization",
-            [
-                {"entity": "group_id", "value": "provider group 2825"},
-                {"entity": "group_id", "value": "provider group 3001"},
-                {"entity": "date", "value": "2023-01-01"},
-                {"entity": "date", "value": "2023-12-31"},
-            ],
-        ),
-    ]
-
-    merged = merge_latest_with_thread_entities(
-        latest_entities={
-            "hospital_name": ["Aalborg University - Hospital", "Kronborg Castle Hospital"],
-            "date": ["2024-01-01", "2026-12-31"],
-        },
-        events=events,
-        fallback_limit=12,
-    )
-
-    assert merged["hospital_name"] == ["Aalborg University - Hospital", "Kronborg Castle Hospital"]
-    assert merged["date"] == ["2024-01-01", "2026-12-31"]
-    # group_id wasn't restated by the latest turn, but merge_latest_with_thread_entities
-    # always carries the thread forward once called -- it's the caller's job
-    # (_carries_previous_request) to decide whether to call it
-    # at all for a given turn, not this function's job to selectively drop keys.
-    assert merged["group_id"] == ["provider group 2825", "provider group 3001"]
-
-
-def test_merge_latest_with_thread_entities_keeps_latest_provider_group_ids() -> None:
-    merge_latest_with_thread_entities = _load_merge_latest_with_thread_entities()
-    events = [
-        _user_event(
-            "Run Mann-Whitney for old provider groups",
-            "generate_visualization",
-            [
-                {"entity": "group_id", "value": "provider group 2825"},
-                {"entity": "group_id", "value": "provider group 3001"},
-            ],
-        ),
-    ]
-
-    merged = merge_latest_with_thread_entities(
-        latest_entities={
-            "group_id": ["provider group 279", "provider group 280"],
-            "date": ["2024-01-01", "2026-12-31"],
-        },
-        events=events,
-        fallback_limit=12,
-    )
-
-    assert merged["group_id"] == ["provider group 279", "provider group 280"]
+def test_merge_request_entities_lets_a_restated_scope_replace_the_earlier_one() -> None:
+    earlier = {"group_id": "provider group 2825", "date": "2023-01-01"}
+    merged = va._merge_request_entities({"group_id": ["provider group 279"], "date": ["2024-01-01", "2026-12-31"]}, earlier)
+    assert merged["group_id"] == ["provider group 279"]
     assert merged["date"] == ["2024-01-01", "2026-12-31"]
 
 
 def test_canonicalize_ssot_entities_does_not_override_extracted_metric_from_question() -> None:
-    normalized = canonicalize_ssot_entities(
-        {"chart_type": "LINE", "metric": "ICH_TREATMENT_TYPE"},
-    )
-
-    assert normalized["metric"] == "ICH_TREATMENT_TYPE"
+    assert canonicalize_ssot_entities({"chart_type": "LINE", "metric": "ICH_TREATMENT_TYPE"})["metric"] == "ICH_TREATMENT_TYPE"
 
 
-def test_fresh_generate_visualization_does_not_carry_forward_stale_hospital_scope() -> None:
-    """Regression test for a reported carryover bug: after a Mann-Whitney
-    comparison names a specific hospital, an unrelated single-metric follow-up
-    request that names no hospital must not inherit it.
+def test_a_new_request_stands_alone() -> None:
+    events = FEMALE_DTN + [_user_event("Show me a line graph of discharge NIHSS", [{"entity": "metric", "value": "DISCHARGE_NIHSS"}])]
+    request = va._request_context(events, _latest("Show me a line graph of discharge NIHSS", [{"entity": "metric", "value": "DISCHARGE_NIHSS"}]), edits_previous_plan=False)
+    assert request["latest_plan_summary"] is None
+    assert "sex" not in request["extracted_entities"]
+    assert request["conversation_history"] == []
+    assert request["answers_clarification"] is False
 
-    This used to be enforced inside merge_latest_with_thread_entities itself
-    (a "clear on absence" rule for identity keys). It's now enforced one layer
-    up: a fresh generate_visualization that isn't completing a pending
-    clarification simply never calls merge_latest_with_thread_entities at
-    all -- see _carries_previous_request and its callers in
-    visualization_action.py.
-    """
-    helpers = _load_visualization_context_helpers()
-    carries_previous_request = helpers["_carries_previous_request"]
-    events = [
-        _user_event(
-            "Can you compare my dtn against army alhama de murcia hospital using a mann whitney u test",
-            "generate_visualization",
-            [
-                {"entity": "hospital_scope_reference", "value": "my"},
-                {"entity": "metric", "value": "DTN"},
-                {"entity": "hospital_name", "value": "Army Alhama de Murcia Hospital"},
-                {"entity": "country_code", "value": "DE"},
-                {"entity": "group_by", "value": "HOSPITAL"},
-            ],
-        ),
-        _user_event(
-            "show me a bar chart of stroke type",
-            "generate_visualization",
-            [
-                {"entity": "chart_type", "value": "BAR"},
-                {"entity": "metric", "value": "STROKE_TYPE"},
-                {"entity": "group_by", "value": "STROKE_TYPE"},
-            ],
-        ),
+
+def test_an_edit_builds_on_the_previous_plan_and_the_request_it_edits() -> None:
+    events = FEMALE_DTN + [
+        _user_event("Show me a line graph of discharge NIHSS", [{"entity": "metric", "value": "DISCHARGE_NIHSS"}]),
+        _decision("proceed", edits=False),
+        _plan("DISCHARGE_NIHSS"),
+        _user_event("as a bar chart", [{"entity": "chart_type", "value": "BAR"}]),
     ]
-
-    latest_entities = {
-        "chart_type": "BAR",
-        "metric": "STROKE_TYPE",
-        "group_by": "STROKE_TYPE",
-    }
-
-    # A fresh generate_visualization, with no pending clarification in play
-    # (no bot decision event at all here), must not carry the thread forward.
-    assert carries_previous_request(events) is False
-    # So the caller uses latest_entities as-is -- nothing from the earlier
-    # Mann-Whitney turn (hospital, country, comparison group_by) leaks in.
-    assert "hospital_name" not in latest_entities
-    assert "hospital_scope_reference" not in latest_entities
-    assert "country_code" not in latest_entities
-    assert latest_entities["metric"] == "STROKE_TYPE"
+    request = va._request_context(events, _latest("as a bar chart", [{"entity": "chart_type", "value": "BAR"}]), edits_previous_plan=True)
+    assert request["planner_question"].startswith("Previous chart plan")
+    assert "DISCHARGE_NIHSS" in request["planner_question"]
+    # The edited request's entities carry over; the older chart's filter does not.
+    assert request["extracted_entities"]["metric"] == "DISCHARGE_NIHSS"
+    assert "sex" not in request["extracted_entities"]
+    assert request["extracted_entities"]["chart_type"] == "BAR"
 
 
-def test_carries_forward_when_the_decision_says_the_message_edits_the_previous_chart() -> None:
-    helpers = _load_visualization_context_helpers()
-    carries_previous_request = helpers["_carries_previous_request"]
-    earlier = _user_event("show dtn for female patients", "generate_visualization", [{"entity": "metric", "value": "DTN"}])
-
-    def turn(edits: Any) -> List[Dict[str, Any]]:
-        decision = {"type": "visualization_query_decision", "decision": "proceed", "reason": "all_required_fields_present", "edits_previous_plan": edits}
-        return [earlier, _decision_event("proceed", "all_required_fields_present"), _user_event("as a bar chart", "generate_visualization", []), {"event": "bot", "custom": decision}]
-
-    assert carries_previous_request(turn(True)) is True
-    assert carries_previous_request(turn(False)) is False
-    assert carries_previous_request(turn(None)) is False
-    # The NLU label alone no longer decides: an update label without an edit decision starts clean.
-    assert carries_previous_request([earlier, _user_event("make it a bar chart", "update_visualization", [])]) is False
-
-
-def test_should_carry_forward_true_while_awaiting_clarification_reply() -> None:
-    """The exact bug from the country_code PR review: 'show dtn from Czech
-    Republic' -> bot asks for chart_type -> user replies 'line chart please'.
-    The reply is classified generate_visualization (not clarify_visualization
-    or update_visualization), but it's completing the pending clarification,
-    not starting a fresh request, so the thread -- and country_code -- must
-    still carry forward.
-    """
-    helpers = _load_visualization_context_helpers()
-    carries_previous_request = helpers["_carries_previous_request"]
-    events = [
-        _user_event(
-            "show dtn from Czech Republic",
-            "generate_visualization",
-            [
-                {"entity": "metric", "value": "DTN"},
-                {"entity": "country_code", "value": "CZ"},
-            ],
-        ),
-        {
-            "event": "bot",
-            "custom": {
-                "type": "visualization_query_decision",
-                "decision": "clarify",
-                "reason": "missing_chart_type",
-            },
-        },
-        _user_event("line chart please", "generate_visualization", [{"entity": "chart_type", "value": "LINE"}]),
+def test_a_chain_of_edits_inherits_back_to_the_request_it_started_from() -> None:
+    events = FEMALE_DTN + [
+        _user_event("as a bar chart", [{"entity": "chart_type", "value": "BAR"}]),
+        _decision("proceed", edits=True),
+        _plan("DTN", "FEMALE"),
+        _user_event("per month instead", [{"entity": "group_by", "value": "MONTH"}]),
     ]
-
-    assert carries_previous_request(events) is True
-
-    merge_latest_with_thread_entities = _load_merge_latest_with_thread_entities()
-    merged = merge_latest_with_thread_entities(
-        latest_entities={"chart_type": "LINE"},
-        events=events,
-        fallback_limit=12,
-    )
-    assert merged["country_code"] == "CZ"
-    assert merged["metric"] == "DTN"
-    assert merged["chart_type"] == "LINE"
+    request = va._request_context(events, _latest("per month instead", [{"entity": "group_by", "value": "MONTH"}]), edits_previous_plan=True)
+    entities = request["extracted_entities"]
+    assert entities["metric"] == "DTN"
+    assert entities["sex"] == "FEMALE"
+    assert entities["chart_type"] == "BAR"
+    assert entities["group_by"] == "MONTH"
 
 
-def test_pending_clarification_payload_returns_the_full_prior_clarify_payload() -> None:
-    """_carries_previous_request only needs a bool, but the
-    "stay on the pending field" safeguard in request_orchestrator.py needs
-    the full payload (missing_fields/clarification_type/message/...) -- this
-    is the same traversal as the awaiting-clarification test above, just
-    asserting on what actually comes back."""
-    helpers = _load_visualization_context_helpers()
-    pending_clarification_payload = helpers["_pending_clarification_payload"]
-    events = [
-        _user_event("show me nihss over time", "generate_visualization", [{"entity": "group_by", "value": "NIHSS"}]),
-        {
-            "event": "bot",
-            "custom": {
-                "type": "visualization_query_decision",
-                "decision": "clarify",
-                "reason": "missing_required_fields",
-                "clarification_type": "metric",
-                "clarification_options": [],
-                "message": "Which NIHSS metric would you like to visualize over time?",
-                "missing_fields": ["metric"],
-            },
-        },
-        _user_event("AdmissionNihss", "generate_visualization", []),
+def test_a_clarification_reply_continues_the_request_that_was_asked_about() -> None:
+    events = FEMALE_DTN + [
+        _user_event("Show me nihss over time", [{"entity": "group_by", "value": "NIHSS"}]),
+        _decision("clarify", "Which NIHSS metric would you like to see over time?", edits=False),
+        _user_event("admission NIHSS", [{"entity": "metric", "value": "ADMISSION_NIHSS"}]),
     ]
+    request = va._request_context(events, _latest("admission NIHSS", [{"entity": "metric", "value": "ADMISSION_NIHSS"}]), edits_previous_plan=True)
+    question = request["planner_question"]
+    assert question.startswith("Show me nihss over time")
+    assert "The assistant asked: Which NIHSS metric would you like to see over time?" in question
+    assert "The user answered:" in question
+    # Not an edit, so neither the earlier chart's plan nor its filter carries over.
+    assert request["latest_plan_summary"] is None
+    assert "sex" not in request["extracted_entities"]
+    assert request["extracted_entities"]["metric"] == "ADMISSION_NIHSS"
+    assert request["answers_clarification"] is True
+    assert request["pending_clarification"]["message"] == "Which NIHSS metric would you like to see over time?"
+    assert request["conversation_history"] == ["Show me nihss over time", "admission NIHSS"]
 
-    payload = pending_clarification_payload(events)
-    assert payload is not None
-    assert payload["missing_fields"] == ["metric"]
-    assert payload["message"] == "Which NIHSS metric would you like to visualize over time?"
 
-
-def test_pending_clarification_payload_none_when_no_bot_turn_preceded() -> None:
-    helpers = _load_visualization_context_helpers()
-    pending_clarification_payload = helpers["_pending_clarification_payload"]
-    events = [_user_event("show me a bar chart of stroke type", "generate_visualization", [])]
-    assert pending_clarification_payload(events) is None
-
-
-def test_pending_clarification_payload_none_when_prior_decision_was_not_clarify() -> None:
-    helpers = _load_visualization_context_helpers()
-    pending_clarification_payload = helpers["_pending_clarification_payload"]
-    events = [
-        _user_event("show dtn", "generate_visualization", [{"entity": "metric", "value": "DTN"}]),
-        {
-            "event": "bot",
-            "custom": {"type": "visualization_query_decision", "decision": "proceed", "reason": "all_required_fields_present"},
-        },
-        _user_event("make it a bar chart", "clarify_visualization", [{"entity": "chart_type", "value": "BAR"}]),
+def test_a_reply_to_a_clarified_edit_keeps_the_previous_plan() -> None:
+    events = FEMALE_DTN + [
+        _user_event("group by hospital", [{"entity": "group_by", "value": "HOSPITAL"}]),
+        _decision("clarify", "Which hospitals should be compared?", edits=True),
+        _user_event("Hospital X", [{"entity": "hospital_name", "value": "Hospital X"}]),
     ]
-    assert pending_clarification_payload(events) is None
+    request = va._request_context(events, _latest("Hospital X", [{"entity": "hospital_name", "value": "Hospital X"}]), edits_previous_plan=False)
+    assert request["latest_plan_summary"] is not None
+    assert request["planner_question"].startswith("Previous chart plan")
+    assert request["edits_previous_plan"] is True
 
 
-def test_should_not_carry_forward_after_a_completed_request_with_no_pending_clarification() -> None:
-    """A generate_visualization turn that follows a *successful* (proceed) or
-    rejected prior request -- not a clarify -- is a fresh ask, even though the
-    prior bot turn was itself a visualization_query_decision payload."""
-    helpers = _load_visualization_context_helpers()
-    carries_previous_request = helpers["_carries_previous_request"]
+def test_a_button_reply_reads_as_the_value_it_chose() -> None:
+    payload = '/generate_visualization{"metric":"ADMISSION_NIHSS"}'
     events = [
-        _user_event(
-            "compare mine vs Hospital X",
-            "generate_visualization",
-            [{"entity": "hospital_name", "value": "Hospital X"}],
-        ),
-        {
-            "event": "bot",
-            "custom": {"type": "visualization_query_decision", "decision": "proceed"},
-        },
-        _user_event("show me a bar chart of stroke type", "generate_visualization", [{"entity": "chart_type", "value": "BAR"}]),
+        _user_event("Show me nihss over time", [{"entity": "group_by", "value": "NIHSS"}]),
+        _decision("clarify", "Which NIHSS metric?"),
+        _user_event(payload, [{"entity": "metric", "value": "ADMISSION_NIHSS"}]),
     ]
+    request = va._request_context(events, _latest(payload, [{"entity": "metric", "value": "ADMISSION_NIHSS"}]), edits_previous_plan=False)
+    assert request["planner_question"].endswith("The user answered: ADMISSION_NIHSS")
 
-    assert carries_previous_request(events) is False
+
+def test_a_two_round_exchange_keeps_every_question_and_answer() -> None:
+    events = [
+        _user_event("compare dtn", [{"entity": "metric", "value": "DTN"}]),
+        _decision("clarify", "Which cohorts?"),
+        _user_event("my hospital vs Hospital X", [{"entity": "hospital_name", "value": "Hospital X"}]),
+        _decision("clarify", "Which period?"),
+        _user_event("2025", [{"entity": "date", "value": "2025"}]),
+    ]
+    exchange = va._clarification_exchange(events)
+    assert [event["text"] for event, _ in exchange] == ["compare dtn", "my hospital vs Hospital X"]
+    request = va._request_context(events, _latest("2025", [{"entity": "date", "value": "2025"}]), edits_previous_plan=False)
+    question = request["planner_question"]
+    assert question.index("Which cohorts?") < question.index("Which period?")
+    assert request["extracted_entities"]["metric"] == "DTN"
+    assert request["extracted_entities"]["hospital_name"] == "Hospital X"
 
 
-def _decision_event(decision: str, reason: str) -> Dict[str, Any]:
-    return {"event": "bot", "custom": {"type": "visualization_query_decision", "decision": decision, "reason": reason}}
+def test_no_exchange_after_a_completed_request() -> None:
+    events = FEMALE_DTN + [_user_event("as a bar chart", [{"entity": "chart_type", "value": "BAR"}])]
+    assert va._clarification_exchange(events) == []
 
 
 def test_a_proceed_decision_sent_for_the_current_message_is_found() -> None:
-    proceed_decided = _load_visualization_context_helpers()["_proceed_decided_for_latest_message"]
-    message = _user_event("show me a line graph of dtn", "generate_visualization", [])
-    assert proceed_decided([message, _decision_event("proceed", "all_required_fields_present")]) == "all_required_fields_present"
-    assert proceed_decided([message, _decision_event("clarify", "missing_required_fields")]) is None
+    message = _user_event("show me a line graph of dtn", [])
+    assert va._proceed_decided_for_latest_message([message, _decision("proceed")]) == "x"
+    assert va._proceed_decided_for_latest_message([message, _decision("clarify")]) is None
     # A decision before the current message belongs to an earlier one.
-    assert proceed_decided([_decision_event("proceed", "all_required_fields_present"), message]) is None
-    assert proceed_decided([message]) is None
+    assert va._proceed_decided_for_latest_message([_decision("proceed"), message]) is None
+    assert va._proceed_decided_for_latest_message([message]) is None
