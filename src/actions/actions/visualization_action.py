@@ -26,6 +26,7 @@ from src.actions.long_action.long_action_context import LongActionContext
 from src.domain.langchain import schema as lang_schema
 from src.executors import execute_plan_async
 from src.executors.orchestration.plan_executor import VisualizationExecutionError
+from src.planners.langchain.llm_errors import LLM_UNAVAILABLE
 from src.planners.langchain.request_orchestrator import (
     _PLANNER_MAX_RETRIES,
     VisualizationRequestOutcome,
@@ -476,6 +477,14 @@ def _hand_over_plan(ctx: LongActionContext, trace_id: str, plan: lang_schema.Ana
     return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=True)
 
 
+def _decision_text(outcome: VisualizationRequestOutcome, language: str, default_key: str, message: Optional[str] = None) -> str:
+    """What the user reads for a clarify or reject. An unreachable LLM says so
+    instead of asking for detail the request does not lack."""
+    if outcome.reason == LLM_UNAVAILABLE:
+        return translate("action.visualization.llm_unavailable", language=language)
+    return message or outcome.message or translate(default_key, language=language)
+
+
 def _extract_bot_custom_payload(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     custom_any = event.get("custom")
     if isinstance(custom_any, dict):
@@ -636,7 +645,7 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                 )
 
                 if outcome.decision == "reject":
-                    dispatcher.utter_message(text=outcome.message or translate("action.visualization.reject_default", language=language))
+                    dispatcher.utter_message(text=_decision_text(outcome, language, "action.visualization.reject_default"))
                     return [SlotSet("awaiting_visualization_clarification", False)]
 
                 return [
@@ -989,7 +998,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             "message": outcome.message,
                         }
                     )
-                    ctx.say(text=outcome.message or translate("action.visualization.reject_default", language=language))
+                    ctx.say(text=_decision_text(outcome, language, "action.visualization.reject_default"))
                     return PreworkResult(
                         events=[SlotSet("awaiting_visualization_clarification", False)],
                         proceed=False,
@@ -1190,7 +1199,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             }
                         )
                         default_key = "action.visualization.clarify_default" if decision_name == "clarify" else "action.visualization.reject_default"
-                        ctx.say(text=clarification_message or translate(default_key, language=language), buttons=clarification_buttons)
+                        ctx.say(text=_decision_text(outcome, language, default_key, clarification_message), buttons=clarification_buttons)
                         return None
 
                     plan_obj = outcome.plan if isinstance(outcome.plan, lang_schema.AnalysisPlan) else None
