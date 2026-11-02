@@ -704,5 +704,33 @@ class NormalizeEntitiesForQuestionTests(unittest.TestCase):
         self.assertEqual(normalized, {"stroke_type": "ISCHEMIC", "chart_type": "LINE"})
 
 
+
+class DecisionStageEditEntitiesTests(unittest.TestCase):
+    _CLARIFY_METRIC = {
+        "decision": "clarify",
+        "reason": "missing_required_fields",
+        "missing_fields": ["metric"],
+        "message": "Which metric would you like?",
+    }
+
+    def _decide(self, edits: bool) -> str:
+        with patch(
+            "src.planners.langchain.request_orchestrator._invoke_chain",
+            return_value={**self._CLARIFY_METRIC, "edits_previous_plan": edits},
+        ):
+            outcome = _decision_stage(
+                question="Previous chart plan ...\n\nUser's newest instruction:\nper month",
+                entities={"group_by": "MONTH"},
+                language="en",
+                edit_entities={"group_by": "MONTH", "metric": "DTN"},
+            )
+        return outcome.decision
+
+    def test_an_edit_is_checked_against_the_entities_it_inherits(self) -> None:
+        self.assertEqual(self._decide(edits=True), "proceed")
+
+    def test_a_new_request_is_checked_against_its_own_entities(self) -> None:
+        self.assertEqual(self._decide(edits=False), "clarify")
+
 if __name__ == "__main__":
     unittest.main()
