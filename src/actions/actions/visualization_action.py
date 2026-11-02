@@ -15,6 +15,7 @@ from src.actions.helpers.visualization import (
     question_with_resolved_metrics,
     format_execution_summary,
     is_plan_only_request,
+    names_metric_and_chart_type,
     pretty_print_graphql_query,
     resolve_override_language,
     serialize_plan_for_frontend,
@@ -923,7 +924,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                 # Defensive fallback: if routing reaches this action for an unrelated
                 # intent, always send a user-facing response instead of returning
                 # nothing and leaving the conversation hanging.
-                if intent_name and intent_name != _VISUALIZATION_INTENT and not _is_guided_visualization_request(ctx.slots):
+                if intent_name and intent_name != _VISUALIZATION_INTENT and not names_metric_and_chart_type(latest_msg) and not _is_guided_visualization_request(ctx.slots):
                     language = resolve_language(metadata=ctx.metadata, slots=ctx.slots)
                     ctx.say(
                         text=translate(

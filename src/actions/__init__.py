@@ -1,4 +1,5 @@
 from .actions import (
+    ActionAnswerQuestion,
     ActionClarifyVisualizationRequest,
     ActionExplainMetric,
     ActionGuidedGenerateVisualization,
@@ -9,6 +10,7 @@ from .actions import (
 from .cli.router import ActionCliRouter
 
 __all__ = [
+    "ActionAnswerQuestion",
     "ActionCliRouter",
     "ActionGuidedGenerateVisualization",
     "ActionClarifyVisualizationRequest",
