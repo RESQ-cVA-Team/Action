@@ -26,6 +26,7 @@ from src.domain.langchain.schema import (
     SplitSpec,
     StatisticalTestSpec,
 )
+from src.planners.langchain.llm_errors import LLM_UNAVAILABLE, is_llm_service_error
 from src.planners.langchain.llm_factory import create_chat_llm
 from src.planners.langchain.pipeline import (
     _PLANNER_REQUEST_TIMEOUT_SECONDS,
@@ -2210,7 +2211,10 @@ def orchestrate_visualization_request(
             )
             logger.info("VisualizationRequestOutcome created", extra={"outcome": str(outcome)[:100]})
             return outcome
-        except Exception:
+        except Exception as exc:
+            if is_llm_service_error(exc):
+                logger.exception("LLM service unavailable", extra={"log_context": {"event": "orchestrator.llm.unavailable", "outcome": "failure"}})
+                return VisualizationRequestOutcome(decision="reject", reason=LLM_UNAVAILABLE)
             logger.exception(
                 "Visualization request orchestration failed",
                 extra={

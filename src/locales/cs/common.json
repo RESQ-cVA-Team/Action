@@ -9,6 +9,7 @@
       "empty_plan_clarify": "Z tohoto požadavku se mi nepodařilo odvodit spustitelný analytický plán. Zadejte požadavek na graf s metrikou a typem grafu, nebo u statistiky uveďte dvě explicitní kohorty k porovnání.",
       "metric_choice_clarify": "Kterou metriku jste myslel(a): {options}?",
       "reject_default": "Tento požadavek je mimo tok vizualizace.",
+      "llm_unavailable": "Momentálně se nemohu spojit s jazykovým modelem, který používám, takže na to nemohu odpovědět. Zkuste to prosím za pár minut znovu.",
       "non_visualization_intent": "Mohu pomoci s požadavky na vizualizaci. Zkuste požádat o vytvoření grafu nebo o aktualizaci aktuálního grafu.",
       "success_complete": "Hotovo!",
       "internal_error_routing": "Chyba při směrování požadavku na vizualizaci: {error}",

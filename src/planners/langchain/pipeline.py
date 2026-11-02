@@ -21,6 +21,7 @@ from typing import (
 from langchain_core.prompts import ChatPromptTemplate
 
 from src.domain.langchain.schema import AnalysisPlan
+from src.planners.langchain.llm_errors import is_llm_service_error
 from src.planners.langchain.examples import FewShotExample, get_few_shot_examples
 from src.planners.langchain.llm_factory import create_chat_llm, get_llm_provider
 from src.planners.langchain.metric_data_types import metric_data_types_json
@@ -635,6 +636,8 @@ def generate_analysis_plan(
                     raise ValueError(f"Plan does not faithfully match the request: {critique_issues}")
                 break
             except Exception as exc:
+                if is_llm_service_error(exc):
+                    raise
                 last_error = exc
                 attempts.append(
                     {
