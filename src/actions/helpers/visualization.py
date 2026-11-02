@@ -465,6 +465,15 @@ def _accumulate_entity_value(extracted: Dict[str, Any], key: str, value: Any) ->
     # unambiguous request.
 
 
+def names_metric_and_chart_type(latest_message: Mapping[str, Any]) -> bool:
+    """A message naming both a metric and a chart type asks for that chart,
+    whatever intent it was classified as."""
+    entities_any = latest_message.get("entities")
+    entities = cast(List[Any], entities_any) if isinstance(entities_any, list) else []
+    names = {cast(Dict[str, Any], e).get("entity") for e in entities if isinstance(e, dict)}
+    return {"metric", "chart_type"} <= names
+
+
 def is_plan_only_request(metadata: Mapping[str, Any]) -> bool:
     """A message whose sender (an evaluation run) wants the plan and no data: the
     request is triaged and planned as usual, and nothing is fetched upstream."""
