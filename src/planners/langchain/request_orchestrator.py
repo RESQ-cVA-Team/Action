@@ -210,7 +210,7 @@ _DECISION_PROMPT = ChatPromptTemplate.from_messages(  # type: ignore[attr-define
         ("system", load_prompt_text("decision_system")),
         (
             "user",
-            "USER_LANGUAGE: {language}\nUSER_QUESTION: {question}\nCONVERSATION_HISTORY_JSON: {conversation_history_json}\nENTITIES_JSON: {entities_json}\nVALID_METRIC_CANDIDATES_JSON: {metric_candidates_json}\nVALID_CHART_TYPES_JSON: {chart_types_json}",
+            "USER_LANGUAGE: {language}\nUSER_QUESTION: {question}\nCONVERSATION_HISTORY_JSON: {conversation_history_json}\nENTITIES_JSON: {entities_json}\nVALID_CHART_TYPES_JSON: {chart_types_json}",
         ),
     ]
 )
@@ -331,21 +331,6 @@ def _generate_plan_with_timeout(
         except FuturesTimeoutError as exc:
             future.cancel()
             raise TimeoutError(f"Plan generation timed out after {_PLAN_GENERATION_TIMEOUT_SECONDS:.1f}s for question: {question[:50]}") from exc
-
-
-def _metric_candidates(question: str, limit: int = 8) -> List[str]:
-    _ = limit
-    normalized = ssot_loader.normalize_metric_text_key(question)
-    if not normalized:
-        return []
-
-    lookup = ssot_loader.get_metric_text_lookup()
-    entry = lookup.get(normalized)
-    if isinstance(entry, dict):
-        canonical = entry.get("canonical")
-        if isinstance(canonical, str) and canonical.strip():
-            return [canonical.strip().upper()]
-    return []
 
 
 def _chart_types() -> List[str]:
@@ -1766,7 +1751,6 @@ def _ask_decision_model(
         "language": (language or "en").strip() or "en",
         "question": question or "",
         "entities_json": entities_json(entities or {}),
-        "metric_candidates_json": json.dumps(_metric_candidates(question or ""), ensure_ascii=False),
         "chart_types_json": json.dumps(_chart_types(), ensure_ascii=False),
         "conversation_history_json": json.dumps(conversation_history or [], ensure_ascii=False),
     }
