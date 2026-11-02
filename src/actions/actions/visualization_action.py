@@ -416,7 +416,9 @@ def _request_context(events: List[Dict[str, Any]], latest_msg: Dict[str, Any], e
     request that started the exchange: its question is that request with each
     question asked and answered, its entities those of the exchange, and the
     previous plan its base only if that request edited it. Otherwise the
-    message stands alone, on top of the previous plan when edits_previous_plan."""
+    message stands alone, on top of the previous plan when edits_previous_plan.
+    message_entities are the entities the message itself states, or those of
+    the exchange it continues."""
     latest_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg))
     exchange = _clarification_exchange(events)
     if exchange:
@@ -430,12 +432,14 @@ def _request_context(events: List[Dict[str, Any]], latest_msg: Dict[str, Any], e
         turns = _user_turns(events)
         entities = canonicalize_ssot_entities(_merge_request_entities(latest_entities, _request_entities(turns, len(turns) - 2)))
         history = [str(_parse_data(event).get("text") or "") for event, _ in exchange] + [str(latest_msg.get("text") or "")]
+        message_entities = entities
         pending_clarification: Optional[Dict[str, Any]] = exchange[-1][1]
     else:
         question = question_with_resolved_metrics(latest_msg)
         turns = _user_turns(events)
         earlier = _edited_request_entities(turns, len(turns) - 1) if edits_previous_plan and turns else {}
         entities = canonicalize_ssot_entities(_merge_request_entities(latest_entities, earlier)) if earlier else latest_entities
+        message_entities = latest_entities
         history = []
         pending_clarification = None
     latest_plan_summary = _collect_latest_visualization_plan_summary(events) if edits_previous_plan else None
@@ -444,6 +448,7 @@ def _request_context(events: List[Dict[str, Any]], latest_msg: Dict[str, Any], e
     return {
         "planner_question": question,
         "extracted_entities": entities,
+        "message_entities": message_entities,
         "conversation_history": history,
         "latest_plan_summary": latest_plan_summary,
         "pending_clarification": pending_clarification,
@@ -541,17 +546,19 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
 
                 events = tracker.events
                 # Judged against the previous plan unless the message answers a
-                # pending clarification; the decision stage says whether it edits it.
+                # pending clarification; the decision stage says whether it edits
+                # it. It sees what the message states, not what an edit would
+                # inherit, so the earlier request does not make it look like one.
                 request = _request_context(events, latest_msg, edits_previous_plan=True)
                 planner_question = request["planner_question"]
-                extracted_entities = request["extracted_entities"]
                 conversation_history = request["conversation_history"]
                 latest_plan_summary = request["latest_plan_summary"]
                 pending_clarification = request["pending_clarification"]
 
                 outcome = await _orchestrate(
                     question=planner_question,
-                    entities=extracted_entities,
+                    entities=request["message_entities"],
+                    edit_entities=request["extracted_entities"],
                     language=override_language,
                     trace_id=trace_id,
                     max_retries=_PLANNER_MAX_RETRIES,
@@ -562,9 +569,9 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                 )
 
                 # A new request is judged as if there were no previous chart. The
-                # previous plan can still colour a rejection, so a rejected new
-                # request is judged once more without it.
-                if not request["answers_clarification"] and outcome.decision == "reject" and latest_plan_summary and outcome.edits_previous_plan is False:
+                # previous plan in view colours that judgement, so a message not
+                # judged an edit is judged once more without it.
+                if not request["answers_clarification"] and latest_plan_summary and outcome.edits_previous_plan is not True:
                     request = _request_context(events, latest_msg, edits_previous_plan=False)
                     planner_question = request["planner_question"]
                     outcome = await _orchestrate(

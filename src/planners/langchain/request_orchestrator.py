@@ -1742,9 +1742,11 @@ def _decision_stage(
     language: Optional[str],
     conversation_history: Optional[List[str]] = None,
     pending_clarification: Optional[Dict[str, Any]] = None,
+    edit_entities: Optional[Dict[str, Any]] = None,
 ) -> VisualizationRequestOutcome:
     outcome, edits_previous_plan = _ask_decision_model(question, entities, language, conversation_history)
-    outcome = _apply_decision_safeguards(outcome, question, entities, pending_clarification)
+    safeguard_entities = edit_entities if edits_previous_plan and edit_entities is not None else entities
+    outcome = _apply_decision_safeguards(outcome, question, safeguard_entities, pending_clarification)
     outcome.edits_previous_plan = edits_previous_plan
     return outcome
 
@@ -2049,6 +2051,7 @@ def _triage(
     language: Optional[str],
     conversation_history: Optional[List[str]],
     pending_clarification: Optional[Dict[str, Any]],
+    edit_entities: Optional[Dict[str, Any]],
 ) -> VisualizationRequestOutcome:
     """The deterministic validators, then the decision stage: proceed, clarify or reject."""
     stat_test_support_validation = _validate_statistical_test_support(question)
@@ -2097,6 +2100,7 @@ def _triage(
         language,
         conversation_history=conversation_history,
         pending_clarification=pending_clarification,
+        edit_entities=edit_entities,
     )
 
 
@@ -2111,10 +2115,15 @@ def orchestrate_visualization_request(
     progress_cb: Optional[Callable[[str], None]] = None,
     pending_clarification: Optional[Dict[str, Any]] = None,
     decided_proceed: Optional[str] = None,
+    edit_entities: Optional[Dict[str, Any]] = None,
 ) -> VisualizationRequestOutcome:
     """decided_proceed: the reason of a proceed decision already taken for this
     same message (the triage ran in action_clarify_visualization_request);
-    the validators and the decision stage are then skipped."""
+    the validators and the decision stage are then skipped.
+
+    edit_entities: the entities the request has if the message edits the
+    previous chart. The decision stage judges the message on `entities`; its
+    safeguards use these once it judges the message an edit."""
     with log_context(trace_id=trace_id or "", orchestrator_include_plan=include_plan):
         normalized_entities = _infer_stroke_type_share_metric(question, _normalize_entities_for_question(question, entities))
         if not _ORCHESTRATOR_ENABLED:
@@ -2142,7 +2151,10 @@ def orchestrate_visualization_request(
                 logger.info("Orchestrator decision taken earlier for this message: proceed (%s)", decided_proceed)
                 stage1 = VisualizationRequestOutcome(decision="proceed", reason=decided_proceed)
             else:
-                stage1 = _triage(question, normalized_entities, language, conversation_history, pending_clarification)
+                normalized_edit_entities = (
+                    _infer_stroke_type_share_metric(question, _normalize_entities_for_question(question, edit_entities)) if edit_entities is not None else None
+                )
+                stage1 = _triage(question, normalized_entities, language, conversation_history, pending_clarification, normalized_edit_entities)
             logger.info(
                 "Orchestrator decision: %s, message: %s, missing: %s",
                 stage1.decision,

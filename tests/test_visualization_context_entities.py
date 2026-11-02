@@ -77,6 +77,16 @@ def test_an_edit_builds_on_the_previous_plan_and_the_request_it_edits() -> None:
     assert request["extracted_entities"]["chart_type"] == "BAR"
 
 
+def test_a_possible_edit_is_judged_on_what_the_message_states() -> None:
+    events = FEMALE_DTN + [_user_event("Show me nihss over time", [{"entity": "group_by", "value": "NIHSS"}])]
+    request = va._request_context(events, _latest("Show me nihss over time", [{"entity": "group_by", "value": "NIHSS"}]), edits_previous_plan=True)
+    # The decision stage sees the message's own entities; the edited request's
+    # are what an edit would plan with.
+    assert request["message_entities"] == {"group_by": "NIHSS"}
+    assert request["extracted_entities"]["metric"] == "DTN"
+    assert request["extracted_entities"]["sex"] == "FEMALE"
+
+
 def test_a_chain_of_edits_inherits_back_to_the_request_it_started_from() -> None:
     events = FEMALE_DTN + [
         _user_event("as a bar chart", [{"entity": "chart_type", "value": "BAR"}]),
