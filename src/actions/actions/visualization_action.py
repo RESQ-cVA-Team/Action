@@ -42,11 +42,7 @@ _ECHO_INTERNAL_ERRORS = env_util.env_flag("ACTIONS_ECHO_INTERNAL_ERRORS", defaul
 _SHOW_EXECUTION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_EXECUTION_SUMMARY", default=True)
 _DEFER_CALLBACK_HANDOFF = env_util.env_flag("LONG_ACTION_DEFER_CALLBACK_HANDOFF", default=False)
 _EMIT_QUERY_DEBUG = env_util.env_flag("ACTIONS_EMIT_QUERY_DEBUG", default=False)
-_VISUALIZATION_CONTINUATION_INTENTS = {
-    "generate_visualization",
-    "update_visualization",
-    "clarify_visualization",
-}
+_VISUALIZATION_INTENT = "generate_visualization"
 _VISUALIZATION_PLAN_TYPE = "visualization_plan"
 _VISUALIZATION_GRAPHQL_QUERY_TYPE = "visualization_graphql_query"
 _VISUALIZATION_RESPONSE_SCHEMA_VERSION = 1
@@ -129,8 +125,6 @@ def _emit_next_metric_followup(
 
     next_label = ssot_loader.get_metric_display_name(next_metric)
 
-    # payload = f'/update_visualization{{"metric":"{next_metric}","kpi":"{next_metric}"}}'
-    # payload = f"Update visualization with to use {next_metric} as the KPI"
     payload = translate(
         "action.visualization.next_metric_payload",
         language=language,
@@ -908,7 +902,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                 awaiting_clarification = bool(ctx.slots.get("awaiting_visualization_clarification"))
 
                 if awaiting_clarification:
-                    if intent_name in _VISUALIZATION_CONTINUATION_INTENTS:
+                    if intent_name == _VISUALIZATION_INTENT:
                         return PreworkResult(
                             events=[SlotSet("awaiting_visualization_clarification", False)],
                             proceed=True,
@@ -922,7 +916,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                 # Defensive fallback: if routing reaches this action for an unrelated
                 # intent, always send a user-facing response instead of returning
                 # nothing and leaving the conversation hanging.
-                if intent_name and intent_name not in _VISUALIZATION_CONTINUATION_INTENTS and not _is_guided_visualization_request(ctx.slots):
+                if intent_name and intent_name != _VISUALIZATION_INTENT and not _is_guided_visualization_request(ctx.slots):
                     language = resolve_language(metadata=ctx.metadata, slots=ctx.slots)
                     ctx.say(
                         text=translate(

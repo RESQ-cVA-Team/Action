@@ -1962,9 +1962,9 @@ def _apply_decision_safeguards(
     # Deterministic safeguard: a request with a real, present metric cannot be
     # genuinely out of scope -- Rasa's own intent routing already established
     # this is a visualization request before this stage ever runs (this
-    # action only fires for generate_visualization/update_visualization/
-    # clarify_visualization). Observed: the LLM sometimes rejects such a
-    # request as out_of_scope when the actual gap is a missing chart_type --
+    # action only fires for generate_visualization). Observed: the LLM
+    # sometimes rejects such a request as out_of_scope when the actual gap is
+    # a missing chart_type --
     # that's a clarify, not a reject.
     #
     # Scoped tightly to reasons that are actually about scope: "reject" is
