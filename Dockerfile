@@ -29,7 +29,8 @@ RUN pip install --no-cache-dir --no-index --find-links=/tmp/wheels -r requiremen
 
 WORKDIR /app
 
-RUN mkdir -p /app && chown -R 1001:1001 /app
+# Owned by root so the runtime user can read the code but not change it.
+RUN chmod 755 /app
 
 ARG ACTION_VERSION=""
 ARG ACTION_COMMIT_SHA=""
@@ -47,8 +48,8 @@ LABEL org.opencontainers.image.version=${ACTION_VERSION}
 LABEL org.opencontainers.image.revision=${ACTION_COMMIT_SHA}
 LABEL org.opencontainers.image.created=${ACTION_BUILD_DATE}
 
-COPY --chown=1001:1001 src/ ./src
-COPY --chown=1001:1001 rasa_sdk_plugins/ ./rasa_sdk_plugins
+COPY src/ ./src
+COPY rasa_sdk_plugins/ ./rasa_sdk_plugins
 
 # --- Build-time assertion: ensure SSOT YAML files are present ---
 # If this fails, you likely forgot:
@@ -61,6 +62,6 @@ RUN test -f src/shared/SSOT/ChartType.yml \
 
 EXPOSE 5055
 
-USER 1001
+USER 1001:1001
 
 ENTRYPOINT ["python", "-m", "rasa_sdk", "--actions", "src.actions"]
