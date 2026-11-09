@@ -23,10 +23,7 @@
       "hospital_timeout": "Požadavek na adresář poskytovatelů vypršel. Zkuste to prosím znovu.",
       "hospital_service_unavailable": "Služba adresáře poskytovatelů je dočasně nedostupná. Zkuste to prosím za chvíli.",
       "hospital_generic": "Nyní se nepodařilo načíst data nemocnic. Zkuste to prosím znovu.",
-      "hospital_action_generic": "Chyba při výpisu nemocnic.",
-      "metric_definitions_unavailable": "Definice metrik jsou dočasně nedostupné. Zkuste to prosím znovu.",
-      "metric_timeout": "Vyhledání metriky vypršelo. Zkuste to prosím znovu.",
-      "metric_generic": "Chyba při vysvětlení metriky."
+      "hospital_action_generic": "Chyba při výpisu nemocnic."
     },
     "hospitals": {
       "country_not_matched": "Nepodařilo se mi přiřadit zemi '{country}'. Zkuste dvoupísmenný kód jako ES, MX, DE nebo FR.",
@@ -43,14 +40,12 @@
       "internal_error": "Chyba při výpisu nemocnic: {error}"
     },
     "metric": {
-      "missing_metric": "Ve vašem požadavku jsem nenašel žádnou metriku.",
       "metric_not_understood": "Nerozuměl jsem metrice, na kterou se ptáte.",
       "metric_unknown_with_suggestions": "Tuto metriku neznám. Některé metriky, které mohu popsat: {suggestions}.",
       "metric_unknown": "Tuto metriku neznám.",
       "description_not_configured": "Tato metrika je známá, ale její popis zatím není nakonfigurován.",
       "data_type_with_unit": "Typ dat: {data_type} ({unit}).",
-      "data_type": "Typ dat: {data_type}.",
-      "internal_error": "Chyba při vysvětlení metriky: {error}"
+      "data_type": "Typ dat: {data_type}."
     },
     "guided": {
       "validate_metric_ambiguous": "Našel jsem více možných metrik pro tento požadavek. Zadejte prosím konkrétnější kód nebo název metriky.",

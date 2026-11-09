@@ -1,7 +1,6 @@
 from .actions import (
     ActionAnswerQuestion,
     ActionClarifyVisualizationRequest,
-    ActionExplainMetric,
     ActionGuidedGenerateVisualization,
     ActionListHospitals,
     ActionOneShotGenerateVisualization,
@@ -16,6 +15,5 @@ __all__ = [
     "ActionClarifyVisualizationRequest",
     "ActionOneShotGenerateVisualization",
     "ActionListHospitals",
-    "ActionExplainMetric",
     "ValidateGuidedVisualizationForm",
 ]
