@@ -134,7 +134,11 @@ class TrackerLike(Protocol):
     def current_state(self) -> Dict[str, Any]: ...
 
 
-def _get_callback_config(tracker: TrackerLike) -> Optional[str]:
+class CallbackTrackerLike(Protocol):
+    latest_message: Dict[str, Any]
+
+
+def _get_callback_config(tracker: CallbackTrackerLike) -> Optional[str]:
     """Return the long-task callback URL if callback mode is usable for this
     turn.
 
@@ -247,6 +251,12 @@ def _extract_webapp_job_id(callback_url: str) -> Optional[str]:
         return None
     candidate = values[0].strip()
     return candidate or None
+
+
+def get_webapp_job_id(tracker: CallbackTrackerLike) -> Optional[str]:
+    """Return the job ID from a usable Webapp callback on this turn."""
+    callback_url = _get_callback_config(tracker)
+    return _extract_webapp_job_id(callback_url) if callback_url else None
 
 
 def _normalize_trace_id(value: Any) -> Optional[str]:
@@ -369,13 +379,15 @@ class LongAction(Action, ABC):
         payload: Dict[str, Any] = {}
         if self._is_control_message(message):
             job_id = getattr(ctx, "_job_id", None) or ""
-            payload["controls"] = [{
-                "type": message["type"],
-                "jobId": job_id,
-                "scope": "long_action",
-                "source": "long-task-callback",
-                **(({"traceId": trace_id}) if isinstance(trace_id, str) and trace_id.strip() else {}),
-            }]
+            payload["controls"] = [
+                {
+                    "type": message["type"],
+                    "jobId": job_id,
+                    "scope": "long_action",
+                    "source": "long-task-callback",
+                    **(({"traceId": trace_id}) if isinstance(trace_id, str) and trace_id.strip() else {}),
+                }
+            ]
             payload["events"] = []
         else:
             payload["events"] = [self._message_to_tracker_event(message, trace_id)]
@@ -423,9 +435,7 @@ class LongAction(Action, ABC):
             # Prework always runs in dispatcher mode so subclasses can emit normal
             # in-band messages and return Rasa events before any long-running work.
             pre_webapp_job_id = _extract_webapp_job_id(callback_cfg) if callback_cfg else None
-            pre_ctx = LongActionContext(
-                sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher, webapp_job_id=pre_webapp_job_id
-            )
+            pre_ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher, webapp_job_id=pre_webapp_job_id)
             pre_outcome = await self.prework(pre_ctx)
             immediate_events = pre_outcome.events
             if not pre_outcome.proceed:
@@ -450,9 +460,7 @@ class LongAction(Action, ABC):
             webapp_job_id = _extract_webapp_job_id(callback_url)
 
             if _DEFER_CALLBACK_HANDOFF:
-                ctx = LongActionContext(
-                    sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher, webapp_job_id=webapp_job_id
-                )
+                ctx = LongActionContext(sender_id=sender_id, tracker_snapshot=tracker_snapshot, dispatcher=dispatcher, webapp_job_id=webapp_job_id)
                 ctx._job_id = job_id
                 enqueue, drain = self._start_progress_sender(ctx, job_id, callback_url)
                 ctx.attach_progress_callback(enqueue)

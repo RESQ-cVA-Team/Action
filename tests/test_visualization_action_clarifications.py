@@ -107,8 +107,8 @@ class VisualizationActionClarificationHelpersTests(unittest.TestCase):
         self.assertEqual(
             buttons,
             [
-                {"title": "Door-to-needle time", "payload": '/clarify_visualization{"metric":"DTN"}'},
-                {"title": "Door-to-groin time", "payload": '/clarify_visualization{"metric":"DTG"}'},
+                {"title": "Door-to-needle time", "payload": '/generate_visualization{"metric":"DTN"}'},
+                {"title": "Door-to-groin time", "payload": '/generate_visualization{"metric":"DTG"}'},
             ],
         )
 

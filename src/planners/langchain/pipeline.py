@@ -1,13 +1,9 @@
-import hashlib
 import json
 import logging
 import re
-from collections import OrderedDict
+import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
-from contextvars import ContextVar
-from datetime import datetime, timezone
-from threading import Lock
 from typing import (
     Any,
     Callable,
@@ -25,15 +21,17 @@ from typing import (
 from langchain_core.prompts import ChatPromptTemplate
 
 from src.domain.langchain.schema import AnalysisPlan
-from src.planners.langchain.examples import get_few_shot_examples
+from src.planners.langchain.llm_errors import is_llm_service_error
+from src.planners.langchain.examples import FewShotExample, get_few_shot_examples
 from src.planners.langchain.llm_factory import create_chat_llm, get_llm_provider
+from src.planners.langchain.metric_data_types import metric_data_types_json
 from src.planners.langchain.prompt_loader import load_prompt_text
 from src.util import env
+from src.util.llm_usage import record_llm_call
 from src.util.logging_utils import bind_current_context, log_context
 
 logger = logging.getLogger(__name__)
 _ENABLE_DYNAMIC_FEW_SHOTS = True
-_ENABLE_PLAN_CACHE = True
 _ENABLE_PLAN_CRITIQUE = True
 
 _FEWSHOT_TOKEN_WEIGHT = 1.0
@@ -77,9 +75,6 @@ try:
 except Exception:
     _PLANNER_REQUEST_TIMEOUT_SECONDS = 45.0
 _MAX_FEW_SHOTS = 3
-_PLAN_CACHE_SIZE = 256
-_PLAN_CACHE_TTL_SECONDS = 900.0
-_PLAN_CACHE_KEY_VERSION = "v4"
 
 LLM_PROVIDER = get_llm_provider()
 _LLM_MODEL = (env.get_env("LLM_MODEL", default="") or "").strip()
@@ -235,103 +230,30 @@ def get_schema_description(model: Type[Any]) -> str:
 SCHEMA_DESCRIPTION: str = get_schema_description(AnalysisPlan)
 
 few_shot_examples = get_few_shot_examples()
-_PLAN_CACHE: "OrderedDict[str, tuple[AnalysisPlan, float]]" = OrderedDict()
-_PLAN_CACHE_LOCK = Lock()
-_plan_cache_hits = 0
-_plan_cache_misses = 0
-_plan_cache_expired = 0
-_PLAN_CACHE_STATS_LOCK = Lock()
-_LAST_CACHE_EVENT: ContextVar[Optional[bool]] = ContextVar("planner_last_cache_event", default=None)
 
 
 def _invoke_with_timeout(chain: Any, inputs: Dict[str, Any], label: str) -> Any:
+    step = "critique" if label == "plan_critique" else "plan"
+    started_at = time.monotonic()
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(bind_current_context(chain.invoke), inputs)
         try:
-            return future.result(timeout=_PLANNER_REQUEST_TIMEOUT_SECONDS)
+            response = future.result(timeout=_PLANNER_REQUEST_TIMEOUT_SECONDS)
         except FuturesTimeoutError as exc:
             future.cancel()
+            record_llm_call(step, started_at)
             raise PlannerTimeoutError(f"{label} timed out after {_PLANNER_REQUEST_TIMEOUT_SECONDS:.1f}s") from exc
-
-
-def _plan_for_cache(plan: AnalysisPlan) -> AnalysisPlan:
-    return plan.model_copy(deep=True)
-
-
-def _cache_key(question: str, entities: Dict[str, Any], language: str) -> str:
-    payload: Dict[str, Any] = {
-        "q": (question or "").strip(),
-        "e": entities,
-        "l": (language or "").strip().lower(),
-        "dfs": _ENABLE_DYNAMIC_FEW_SHOTS,
-        "mfs": _MAX_FEW_SHOTS,
-        "provider": LLM_PROVIDER,
-        "model": _LLM_MODEL,
-        "version": _PLAN_CACHE_KEY_VERSION,
-        "token_w": _FEWSHOT_TOKEN_WEIGHT,
-        "entity_key_w": _FEWSHOT_ENTITY_KEY_WEIGHT,
-        "entity_value_w": _FEWSHOT_ENTITY_VALUE_WEIGHT,
-        "intent_w": _FEWSHOT_INTENT_WEIGHT,
-        "intent_keywords": _INTENT_KEYWORDS,
-    }
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def _cache_get(key: str) -> Optional[AnalysisPlan]:
-    global _plan_cache_expired
-    now = datetime.now(timezone.utc).timestamp()
-    with _PLAN_CACHE_LOCK:
-        item = _PLAN_CACHE.get(key)
-        if item is None:
-            return None
-        cached_plan, cached_at = item
-        if now - cached_at > _PLAN_CACHE_TTL_SECONDS:
-            del _PLAN_CACHE[key]
-            with _PLAN_CACHE_STATS_LOCK:
-                _plan_cache_expired += 1
-            return None
-        _PLAN_CACHE.move_to_end(key)
-        return cached_plan.model_copy(deep=True)
-
-
-def _cache_put(key: str, value: AnalysisPlan) -> None:
-    now = datetime.now(timezone.utc).timestamp()
-    with _PLAN_CACHE_LOCK:
-        _PLAN_CACHE[key] = (_plan_for_cache(value).model_copy(deep=True), now)
-        _PLAN_CACHE.move_to_end(key)
-        while len(_PLAN_CACHE) > _PLAN_CACHE_SIZE:
-            _PLAN_CACHE.popitem(last=False)
-
-
-def _record_cache_event(hit: Optional[bool]) -> None:
-    global _plan_cache_hits, _plan_cache_misses
-    _LAST_CACHE_EVENT.set(hit)
-    if hit is None:
-        return
-    with _PLAN_CACHE_STATS_LOCK:
-        if hit:
-            _plan_cache_hits += 1
-        else:
-            _plan_cache_misses += 1
-
-
-def get_plan_cache_diagnostics() -> Dict[str, Any]:
-    with _PLAN_CACHE_STATS_LOCK, _PLAN_CACHE_LOCK:
-        return {
-            "enabled": _ENABLE_PLAN_CACHE,
-            "last_call_cache_hit": _LAST_CACHE_EVENT.get(),
-            "total_hits": _plan_cache_hits,
-            "total_misses": _plan_cache_misses,
-            "total_expired": _plan_cache_expired,
-            "entries": len(_PLAN_CACHE),
-            "capacity": _PLAN_CACHE_SIZE,
-            "ttl_seconds": _PLAN_CACHE_TTL_SECONDS,
-            "key_version": _PLAN_CACHE_KEY_VERSION,
-        }
+    record_llm_call(step, started_at, response)
+    return response
 
 
 def _tokenize(text: str) -> set[str]:
     return set(re.findall(r"[a-z0-9_]+", (text or "").lower()))
+
+
+def entities_json(entities: Dict[str, Any]) -> str:
+    """Entities as an LLM prompt shows them, every value a list, as in the few-shot examples."""
+    return json.dumps({key: value if isinstance(value, list) else [value] for key, value in (entities or {}).items() if value is not None}, ensure_ascii=False)
 
 
 def _entity_values(value: Any) -> set[str]:
@@ -365,61 +287,6 @@ def _normalize_entities(raw_entities: Dict[str, Any]) -> Dict[str, set[str]]:
     return normalized
 
 
-def _extract_example_entities(example: Dict[str, str]) -> Dict[str, Any]:
-    user_block = example.get("user", "")
-    marker = "ENTITIES_DETECTED(JSON):"
-    idx = user_block.find(marker)
-    if idx == -1:
-        return {}
-
-    payload = user_block[idx + len(marker) :].strip()
-    if not payload:
-        return {}
-
-    example_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
-
-    try:
-        parsed = json.loads(payload)
-        if isinstance(parsed, dict):
-            return cast(Dict[str, Any], parsed)
-    except json.JSONDecodeError:
-        logger.debug(
-            "[Planner] Few-shot example entity JSON parse failed; trying fallback parser",
-            extra={
-                "log_context": {
-                    "event": "planner.example_entities.parse_fallback",
-                    "operation": "extract_example_entities",
-                    "outcome": "degraded",
-                    "error_kind": "json_decode_error",
-                    "example_hash": example_hash,
-                }
-            },
-            exc_info=True,
-        )
-
-    try:
-        parsed_fallback = json.loads(_extract_json_block(payload))
-        if isinstance(parsed_fallback, dict):
-            return cast(Dict[str, Any], parsed_fallback)
-    except (json.JSONDecodeError, ValueError):
-        logger.debug(
-            "[Planner] Few-shot example entity fallback parse failed; skipping entity extraction",
-            extra={
-                "log_context": {
-                    "event": "planner.example_entities.parse_skipped",
-                    "operation": "extract_example_entities",
-                    "outcome": "degraded",
-                    "error_kind": "fallback_parse_failed",
-                    "example_hash": example_hash,
-                }
-            },
-            exc_info=True,
-        )
-        return {}
-
-    return {}
-
-
 def _intent_features(text: str) -> set[str]:
     lowered = (text or "").lower()
     features: set[str] = set()
@@ -439,16 +306,16 @@ class MatchScoreBreakdown(TypedDict):
     total: float
 
 
-def _match_score(question: str, entities: Dict[str, Any], example: Dict[str, str]) -> MatchScoreBreakdown:
+def _match_score(question: str, entities: Dict[str, Any], example: FewShotExample) -> MatchScoreBreakdown:
     query_text = f"{question}\n{json.dumps(entities, ensure_ascii=False, sort_keys=True)}"
     query_tokens = _tokenize(query_text)
-    ex_text = example.get("user", "")
+    ex_text = example["user"]
     ex_tokens = _tokenize(ex_text)
 
     token_overlap_score = float(len(query_tokens & ex_tokens)) * _FEWSHOT_TOKEN_WEIGHT
 
     query_entities = _normalize_entities(entities)
-    example_entities = _normalize_entities(_extract_example_entities(example))
+    example_entities = _normalize_entities(example["entities"])
     query_keys = set(query_entities.keys())
     example_keys = set(example_entities.keys())
     key_overlap = query_keys & example_keys
@@ -471,7 +338,7 @@ def _match_score(question: str, entities: Dict[str, Any], example: Dict[str, str
     }
 
 
-def _select_few_shot_examples(question: str, entities: Dict[str, Any], max_items: int) -> List[Dict[str, str]]:
+def _select_few_shot_examples(question: str, entities: Dict[str, Any], max_items: int) -> List[FewShotExample]:
     if not few_shot_examples:
         return []
 
@@ -504,7 +371,7 @@ def score_few_shot_examples(question: str, entities: Dict[str, Any]) -> List[Dic
     return scored
 
 
-def _build_few_shots_text(examples: List[Dict[str, str]]) -> str:
+def _build_few_shots_text(examples: List[FewShotExample]) -> str:
     parts: List[str] = []
     for idx, ex in enumerate(examples, start=1):
         parts.append(
@@ -532,7 +399,7 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
             "system",
             "REASONING (English internal reasoning shown below can differ from output language):\n{reasoning}",
         ),
-        ("user", "USER_UTTERANCE:\n{question}\n\nENTITIES_DETECTED(JSON):\n{entities}"),
+        ("user", "USER_UTTERANCE:\n{question}\n\nENTITIES_DETECTED(JSON):\n{entities}\n\nMETRIC_DATA_TYPES(JSON):\n{metric_data_types}"),
     ]
 )
 
@@ -569,7 +436,7 @@ def _critique_plan(question: str, entities: Dict[str, Any], plan: AnalysisPlan) 
             critic_chain,
             {
                 "question": question,
-                "entities": json.dumps(entities),
+                "entities": entities_json(entities),
                 "candidate_plan": plan.model_dump_json(indent=2),
             },
             label="plan_critique",
@@ -586,6 +453,47 @@ def _critique_plan(question: str, entities: Dict[str, Any], plan: AnalysisPlan) 
     if isinstance(issues, list) and issues:
         return "; ".join(str(issue) for issue in issues)
     return "Plan does not faithfully match the request."
+
+
+_TIME_GRAINS = {"DAY", "WEEK", "MONTH", "QUARTER", "YEAR"}
+_PLAIN_REQUEST_ENTITY_KEYS = {"metric", "chart_type", "group_by"}
+_COUNT_WORDS = re.compile(r"\b(two|three|four|five|six|seven|eight|nine|ten|several|multiple|separate|both)\b", re.IGNORECASE)
+
+
+def _is_plain_request(question: str, entities: Dict[str, Any]) -> bool:
+    """A request that names metrics, at most one chart type and at most a time
+    grain, and nothing the critique pass exists for: no dates, periods or
+    counts (no digits or count words), no cohorts, filters or scopes, no edit
+    of a previous plan. Its plan is checked deterministically instead."""
+    text = question or ""
+    if text.lstrip().startswith("Previous chart plan") or re.search(r"\d", text) or _COUNT_WORDS.search(text):
+        return False
+    entities = entities or {}
+    present = {key for key, value in entities.items() if _entity_values(value)}
+    if not present <= _PLAIN_REQUEST_ENTITY_KEYS or not _entity_values(entities.get("metric")):
+        return False
+    if len(_entity_values(entities.get("chart_type"))) > 1:
+        return False
+    return _entity_values(entities.get("group_by")) <= _TIME_GRAINS
+
+
+def _plain_plan_mismatch(entities: Dict[str, Any], plan: AnalysisPlan) -> Optional[str]:
+    """What the critique pass would check for a plain request: the requested
+    metrics and chart type, and nothing added that was not asked for."""
+    requested = _entity_values((entities or {}).get("metric"))
+    charts = plan.charts or []
+    planned = {str(m.metric).strip().upper() for chart in charts for m in chart.metrics}
+    issues: List[str] = []
+    if requested - planned:
+        issues.append(f"the plan leaves out the requested metric(s) {', '.join(sorted(requested - planned))}")
+    if planned - requested:
+        issues.append(f"the plan adds metric(s) that were not requested: {', '.join(sorted(planned - requested))}")
+    chart_types = _entity_values((entities or {}).get("chart_type"))
+    if chart_types and any(str(chart.chart_type).strip().upper() not in chart_types for chart in charts):
+        issues.append(f"the plan's chart type is not the requested {', '.join(sorted(chart_types))}")
+    if plan.statistical_tests:
+        issues.append("the plan adds a statistical test that was not requested")
+    return "; ".join(issues) or None
 
 
 class GeneratePlanDebug(TypedDict):
@@ -663,20 +571,6 @@ def generate_analysis_plan(
         language = "auto"
 
     with log_context(trace_id=trace_id or "", planner_language=language):
-        _record_cache_event(None)
-
-        cache_key: Optional[str] = None
-        if _ENABLE_PLAN_CACHE and not debug:
-            cache_key = _cache_key(question=question, entities=entities, language=language)
-            cached_plan = _cache_get(cache_key)
-            if cached_plan is not None:
-                _record_cache_event(True)
-                logger.debug("[Planner] Returning cached analysis plan")
-                if progress_cb is not None:
-                    progress_cb("Using cached plan.")
-                return cached_plan
-            _record_cache_event(False)
-
         # High-level notification that planning has started.
         if progress_cb is not None:
             progress_cb("Thinking about a plan.")
@@ -705,7 +599,8 @@ def generate_analysis_plan(
 
         plan_inputs: Dict[str, Any] = {
             "question": question,
-            "entities": json.dumps(entities),
+            "entities": entities_json(entities),
+            "metric_data_types": metric_data_types_json(question, entities),
             "reasoning": "",
             "few_shots": few_shots_text,
             "language": language,
@@ -733,11 +628,16 @@ def generate_analysis_plan(
                 result = _coerce_analysis_plan(raw_result)
                 _assert_required_semantics(result)
                 _assert_no_redundant_date_encoding(result)
-                critique_issues = _critique_plan(question, entities, result)
+                # The critique pass is an LLM call that often objects to defaults the user never
+                # asked about; a plain request is checked deterministically instead.
+                plain = _is_plain_request(question, entities)
+                critique_issues = _plain_plan_mismatch(entities, result) if plain else _critique_plan(question, entities, result)
                 if critique_issues:
                     raise ValueError(f"Plan does not faithfully match the request: {critique_issues}")
                 break
             except Exception as exc:
+                if is_llm_service_error(exc):
+                    raise
                 last_error = exc
                 attempts.append(
                     {
@@ -769,8 +669,6 @@ def generate_analysis_plan(
                 progress_cb("Finished thinking about a plan.")
             return debug_payload
 
-        if cache_key is not None:
-            _cache_put(cache_key, result)
         if progress_cb is not None:
             progress_cb("Finished thinking about a plan.")
         return result

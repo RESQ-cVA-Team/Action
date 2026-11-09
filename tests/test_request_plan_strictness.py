@@ -47,6 +47,27 @@ def test_build_primary_request_specs_uses_explicit_chart_data_origin() -> None:
     assert request.include_general_stats is True
 
 
+def test_build_primary_request_specs_keeps_category_detail_out_of_graphql_request() -> None:
+    aa_request = MetricRequest(metricType=MetricType.AA_DTN_LE60).with_stats().with_categorical()
+    specs = build_primary_request_specs(
+        metric_requests=[aa_request],
+        metric_data_origins=None,
+        chart_filter=None,
+        filter_dims=[],
+        combos_list=[tuple()],
+        batched_time_enabled=False,
+        batched_time_periods=[],
+        include_metric_alias=False,
+        group_by_field=None,
+        data_origin=DataOrigin(providerGroupId=[99]),
+        include_general_stats=True,
+        category_detail_metric_codes=["AA_DTN_LE60"],
+    )
+
+    assert specs[0].category_detail_metric_codes == ["AA_DTN_LE60"]
+    assert "categoryDetail" not in specs[0].req.to_graphql_string()
+
+
 def test_build_primary_request_specs_requires_explicit_per_metric_origin() -> None:
     try:
         build_primary_request_specs(
@@ -86,3 +107,25 @@ def test_build_primary_request_specs_uses_explicit_per_metric_origin() -> None:
     request = specs[0].req
     assert request.data_origin.provider_id == [7]
     assert request.include_general_stats is False
+
+
+def test_build_primary_request_specs_keeps_category_detail_per_metric_origin() -> None:
+    aa_requests = [
+        MetricRequest(metricType=MetricType.AA_DTN_LE60).with_stats().with_categorical()
+        for _ in range(2)
+    ]
+    specs = build_primary_request_specs(
+        metric_requests=aa_requests,
+        metric_data_origins=[DataOrigin(providerId=[7]), DataOrigin(providerId=[8])],
+        chart_filter=None,
+        filter_dims=[],
+        combos_list=[tuple()],
+        batched_time_enabled=False,
+        batched_time_periods=[],
+        include_metric_alias=False,
+        group_by_field=None,
+        include_general_stats=False,
+        category_detail_metric_flags=[True, False],
+    )
+
+    assert [spec.category_detail_metric_codes for spec in specs] == [["AA_DTN_LE60"], []]

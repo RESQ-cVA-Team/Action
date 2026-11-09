@@ -29,28 +29,6 @@ def resolve_language(tracker: Any) -> str:
     return primary or "en"
 
 
-def extract_metric(tracker: Any) -> Optional[str]:
-    tracker_any: Any = tracker
-    latest: Dict[str, Any] = tracker_any.latest_message or {}
-    entities_any: Any = latest.get("entities")
-    if isinstance(entities_any, list):
-        entities_list: List[Any] = cast(List[Any], entities_any)
-        for ent_any in entities_list:
-            if not isinstance(ent_any, dict):
-                continue
-            ent = cast(Dict[str, Any], ent_any)
-            if ent.get("entity") == "metric":
-                val = ent.get("value")
-                if isinstance(val, str) and val.strip():
-                    return val.strip()
-
-    slot_val_any: Any = tracker_any.get_slot("metric")
-    if isinstance(slot_val_any, str) and slot_val_any.strip():
-        return slot_val_any.strip()
-
-    return None
-
-
 def pick_description(descriptions: Dict[str, str], language: str) -> str:
     if not descriptions:
         return ""

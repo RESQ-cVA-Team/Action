@@ -68,11 +68,3 @@ def friendly_hospital_error(exc: Exception, language: str | None = None) -> str:
             return translate("action.errors.hospital_service_unavailable", language=language)
         return translate("action.errors.hospital_generic", language=language)
     return translate("action.errors.hospital_action_generic", language=language)
-
-
-def friendly_metric_error(exc: Exception, language: str | None = None) -> str:
-    if isinstance(exc, OSError):
-        return translate("action.errors.metric_definitions_unavailable", language=language)
-    if isinstance(exc, TimeoutError):
-        return translate("action.errors.metric_timeout", language=language)
-    return translate("action.errors.metric_generic", language=language)

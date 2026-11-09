@@ -1,0 +1,46 @@
+{
+  "user_utterance": "show me admission nihss between 10 and 30 in a bar chart",
+  "entities_detected": {
+    "metric": [
+      "ADMISSION_NIHSS"
+    ],
+    "chart_type": [
+      "BAR"
+    ],
+    "nihss": [
+      "10",
+      "30"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "BAR",
+        "metrics": [
+          {
+            "metric": "ADMISSION_NIHSS"
+          }
+        ],
+        "numericResolution": {
+          "valueDomain": {
+            "lowerBound": 10,
+            "upperBound": 30
+          }
+        },
+        "semantics": {
+          "intent": "DISTRIBUTION",
+          "measure": {
+            "type": "DISTRIBUTION"
+          },
+          "x_axis": {
+            "role": "METRIC_VALUE",
+            "metric": "ADMISSION_NIHSS"
+          },
+          "y_axis": {
+            "role": "COUNT"
+          }
+        }
+      }
+    ]
+  }
+}

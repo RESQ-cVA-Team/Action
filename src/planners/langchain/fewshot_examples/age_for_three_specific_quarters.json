@@ -1,0 +1,60 @@
+{
+  "user_utterance": "show me age at stroke onset for Q1 2023, Q3 2025 and Q2 2026 in a bar chart",
+  "entities_detected": {
+    "metric": [
+      "AGE"
+    ],
+    "chart_type": [
+      "BAR"
+    ],
+    "date": [
+      "Q1 2023",
+      "Q3 2025",
+      "Q2 2026"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "BAR",
+        "metrics": [
+          {
+            "metric": "AGE"
+          }
+        ],
+        "semantics": {
+          "intent": "COMPARISON",
+          "measure": {
+            "type": "MEDIAN"
+          },
+          "time": {
+            "grain": "QUARTER",
+            "periods": [
+              {
+                "start_date": "2023-01-01",
+                "end_date": "2023-03-31"
+              },
+              {
+                "start_date": "2025-07-01",
+                "end_date": "2025-09-30"
+              },
+              {
+                "start_date": "2026-04-01",
+                "end_date": "2026-06-30"
+              }
+            ]
+          },
+          "x_axis": {
+            "role": "TIME",
+            "grain": "QUARTER"
+          },
+          "y_axis": {
+            "role": "AGGREGATE_VALUE",
+            "metric": "AGE",
+            "aggregation": "MEDIAN"
+          }
+        }
+      }
+    ]
+  }
+}

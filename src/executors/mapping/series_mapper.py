@@ -10,6 +10,9 @@ from src.executors.planning.ssot_metric_defaults import (
     build_distribution_bin_ranges,
     format_distribution_point_label,
     get_enum_labels,
+    get_enum_option_key,
+    is_angels_awards_metric,
+    is_enum_metric,
 )
 from src.shared.ssot_loader import get_enum_option_label, get_metric_display_name
 
@@ -89,9 +92,7 @@ def period_to_label(tp: TimePeriod) -> str:
             dt = datetime.fromisoformat(start)
             return dt.strftime("%Y-%m")
         except ValueError as exc:
-            raise ValueError(
-                f"Invalid ISO start date in time period: {start!r}"
-            ) from exc
+            raise ValueError(f"Invalid ISO start date in time period: {start!r}") from exc
     if isinstance(start, str) and isinstance(end, str) and start and end:
         return f"{start} to {end}"
     if isinstance(start, str) and start:
@@ -150,6 +151,79 @@ def _distribution_points_from_backend(metric_code: str, edges: List[Any], case_c
     return points
 
 
+def _percent_values(percents: Optional[List[Any]], counts: List[Any]) -> List[float]:
+    """Backend percents when they line up with the counts, else each count as a share of their total."""
+    if isinstance(percents, list) and len(percents) == len(counts) and any(p is not None for p in percents):
+        return [float(p) if isinstance(p, (int, float)) else 0.0 for p in percents]
+    total = sum(float(c) for c in counts if isinstance(c, (int, float)))
+    if total <= 0:
+        return [0.0 for _ in counts]
+    return [float(c) / total * 100.0 if isinstance(c, (int, float)) else 0.0 for c in counts]
+
+
+def _first_percent(kpi1: Any) -> Optional[float]:
+    """Share of cases for one grouped row: the backend's first percent (the
+    first category, e.g. the yes of an Angels Awards metric), else the first
+    count over the cohort size."""
+    percents = getattr(kpi1, "percents", None)
+    if isinstance(percents, list):
+        for value in percents:
+            if isinstance(value, (int, float)):
+                return float(value)
+    counts = getattr(kpi1, "case_count", None) or []
+    cohort = getattr(kpi1, "cohort_size", None)
+    if counts and isinstance(counts[0], (int, float)) and isinstance(cohort, (int, float)) and cohort > 0:
+        return float(counts[0]) / float(cohort) * 100.0
+    return None
+
+
+def _is_yes_no_metric(metric_code: str) -> bool:
+    keys = {get_enum_option_key(metric_code, label) for label in get_enum_labels(metric_code) or []}
+    return {"yes", "no"} <= keys
+
+
+def _category_indices(
+    metric_code: str,
+    labels: List[str],
+    include_category_detail: bool,
+) -> List[tuple[int, str]]:
+    """Categories a grouped row of an Enum metric plots: the yes of a yes/no
+    metric (and its no when asked for), every category of any other."""
+    if not _is_yes_no_metric(metric_code):
+        return [(index, str(label)) for index, label in enumerate(labels)]
+    desired_keys = {"yes", "no"} if include_category_detail else {"yes"}
+    found: List[tuple[int, str, Optional[str]]] = [(index, str(label), get_enum_option_key(metric_code, str(label))) for index, label in enumerate(labels)]
+    missing_keys = desired_keys - {key for _, _, key in found}
+    if missing_keys:
+        raise ValueError(f"Enum metric {metric_code} is missing recognized category labels: {sorted(missing_keys)}")
+    return [(index, label) for index, label, key in found if key in desired_keys]
+
+
+def _category_value(
+    kpi1: Any,
+    case_counts: List[Any],
+    index: int,
+    value_mode: str,
+    derived_complement: bool,
+) -> Optional[float]:
+    if index >= len(case_counts) or not isinstance(case_counts[index], (int, float)):
+        return None
+    count = float(case_counts[index])
+    if value_mode != "percent":
+        return count
+
+    percents = getattr(kpi1, "percents", None)
+    if not derived_complement and isinstance(percents, list) and index < len(percents):
+        if isinstance(percents[index], (int, float)):
+            return float(percents[index])
+
+    cohort_size = getattr(kpi1, "cohort_size", None)
+    if isinstance(cohort_size, (int, float)) and cohort_size > 0:
+        return count / float(cohort_size) * 100.0
+
+    return _percent_values(None, case_counts)[index]
+
+
 def map_metrics_payload_to_series(
     metrics_payload: Dict[str, Any],
     label_parts: List[str],
@@ -159,13 +233,31 @@ def map_metrics_payload_to_series(
     scope_label: Optional[str] = None,
     batched_time_periods: Optional[List[Any]] = None,
     is_filter_grouped: bool = False,
+    value_mode: str = "count",
+    category_detail_metric_codes: Optional[List[str]] = None,
 ) -> List[ChartSeries]:
     series: List[ChartSeries] = []
+    category_detail_codes = {code.strip().upper() for code in category_detail_metric_codes or []}
 
     for metric_name, metric in metrics_payload.items():
         for kpi_index, kpi in enumerate(metric.kpi_group):
             if getattr(kpi, "kpi1", None) is None:
                 continue
+
+            metric_code = _metric_code_from_alias(metric_name)
+            is_enum = is_enum_metric(metric_code)
+            include_category_detail = metric_code in category_detail_codes
+            metric_labels = getattr(metric, "labels", None)
+            case_counts = kpi.kpi1.case_count or []
+            derived_complement = False
+
+            if is_enum and not metric_labels:
+                metric_labels = get_enum_labels(metric_code)
+                if metric_labels and len(case_counts) == 1 and isinstance(kpi.kpi1.cohort_size, (int, float)):
+                    case_counts = [case_counts[0], kpi.kpi1.cohort_size - case_counts[0]]
+                    derived_complement = True
+
+            categories = _category_indices(metric_code, cast(List[str], metric_labels), include_category_detail) if is_enum and metric_labels else []
 
             server_label = kpi.grouped_by.group_item_name if kpi.grouped_by else None
             origin_label = _origin_label_from_kpi_group(kpi)
@@ -200,25 +292,56 @@ def map_metrics_payload_to_series(
                 else:
                     x_value = "value"
 
-                y_value: Optional[float] = None
-                if isinstance(kpi.kpi1.median, (int, float)):
-                    y_value = float(kpi.kpi1.median)
-                elif isinstance(kpi.kpi1.mean, (int, float)):
-                    y_value = float(kpi.kpi1.mean)
-                elif kpi.kpi1.case_count:
+                if categories:
+                    if len(case_counts) != len(metric_labels or []) and not (
+                        not case_counts and add_time_period_labels and tp_start
+                    ):
+                        raise ValueError("Enum KPI payload has mismatched labels/caseCount lengths.")
+                    for category_index, category_label in categories:
+                        y_value = _category_value(
+                            kpi.kpi1,
+                            case_counts,
+                            category_index,
+                            value_mode,
+                            derived_complement,
+                        )
+                        if y_value is None and not (add_time_period_labels and tp_start):
+                            raise ValueError("Grouped Enum KPI row is missing the requested category value.")
+
+                        name_parts: List[str] = []
+                        if include_metric_alias:
+                            name_parts.append(metric_label_from_alias(metric_name))
+                        name_parts.extend([part for part in label_parts if part])
+                        if origin_label:
+                            name_parts.append(origin_label)
+                        if scope_label and scope_label not in name_parts:
+                            name_parts.append(scope_label)
+                        if not name_parts:
+                            name_parts.append(metric_label_from_alias(metric_name))
+                        if len(categories) > 1:
+                            name_parts.append(category_label)
+                        series.append(
+                            ChartSeries(
+                                name=" — ".join(name_parts),
+                                data=[ChartPoint(x=x_value, y=y_value, label=x_value)],
+                            )
+                        )
+                    continue
+
+                y_value = _first_percent(kpi.kpi1) if value_mode == "percent" else None
+                if y_value is None:
+                    statistics = (kpi.kpi1.mean, kpi.kpi1.median) if value_mode == "mean" else (kpi.kpi1.median, kpi.kpi1.mean)
+                    y_value = next((float(s) for s in statistics if isinstance(s, (int, float))), None)
+                if y_value is None and kpi.kpi1.case_count:
                     try:
                         y_value = float(kpi.kpi1.case_count[0])
                     except (TypeError, ValueError, IndexError) as exc:
-                        raise ValueError(
-                            "Grouped KPI case_count must provide a numeric first value"
-                        ) from exc
+                        raise ValueError("Grouped KPI case_count must provide a numeric first value") from exc
 
                 # Preserve explicit time buckets as missing points (y=None)
                 # so frontend can render gaps instead of implied zeros.
                 if y_value is None and not (add_time_period_labels and tp_start):
-                    raise ValueError(
-                        "Grouped KPI row is missing numeric y-value (median/mean/case_count[0])."
-                    )
+                    raise ValueError("Grouped KPI row is missing numeric y-value (median/mean/case_count[0]).")
 
                 name_parts: List[str] = []
                 if include_metric_alias:
@@ -239,10 +362,6 @@ def map_metrics_payload_to_series(
                 )
                 continue
 
-            metric_labels = getattr(metric, "labels", None)
-            metric_code = _metric_code_from_alias(metric_name)
-            case_counts = kpi.kpi1.case_count or []
-
             if not metric_labels and not kpi.kpi1.d1 and len(case_counts) == 1 and kpi.kpi1.cohort_size is not None:
                 # Boolean-shaped Enum metric (e.g. WAKEUP_STROKE): backend returns a single
                 # caseCount (the "true"/first-category count) with no labels array. Fall back
@@ -251,11 +370,10 @@ def map_metrics_payload_to_series(
                 if ssot_labels and len(ssot_labels) >= 2:
                     metric_labels = ssot_labels[:2]
                     case_counts = [case_counts[0], kpi.kpi1.cohort_size - case_counts[0]]
+                    derived_complement = True
 
             if not kpi.kpi1.d1 and not metric_labels:
-                raise ValueError(
-                    "Distribution KPI payload is missing d1 histogram/series data."
-                )
+                raise ValueError("Distribution KPI payload is missing d1 histogram/series data.")
 
             parts: List[str] = []
             if include_metric_alias:
@@ -282,18 +400,38 @@ def map_metrics_payload_to_series(
             series_name = " — ".join(parts) if parts else metric_label_from_alias(metric_name)
 
             if kpi.kpi1.d1:
-                points = _distribution_points_from_backend(metric_code, kpi.kpi1.d1.edges, kpi.kpi1.d1.case_count)
+                bin_values: List[Any] = list(kpi.kpi1.d1.case_count)
+                if value_mode == "percent":
+                    bin_values = _percent_values(getattr(kpi.kpi1.d1, "percents", None), bin_values)
+                points = _distribution_points_from_backend(metric_code, kpi.kpi1.d1.edges, bin_values)
             else:
                 # Categorical (Enum) metric: labels and caseCount are parallel arrays,
                 # one entry per category (e.g. male/female/unknown), not a numeric histogram.
                 if len(case_counts) != len(metric_labels or []):
-                    raise ValueError(
-                        "Categorical KPI payload has mismatched labels/caseCount lengths."
-                    )
-                points = [
-                    ChartPoint(x=label, y=float(count))
-                    for label, count in zip(cast(List[str], metric_labels), case_counts)
-                ]
+                    raise ValueError("Categorical KPI payload has mismatched labels/caseCount lengths.")
+                category_values: List[Any] = list(case_counts)
+                if is_angels_awards_metric(metric_code):
+                    points = [
+                        ChartPoint(
+                            x=category_label,
+                            y=_category_value(
+                                kpi.kpi1,
+                                case_counts,
+                                category_index,
+                                value_mode,
+                                derived_complement,
+                            ),
+                        )
+                        for category_index, category_label in categories
+                    ]
+                elif value_mode == "percent":
+                    # A boolean-shaped payload carries one backend percent and a
+                    # complement count derived above, so share it out of the counts.
+                    backend_percents = None if derived_complement else getattr(kpi.kpi1, "percents", None)
+                    category_values = _percent_values(backend_percents, category_values)
+                    points = [ChartPoint(x=label, y=float(count)) for label, count in zip(cast(List[str], metric_labels), category_values)]
+                else:
+                    points = [ChartPoint(x=label, y=float(count)) for label, count in zip(cast(List[str], metric_labels), category_values)]
 
             series.append(
                 ChartSeries(

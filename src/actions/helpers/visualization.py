@@ -10,6 +10,7 @@ from typing import (
     Mapping,
     Optional,
     Protocol,
+    Tuple,
     cast,
     runtime_checkable,
 )
@@ -114,6 +115,17 @@ def _canonical_metric_from_exact_span(text: str, start: Any, end: Any) -> Option
     return _normalized_canonical_metric_keys().get(norm)
 
 
+def _metric_from_exact_synonym_span(text: str, start: Any, end: Any) -> Optional[str]:
+    """Return the canonical metric if the span text is exactly an SSOT metric synonym."""
+    if not isinstance(text, str) or not isinstance(start, int) or not isinstance(end, int):
+        return None
+    if start < 0 or end <= start or end > len(text):
+        return None
+    entry = get_metric_text_lookup().get(normalize_metric_text_key(text[start:end]))
+    canonical = entry.get("canonical") if isinstance(entry, dict) else None
+    return canonical.strip().upper() if isinstance(canonical, str) and canonical.strip() else None
+
+
 def _span_contains(outer: tuple[Any, Any], inner: tuple[Any, Any]) -> bool:
     if not all(isinstance(part, int) for part in outer + inner):
         return False
@@ -196,9 +208,55 @@ def pretty_print_graphql_query(query: str) -> str:
 def extract_entities_from_latest_message(
     latest_message: Dict[str, Any],
 ) -> Dict[str, Any]:
+    extracted: Dict[str, Any] = {}
+    for ent in _kept_entities(latest_message):
+        _accumulate_entity_value(extracted, ent["entity"], ent["value"])
+        # Range entities (age/nihss/date) carry a DIET role saying which
+        # bound a number is ("over 50" -> lower, "under 50" -> upper). The
+        # flat key loses that, and "over 50 and under 50" collapses to a
+        # single "50" -- so keep the role as a companion key too.
+        role_any = ent.get("role")
+        if isinstance(role_any, str) and role_any.strip():
+            _accumulate_entity_value(extracted, f"{ent['entity']}_{role_any.strip().lower()}", ent["value"])
+
+    question_text_any = latest_message.get("text")
+    _derive_range_bounds_from_wording(extracted, question_text_any if isinstance(question_text_any, str) else "")
+    return extracted
+
+
+def question_with_resolved_metrics(latest_message: Dict[str, Any]) -> str:
+    """The user's message with each span NLU resolved to a metric written as that
+    metric's canonical code, so planning starts from the resolved metric instead
+    of reading its words again as filters, splits or further series."""
+    text_any = latest_message.get("text")
+    text = text_any if isinstance(text_any, str) else ""
+    spans: List[tuple[int, int, str]] = []
+    for ent in _kept_entities(latest_message):
+        start, end = ent.get("start"), ent.get("end")
+        if ent["entity"] != "metric" or not isinstance(start, int) or not isinstance(end, int) or not 0 <= start < end <= len(text):
+            continue
+        code = canonicalize_ssot_entities({"metric": ent["value"]}).get("metric")
+        if isinstance(code, str) and code.strip():
+            spans.append((start, end, code.strip().upper()))
+
+    parts: List[str] = []
+    position = 0
+    for start, end, code in sorted(spans):
+        if start < position:
+            continue
+        parts.append(text[position:start])
+        parts.append(code)
+        position = end
+    parts.append(text[position:])
+    return "".join(parts)
+
+
+def _kept_entities(latest_message: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """NLU entities of the message that survive the extractor-conflict rules
+    below, each with its value, span and role."""
     entities_any = latest_message.get("entities", [])
     if not isinstance(entities_any, list):
-        return {}
+        return []
 
     entities_list = cast(List[Any], entities_any)
     question_text_any = latest_message.get("text")
@@ -232,7 +290,26 @@ def extract_entities_from_latest_message(
                 if entity_type == "metric":
                     diet_metric_spans.append(span)
 
-    extracted: Dict[str, Any] = {}
+    # A regex metric span that is exactly an SSOT synonym and contains a DIET
+    # metric span is the more specific reading ("aa recanalization" over
+    # "recanalization"): keep it and drop the DIET span inside it.
+    exact_synonym_spans: Dict[tuple[Any, Any], str] = {}
+    for ent_any in entities_list:
+        if not isinstance(ent_any, dict):
+            continue
+        ent = cast(Dict[str, Any], ent_any)
+        extractors = ent.get("extractors")
+        extractor_names = {e.get("extractor") for e in extractors if isinstance(e, dict)} if isinstance(extractors, list) else set()
+        if ent.get("entity") != "metric" or "DIETClassifier" in extractor_names:
+            continue
+        span = (ent.get("start"), ent.get("end"))
+        if not any(_span_contains(span, metric_span) and metric_span != span for metric_span in diet_metric_spans):
+            continue
+        canonical = _metric_from_exact_synonym_span(question_text, ent.get("start"), ent.get("end"))
+        if canonical is not None:
+            exact_synonym_spans[span] = canonical
+
+    kept: List[Dict[str, Any]] = []
     for ent_any in entities_list:
         if not isinstance(ent_any, dict):
             continue
@@ -250,7 +327,11 @@ def extract_entities_from_latest_message(
             exact_span_canonical = _canonical_metric_from_exact_span(question_text, ent.get("start"), ent.get("end"))
             if exact_span_canonical is not None:
                 value = exact_span_canonical
-        if key_any == "metric" and "DIETClassifier" not in extractor_names:
+        if key_any == "metric" and span in exact_synonym_spans:
+            value = exact_synonym_spans[span]
+        elif key_any == "metric" and any(_span_contains(outer, span) and outer != span for outer in exact_synonym_spans):
+            continue
+        elif key_any == "metric" and "DIETClassifier" not in extractor_names:
             if any(
                 (
                     _span_contains(metric_span, span)
@@ -277,26 +358,126 @@ def extract_entities_from_latest_message(
             if not _has_metric_request_context(question_text, ent.get("start")):
                 continue
 
-        if key_any not in extracted:
-            extracted[key_any] = value
+        kept.append({"entity": key_any, "value": value, "start": ent.get("start"), "end": ent.get("end"), "role": ent.get("role")})
+
+    return kept
+
+
+_RANGE_WORDING = re.compile(
+    r"(?:between|from)\s+(\d+(?:\.\d+)?)\s*(?:and|to|-|–|—)\s*(\d+(?:\.\d+)?)"
+    r"|(\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+_LOWER_BOUND_WORDING = re.compile(
+    r"\b(?:over|above|older than|more than|greater than|higher than|at least)\s+(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+_UPPER_BOUND_WORDING = re.compile(
+    r"\b(?:under|below|younger than|less than|lower than|fewer than|at most|up to)\s+(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+
+
+def _derive_range_bounds_from_wording(extracted: Dict[str, Any], question_text: str) -> None:
+    """DIET's lower/upper roles are unreliable: live, "between 10 and 30"
+    came back with both numbers as lower, and "over 50 and under 50" with
+    only the upper role. When the wording states the bounds with numbers
+    NLU extracted, the wording decides them; otherwise the roles stand.
+    """
+    text = question_text or ""
+    for key in ("age", "nihss"):
+        values_any = extracted.get(key)
+        values = cast(List[Any], values_any) if isinstance(values_any, list) else [values_any]
+        try:
+            by_number = {float(str(v)): v for v in values if v is not None}
+        except ValueError:
             continue
+        if not by_number:
+            continue
+        bounds = _span_bounds(text, by_number) or _one_sided_bounds(text, by_number)
+        if bounds is None:
+            continue
+        lower, upper = bounds
+        extracted.pop(f"{key}_lower", None)
+        extracted.pop(f"{key}_upper", None)
+        if lower is not None:
+            extracted[f"{key}_lower"] = lower
+        if upper is not None:
+            extracted[f"{key}_upper"] = upper
 
-        existing = extracted[key_any]
-        if isinstance(existing, list):
-            existing_list = cast(List[Any], existing)
-            if value not in existing_list:
-                existing_list.append(value)
-        elif value != existing:
-            extracted[key_any] = [existing, value]
-        # else: identical repeat of an already-captured scalar value (e.g.
-        # "male patients DTN" and "female patients DTN" both mention DTN) --
-        # not a second distinct answer, so it must not turn a clean scalar
-        # into a redundant [DTN, DTN] list. That shape previously read to the
-        # decision-stage LLM as two different metric candidates to choose
-        # between, producing a spurious "which metric?" clarification for an
-        # unambiguous request.
 
-    return extracted
+def _span_bounds(text: str, by_number: Dict[float, Any]) -> Optional[Tuple[Any, Any]]:
+    """"between 10 and 30", "from 30 to 60", "30-60": both numbers extracted."""
+    if len(by_number) < 2:
+        return None
+    for match in _RANGE_WORDING.finditer(text):
+        first, second = (match.group(1), match.group(2)) if match.group(1) else (match.group(3), match.group(4))
+        try:
+            pair = {float(first), float(second)}
+        except ValueError:
+            continue
+        if len(pair) != 2 or not pair <= set(by_number):
+            continue
+        lower, upper = sorted(pair)
+        return by_number[lower], by_number[upper]
+    return None
+
+
+def _one_sided_bounds(text: str, by_number: Dict[float, Any]) -> Optional[Tuple[Any, Any]]:
+    """"over 50", "under 50", "older than 60 and younger than 60": each phrase
+    names its own bound, so the same number can be both."""
+    lower = _first_extracted_number(_LOWER_BOUND_WORDING, text, by_number)
+    upper = _first_extracted_number(_UPPER_BOUND_WORDING, text, by_number)
+    if lower is None and upper is None:
+        return None
+    return lower, upper
+
+
+def _first_extracted_number(pattern: "re.Pattern[str]", text: str, by_number: Dict[float, Any]) -> Optional[Any]:
+    for match in pattern.finditer(text):
+        try:
+            number = float(match.group(1))
+        except ValueError:
+            continue
+        if number in by_number:
+            return by_number[number]
+    return None
+
+
+def _accumulate_entity_value(extracted: Dict[str, Any], key: str, value: Any) -> None:
+    if key not in extracted:
+        extracted[key] = value
+        return
+
+    existing = extracted[key]
+    if isinstance(existing, list):
+        existing_list = cast(List[Any], existing)
+        if value not in existing_list:
+            existing_list.append(value)
+    elif value != existing:
+        extracted[key] = [existing, value]
+    # else: identical repeat of an already-captured scalar value (e.g.
+    # "male patients DTN" and "female patients DTN" both mention DTN) --
+    # not a second distinct answer, so it must not turn a clean scalar
+    # into a redundant [DTN, DTN] list. That shape previously read to the
+    # decision-stage LLM as two different metric candidates to choose
+    # between, producing a spurious "which metric?" clarification for an
+    # unambiguous request.
+
+
+def names_metric_and_chart_type(latest_message: Mapping[str, Any]) -> bool:
+    """A message naming both a metric and a chart type asks for that chart,
+    whatever intent it was classified as."""
+    entities_any = latest_message.get("entities")
+    entities = cast(List[Any], entities_any) if isinstance(entities_any, list) else []
+    names = {cast(Dict[str, Any], e).get("entity") for e in entities if isinstance(e, dict)}
+    return {"metric", "chart_type"} <= names
+
+
+def is_plan_only_request(metadata: Mapping[str, Any]) -> bool:
+    """A message whose sender (an evaluation run) wants the plan and no data: the
+    request is triaged and planned as usual, and nothing is fetched upstream."""
+    return metadata.get("plan_only") is True
 
 
 def resolve_override_language(metadata: Dict[str, Any], slots: Dict[str, Any]) -> Optional[str]:
@@ -427,6 +608,10 @@ def serialize_plan_for_frontend(plan: Any) -> Dict[str, Any]:
         if isinstance(operator, str) and operator.strip():
             out["operator"] = operator.strip().upper()
 
+        boolean_type = filter_node.get("boolean_type")
+        if isinstance(boolean_type, str) and boolean_type.strip():
+            out["boolean_type"] = boolean_type.strip().upper()
+
         value = filter_node.get("value")
         if isinstance(value, (str, int, float, bool)):
             out["value"] = value
@@ -514,6 +699,10 @@ def serialize_plan_for_frontend(plan: Any) -> Dict[str, Any]:
 
             if semantics_out:
                 out["semantics"] = semantics_out
+
+        # Always present on a chart, so "no filters" is distinguishable from a preview without them.
+        if out:
+            out["filters"] = _filter_preview(chart.get("filters")) or None
 
         return out
 

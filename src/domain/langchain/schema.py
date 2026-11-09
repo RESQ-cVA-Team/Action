@@ -21,6 +21,7 @@ from src.domain.graphql.ssot_enums import (
 from src.domain.graphql.ssot_enums import (
     Operator as OperatorType,
 )
+from src.shared.ssot_loader import resolve_metric
 
 
 def _deep_freeze(value: Any) -> Any:
@@ -67,6 +68,18 @@ def _enum_allowed_values(enum_cls: Any) -> Set[str]:
     for member in members:
         allowed_values.add(str(getattr(member, "value", member)))
     return allowed_values
+
+
+def _metric_code(value: str) -> str:
+    """The MetricType code for a metric given as its code or as an SSOT synonym."""
+    allowed_values = _enum_allowed_values(MetricType)
+    code = value.strip().upper()
+    if code in allowed_values:
+        return code
+    resolved = resolve_metric(value)
+    if resolved in allowed_values:
+        return cast(str, resolved)
+    raise ValueError(f"{value} is not a valid MetricType. Allowed: {sorted(allowed_values)}")
 
 
 def _extract_canonical(entry: Any) -> Optional[str]:
@@ -449,6 +462,7 @@ class GroupByTime(HashableBaseModel):
 
     grain: str = Field(description="Time aggregation grain.")
     window: Optional[Union[TimeWindow, TimeRange]] = Field(default=None, description="Optional relative or absolute time window.")
+    periods: Optional[List[TimeRange]] = Field(default=None, description="Explicit, possibly non-adjacent periods, one bucket each. Takes precedence over window.")
     include_partial: Optional[bool] = Field(default=None, description="Whether to include the current, incomplete bucket.")
 
     @field_validator("grain")
@@ -597,6 +611,20 @@ class TimeSemanticsSpec(BaseModel):
     grain: Optional[str] = None
     window: Optional[Union[TimeWindow, TimeRange]] = None
     include_partial: Optional[bool] = None
+    # Several specific, possibly non-adjacent periods ("Q1 2023, Q3 2025 and
+    # Q2 2026"), one bucket each. A single date range stays a TimeRange window.
+    periods: Optional[List[TimeRange]] = None
+
+    @field_validator("periods")
+    def validate_periods(cls, v: Optional[List[TimeRange]]) -> Optional[List[TimeRange]]:
+        if v is None:
+            return v
+        if not v:
+            return None
+        for period in v:
+            if period.start_date > period.end_date:
+                raise ValueError(f"time.periods entry has start_date after end_date: {period.start_date} > {period.end_date}")
+        return v
 
     @field_validator("grain")
     def validate_grain(cls, v: Optional[str]) -> Optional[str]:
@@ -687,13 +715,7 @@ class AxisSemanticsSpec(BaseModel):
 
     @field_validator("metric")
     def validate_metric(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return v
-        v_norm = (v or "").strip().upper()
-        allowed_values = _enum_allowed_values(MetricType)
-        if v_norm not in allowed_values:
-            raise ValueError(f"{v} is not a valid MetricType. Allowed: {sorted(allowed_values)}")
-        return v_norm
+        return None if v is None else _metric_code(v)
 
 
 class AnalysisSemanticsSpec(BaseModel):
@@ -810,16 +832,17 @@ class MetricSpec(BaseModel):
     metric: str  # Should be a value from MetricType
     data_origin: Optional[DataOriginSpec] = Field(default=None, alias="dataOrigin")
     origin_scope: Optional[OriginScopeSpec] = Field(default=None, alias="originScope")
+    include_category_detail: bool = Field(
+        default=False,
+        alias="includeCategoryDetail",
+        description="For a yes/no metric, set true only when the user explicitly asks to include or compare both Yes and No categories.",
+    )
 
     model_config = ConfigDict(populate_by_name=True)
 
     @field_validator("metric")
     def validate_metric_type(cls, v: str) -> str:
-        v_norm = v.upper()
-        allowed_values = _enum_allowed_values(MetricType)
-        if v_norm not in allowed_values:
-            raise ValueError(f"{v} is not a valid MetricType. Allowed: {sorted(allowed_values)}")
-        return v_norm
+        return _metric_code(v)
 
 
 class NumericValueDomainSpec(BaseModel):
@@ -936,9 +959,7 @@ class StatisticalTestSpec(BaseModel):
         if not gb:
             return self
 
-        raise ValueError(
-            "Statistical tests do not support group_by. Define explicit cohorts via metric-level origins/filters."
-        )
+        raise ValueError("Statistical tests do not support group_by. Define explicit cohorts via metric-level origins/filters.")
         return self
 
 

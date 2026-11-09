@@ -15,6 +15,16 @@ _DTN_PRETTY_LAYOUT = resolve_minutes_distribution_layout(_DTN_MIN, _DTN_MAX)
 
 
 class MetricRequestFactoryTests(unittest.TestCase):
+    def test_aa_metric_uses_categorical_request_shape(self) -> None:
+        plan_chart = ChartSpec(chart_type="LINE", metrics=[MetricSpec(metric="AA_DTN_LE60")])
+
+        metric_requests, _, _, _ = build_metric_requests(plan_chart=plan_chart)
+
+        request = metric_requests[0]
+        self.assertEqual(request.metric_type.value, "AA_DTN_LE60")
+        self.assertTrue(request.include_labels)
+        self.assertFalse(request.include_distribution)
+
     def test_histogram_uses_ssot_defaults_for_distribution(self) -> None:
         plan_chart = ChartSpec(chart_type="HISTOGRAM", metrics=[MetricSpec(metric="DTN")])
 

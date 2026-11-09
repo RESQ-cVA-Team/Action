@@ -14,10 +14,31 @@ from src.domain.langchain.schema import (
     SplitSpec,
     StatisticalTestSpec,
 )
-from src.planners.langchain.request_orchestrator import VisualizationRequestOutcome, _detect_unsupported_risk_factor_filter, orchestrate_visualization_request
+from src.planners.langchain.request_orchestrator import (
+    VisualizationRequestOutcome,
+    _detect_unsupported_risk_factor_filter,
+    _normalize_plan_semantic_splits,
+    orchestrate_visualization_request,
+)
 
 
 class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
+    def test_drops_a_sex_split_of_the_sex_metric(self) -> None:
+        plan = AnalysisPlan(
+            charts=[
+                ChartSpec(
+                    chart_type="BAR",
+                    metrics=[MetricSpec(metric="SEX")],
+                    semantics=AnalysisSemanticsSpec(
+                        intent="DISTRIBUTION",
+                        measure=MeasureSemanticsSpec(type="RATE"),
+                        splits=[SplitSpec(kind="SEX")],
+                    ),
+                )
+            ]
+        )
+        self.assertIsNone(_normalize_plan_semantic_splits(plan).charts[0].semantics.splits)
+
     def test_drops_redundant_canonical_stroke_type_self_split_before_returning_plan(self) -> None:
         plan = AnalysisPlan(
             charts=[
@@ -78,6 +99,29 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
             )
         )
 
+    def test_allows_metric_synonym_when_metric_entity_is_missing(self) -> None:
+        self.assertIsNone(
+            _detect_unsupported_risk_factor_filter(
+                "Show me a line graph of anticoagulants for atrial fibrillation at discharge",
+                {"chart_type": ["LINE"]},
+            )
+        )
+
+    def test_orchestration_does_not_reject_metric_synonym_when_metric_entity_is_missing(self) -> None:
+        question = "Show me a line graph of anticoagulants for atrial fibrillation at discharge"
+        with patch(
+            "src.planners.langchain.request_orchestrator._decision_stage",
+            return_value=VisualizationRequestOutcome(decision="proceed", reason="ok"),
+        ) as decision_stage:
+            outcome = orchestrate_visualization_request(
+                question=question,
+                entities={"chart_type": ["LINE"]},
+                include_plan=False,
+            )
+
+        self.assertEqual(outcome.decision, "proceed")
+        decision_stage.assert_called_once()
+
     def test_still_rejects_incidental_risk_factor_filter_phrases(self) -> None:
         self.assertEqual(
             _detect_unsupported_risk_factor_filter(
@@ -90,10 +134,19 @@ class RequestOrchestratorStatisticalValidationTests(unittest.TestCase):
     def test_still_rejects_unrelated_risk_factor_when_metric_synonym_is_present(self) -> None:
         self.assertEqual(
             _detect_unsupported_risk_factor_filter(
-                "Show me anticoagulants for atrial fibrillation at discharge in patients with diabetes",
+                "Show me anticoagulants for atrial fibrillation at discharge for smokers",
                 {"metric": ["DISCHARGE_ANTICOAGULANTS_AFIB"]},
             ),
-            "diabetes",
+            "smoker",
+        )
+
+    def test_detects_unrelated_risk_factor_when_metric_entity_is_missing(self) -> None:
+        self.assertEqual(
+            _detect_unsupported_risk_factor_filter(
+                "Show me a line graph of anticoagulants for atrial fibrillation at discharge for smokers",
+                {"chart_type": ["LINE"]},
+            ),
+            "smoker",
         )
 
     def test_clarifies_when_statistical_entities_do_not_define_two_cohorts(self) -> None:

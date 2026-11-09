@@ -138,7 +138,17 @@ def _is_truthy_flag(value: Any) -> bool:
     return False
 
 
-def _resolve_mine_scope(user_sub: str, trace_id: str) -> Optional[str]:
+def _job_id_from_tracker(tracker: TrackerLike) -> Optional[str]:
+    """The job id Webapp minted for this turn, from the callback URL. The
+    analytics-centre client refuses a call without one since the senderId
+    fallback was closed, so every lookup below needs it."""
+    from src.actions.long_action.long_action import _extract_webapp_job_id, _get_callback_config
+
+    callback_url = _get_callback_config(tracker)  # type: ignore[arg-type]
+    return _extract_webapp_job_id(callback_url) if callback_url else None
+
+
+def _resolve_mine_scope(user_sub: str, trace_id: str, job_id: Optional[str] = None) -> Optional[str]:
     """Resolve personal scope ('mine') to a concrete provider scope when possible.
 
     Strategy:
@@ -149,7 +159,7 @@ def _resolve_mine_scope(user_sub: str, trace_id: str) -> Optional[str]:
     """
 
     client = get_analytics_center_client()
-    default_scope = client.resolve_my_default_scope(user_sub=user_sub, trace_id=trace_id, raise_on_error=False)
+    default_scope = client.resolve_my_default_scope(user_sub=user_sub, job_id=job_id, trace_id=trace_id, raise_on_error=False)
     if isinstance(default_scope, dict):
         provider_id_any = default_scope.get("provider_id")
         if isinstance(provider_id_any, int):
@@ -159,9 +169,9 @@ def _resolve_mine_scope(user_sub: str, trace_id: str) -> Optional[str]:
         if isinstance(provider_group_id_any, int):
             return _json_scope("group_id", provider_group_id_any)
 
-    page = client.list_providers(user_sub=user_sub, user=user_sub, limit=200, offset=0, trace_id=trace_id, raise_on_error=False)
+    page = client.list_providers(user_sub=user_sub, job_id=job_id, user=user_sub, limit=200, offset=0, trace_id=trace_id, raise_on_error=False)
     if not page:
-        page = client.list_providers(user_sub=user_sub, limit=200, offset=0, trace_id=trace_id, raise_on_error=False)
+        page = client.list_providers(user_sub=user_sub, job_id=job_id, limit=200, offset=0, trace_id=trace_id, raise_on_error=False)
     providers_any: Any = page.get("results", []) if isinstance(page, dict) else []
     providers: List[Dict[str, Any]] = []
     if isinstance(providers_any, list):
@@ -301,6 +311,7 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
     language = resolve_language_from_tracker(tracker)
     user_sub = tracker.sender_id
     trace_id = _trace_id_from_tracker(tracker) or uuid4().hex
+    job_id = _job_id_from_tracker(tracker)
     client = get_analytics_center_client()
     entities = _latest_entities(tracker)
     with log_context(trace_id=trace_id, sender_id=tracker.sender_id, user_sub=user_sub, validator="guided_hospital_scope"):
@@ -328,7 +339,7 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
                     },
                 )
                 try:
-                    mine_scope = _resolve_mine_scope(user_sub=user_sub, trace_id=trace_id)
+                    mine_scope = _resolve_mine_scope(user_sub=user_sub, trace_id=trace_id, job_id=job_id)
                 except AnalyticsCenterError as exc:
                     details = exc.details if isinstance(exc.details, dict) else {}
                     proxy_any = details.get("proxy")
@@ -358,13 +369,13 @@ def validate_guided_hospital_scope(slot_value: Any, dispatcher: DispatcherLike, 
 
         country_any = entities.get("country_code") or entities.get("countryCode") or entities.get("country")
         if isinstance(country_any, str) and country_any.strip():
-            resolved = client.resolve_country_code(user_sub=user_sub, country_input=country_any.strip(), trace_id=trace_id, raise_on_error=False)
+            resolved = client.resolve_country_code(user_sub=user_sub, job_id=job_id, country_input=country_any.strip(), trace_id=trace_id, raise_on_error=False)
             if resolved:
                 return {"guided_hospital_scope": _json_scope("country_code", resolved, label=resolved)}
 
         hospital_any = entities.get("hospital_name") or entities.get("hospital") or entities.get("provider") or slot_value
         if isinstance(hospital_any, str) and hospital_any.strip() and resolve_scope(hospital_any) != "ALL":
-            page = client.list_providers(user_sub=user_sub, limit=200, offset=0, trace_id=trace_id, raise_on_error=False)
+            page = client.list_providers(user_sub=user_sub, job_id=job_id, limit=200, offset=0, trace_id=trace_id, raise_on_error=False)
             providers_any: Any = page.get("results", []) if isinstance(page, dict) else []
             providers_list: List[Dict[str, Any]] = []
             if isinstance(providers_any, list):
@@ -448,7 +459,7 @@ def parse_guided_scope(scope_raw: Any, trace_id: Optional[str] = None) -> Option
     return None
 
 
-def resolve_scope_to_data_origin(scope: Dict[str, Any], user_sub: str, trace_id: str) -> Optional[Dict[str, Any]]:
+def resolve_scope_to_data_origin(scope: Dict[str, Any], user_sub: str, trace_id: str, job_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     scope_type = str(scope.get("scope_type") or "").strip().lower()
     value = scope.get("value")
     client = get_analytics_center_client()
@@ -477,6 +488,7 @@ def resolve_scope_to_data_origin(scope: Dict[str, Any], user_sub: str, trace_id:
         while True:
             page = client.list_providers(
                 user_sub=user_sub,
+                job_id=job_id,
                 limit=limit,
                 offset=offset,
                 country_code=country_code,
@@ -507,7 +519,7 @@ def resolve_scope_to_data_origin(scope: Dict[str, Any], user_sub: str, trace_id:
         return None
 
     if scope_type == "hospital_name" and isinstance(value, str) and value.strip():
-        page = client.list_providers(user_sub=user_sub, limit=200, offset=0, trace_id=trace_id, raise_on_error=False)
+        page = client.list_providers(user_sub=user_sub, job_id=job_id, limit=200, offset=0, trace_id=trace_id, raise_on_error=False)
         providers_any: Any = page.get("results", []) if isinstance(page, dict) else []
         providers_list: List[Dict[str, Any]] = []
         if isinstance(providers_any, list):

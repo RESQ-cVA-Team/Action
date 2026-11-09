@@ -9,6 +9,7 @@
       "empty_plan_clarify": "I could not derive an executable analysis plan from that request. Please ask for a chart with metric and chart type, or for statistics provide two explicit cohorts to compare.",
       "metric_choice_clarify": "Which metric did you mean: {options}?",
       "reject_default": "This request is outside the visualization flow.",
+      "llm_unavailable": "I can't reach the language model I use right now, so I can't answer this. Please try again in a few minutes.",
       "non_visualization_intent": "I can help with visualization requests. Try asking to generate a chart, or ask to update the current chart.",
       "success_complete": "Done!",
       "internal_error_routing": "Error routing visualization request: {error}",
@@ -25,10 +26,7 @@
       "hospital_timeout": "The provider directory request timed out. Please try again.",
       "hospital_service_unavailable": "The provider directory service is temporarily unavailable. Please try again in a moment.",
       "hospital_generic": "Could not retrieve hospital data right now. Please try again.",
-      "hospital_action_generic": "Error listing hospitals.",
-      "metric_definitions_unavailable": "Metric definitions are temporarily unavailable. Please try again.",
-      "metric_timeout": "Metric lookup timed out. Please try again.",
-      "metric_generic": "Error explaining metric."
+      "hospital_action_generic": "Error listing hospitals."
     },
     "hospitals": {
       "country_not_matched": "I couldn't match country '{country}'. Please try a 2-letter code like ES, MX, DE, or FR.",
@@ -45,14 +43,12 @@
       "internal_error": "Error listing hospitals: {error}"
     },
     "metric": {
-      "missing_metric": "I couldn't find any metric in your request.",
       "metric_not_understood": "I couldn't understand the metric you asked about.",
       "metric_unknown_with_suggestions": "I don't recognise that metric. Here are a few metrics I can describe: {suggestions}.",
       "metric_unknown": "I don't recognise that metric.",
       "description_not_configured": "This is a known metric, but its description is not configured yet.",
       "data_type_with_unit": "Data type: {data_type} ({unit}).",
-      "data_type": "Data type: {data_type}.",
-      "internal_error": "Error explaining metric: {error}"
+      "data_type": "Data type: {data_type}."
     },
     "guided": {
       "validate_metric_ambiguous": "I found multiple possible metrics for that request. Please enter a more specific metric code or name.",

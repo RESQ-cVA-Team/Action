@@ -98,6 +98,7 @@ def get_canonical_values(filename: str) -> Tuple[str, ...]:
 
 
 @lru_cache(maxsize=16)
+@lru_cache(maxsize=16)
 def _canonical_lookup(filename: str) -> Dict[str, str]:
     """Return normalized text -> canonical mapping for an SSOT type file.
 
@@ -146,6 +147,11 @@ def resolve_groupby_canonical(value: str) -> Optional[str]:
     return _resolve_canonical_value("GroupByType.yml", value)
 
 
+def resolve_metric(value: str) -> Optional[str]:
+    """Resolve a metric (canonical or synonym) to its MetricType canonical value."""
+    return _resolve_canonical_value("MetricType.yml", value)
+
+
 def create_enum(name: str, filename: str) -> Any:
     values = get_canonical_values(filename)
     # Use functional API; maintain str subclassing for compatibility.
@@ -181,6 +187,10 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
             val = item.get(key)
             if val is not None:
                 meta[key] = val
+
+        angels_awards = item.get("angels_awards")
+        if isinstance(angels_awards, dict):
+            meta["angels_awards"] = angels_awards
 
         descriptions = _coerce_description_map(item.get("descriptions"))
         if descriptions:
@@ -620,6 +630,12 @@ def get_metric_display_name(metric_code: str) -> str:
     if isinstance(disp, str) and disp.strip():
         return disp
     return code
+
+
+def get_metric_data_type(metric_code: str) -> Optional[str]:
+    """SSOT data_type of a metric (Numeric or Enum), None for an unknown code."""
+    data_type = (_metric_meta_cached().get((metric_code or "").upper()) or {}).get("data_type")
+    return str(data_type) if isinstance(data_type, str) and data_type.strip() else None
 
 
 def get_operator_symbol(operator_code: str) -> str:

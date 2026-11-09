@@ -49,6 +49,7 @@ class ChartBuilderTests(unittest.TestCase):
         self.assertEqual(x_axis.type.value, "linear")
         self.assertEqual(y_axis.label, "Cases")
         self.assertEqual(y_axis.type.value, "linear")
+        self.assertNotIn("angels_awards", chart.model_dump(mode="json")["metadata"])
 
     def test_line_distribution_without_dimensions_uses_metric_and_cases_axes(
         self,
@@ -85,6 +86,50 @@ class ChartBuilderTests(unittest.TestCase):
         self.assertEqual(x_axis.type.value, "linear")
         self.assertEqual(y_axis.label, "Cases")
         self.assertEqual(y_axis.type.value, "linear")
+
+    def test_angels_awards_thresholds_are_in_serialized_chart_metadata(self) -> None:
+        plan_chart = ChartSpec(
+            chart_type="BAR",
+            metrics=[MetricSpec(metric="AA_DTN_LE60")],
+        )
+
+        chart = build_chart_dto(
+            plan_chart=plan_chart,
+            dimensions=[],
+            series=[ChartSeries(name="Door-to-needle", data=[ChartPoint(x="yes", y=50)])],
+            derived_axes=None,
+        )
+
+        self.assertEqual(
+            chart.model_dump(mode="json")["metadata"]["angels_awards"],
+            {"AA_DTN_LE60": {"gold": {"min_percent": 50}, "platinum": {"min_percent": 75}, "diamond": {"min_percent": 75}}},
+        )
+
+    def test_angels_awards_levels_without_a_requirement_are_left_out(self) -> None:
+        plan_chart = ChartSpec(
+            chart_type="BAR",
+            metrics=[
+                MetricSpec(metric="AA_DTN_LE45"),
+                MetricSpec(metric="AA_DTG_LE90"),
+                MetricSpec(metric="AA_STROKE_UNIT"),
+            ],
+        )
+
+        chart = build_chart_dto(
+            plan_chart=plan_chart,
+            dimensions=[],
+            series=[ChartSeries(name="Award metric", data=[ChartPoint(x="yes", y=50)])],
+            derived_axes=None,
+        )
+
+        self.assertEqual(
+            chart.model_dump(mode="json")["metadata"]["angels_awards"],
+            {
+                "AA_DTN_LE45": {"diamond": {"min_percent": 50}},
+                "AA_DTG_LE90": {"diamond": {"min_percent": 50}},
+                "AA_STROKE_UNIT": {"diamond": {"required": True}},
+            },
+        )
 
 
 class OperatorSymbolTests(unittest.TestCase):

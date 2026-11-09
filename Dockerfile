@@ -1,4 +1,4 @@
-FROM rasa/rasa-sdk:3.19.0@sha256:39ddf4e684d300f43cdbfbde3d1f445b0a9d64110944f54e36388738486db743 AS deps
+FROM rasa/rasa-sdk:3.21.0@sha256:4a80e0e80b4e7c9af9e57ed78387dba24e92dfcfad4e5ccd7353e12c587405b3 AS deps
 
 USER root
 
@@ -9,19 +9,28 @@ COPY requirements.txt .
 RUN pip wheel --no-cache-dir --wheel-dir /tmp/wheels -r requirements.txt
 
 
-FROM rasa/rasa-sdk:3.19.0@sha256:39ddf4e684d300f43cdbfbde3d1f445b0a9d64110944f54e36388738486db743
+FROM rasa/rasa-sdk:3.21.0@sha256:4a80e0e80b4e7c9af9e57ed78387dba24e92dfcfad4e5ccd7353e12c587405b3
 
 USER root
+
+# OS packages get security patches independently of the pinned image tag.
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt VERSION .
 COPY --from=deps /tmp/wheels /tmp/wheels
 
+# Nothing at runtime installs packages, so neither pip stays in the image
+# (the venv's and the system Python's); their vendored libraries are
+# scanned like installed ones.
 RUN pip install --no-cache-dir --no-index --find-links=/tmp/wheels -r requirements.txt \
-	&& rm -rf /tmp/wheels
+	&& rm -rf /tmp/wheels \
+	&& pip uninstall -y pip \
+	&& /usr/bin/python3 -m pip uninstall -y --break-system-packages --root-user-action=ignore pip
 
 WORKDIR /app
 
-RUN mkdir -p /app && chown -R 1001:1001 /app
+# Owned by root so the runtime user can read the code but not change it.
+RUN chmod 755 /app
 
 ARG ACTION_VERSION=""
 ARG ACTION_COMMIT_SHA=""
@@ -39,8 +48,8 @@ LABEL org.opencontainers.image.version=${ACTION_VERSION}
 LABEL org.opencontainers.image.revision=${ACTION_COMMIT_SHA}
 LABEL org.opencontainers.image.created=${ACTION_BUILD_DATE}
 
-COPY --chown=1001:1001 src/ ./src
-COPY --chown=1001:1001 rasa_sdk_plugins/ ./rasa_sdk_plugins
+COPY src/ ./src
+COPY rasa_sdk_plugins/ ./rasa_sdk_plugins
 
 # --- Build-time assertion: ensure SSOT YAML files are present ---
 # If this fails, you likely forgot:
@@ -53,6 +62,6 @@ RUN test -f src/shared/SSOT/ChartType.yml \
 
 EXPOSE 5055
 
-USER 1001
+USER 1001:1001
 
 ENTRYPOINT ["python", "-m", "rasa_sdk", "--actions", "src.actions"]

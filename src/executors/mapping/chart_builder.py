@@ -11,7 +11,7 @@ from src.domain.dto.charts.histogram import Histogram, HistogramBin
 from src.domain.dto.charts.pie import PieChart, PieSlice
 from src.domain.dto.charts.radar import RadarChart
 from src.domain.dto.charts.scatter import ScatterPlot
-from src.domain.dto.charts.types import ChartAxis, ChartMetadata, ChartSeries, ChartType
+from src.domain.dto.charts.types import ChartAxis, ChartMetadata, ChartPoint, ChartSeries, ChartType
 from src.domain.dto.charts.waterfall import WaterfallChart, WaterfallStep
 from src.domain.langchain import schema as S
 from src.domain.langchain.schema import (
@@ -22,8 +22,14 @@ from src.domain.langchain.schema import (
     GroupByStrokeType,
     GroupByTime,
 )
+from src.executors.mapping.series_mapper import _grouped_time_period_label
+from src.executors.planning.metric_request_factory import numeric_request_bounds
 from src.executors.planning.query_compiler import Dimension
-from src.executors.planning.ssot_metric_defaults import build_distribution_bin_ranges
+from src.executors.planning.ssot_metric_defaults import (
+    build_distribution_bin_ranges,
+    is_angels_awards_metric,
+    is_enum_metric,
+)
 from src.shared.ssot_loader import (
     get_canonical_display_name,
     get_metric_display_name,
@@ -174,6 +180,34 @@ def _metric_codes(plan_chart: S.ChartSpec) -> List[str]:
         if code and code not in out:
             out.append(code)
     return out
+
+
+def _angels_awards_for_chart(plan_chart: S.ChartSpec) -> Optional[dict[str, dict[str, Any]]]:
+    """Per AA metric, each award level's requirement: {"min_percent": n} or {"required": True}."""
+    awards_by_metric: dict[str, dict[str, Any]] = {}
+    for metric_code in _metric_codes(plan_chart):
+        if not is_angels_awards_metric(metric_code):
+            continue
+        metric_metadata = _METRIC_METADATA.get(metric_code)
+        if not isinstance(metric_metadata, dict):
+            continue
+        awards_any = metric_metadata.get("angels_awards")
+        if not isinstance(awards_any, dict):
+            continue
+        awards = cast(dict[str, Any], awards_any)
+        thresholds: dict[str, Any] = {}
+        for tier in ("gold", "platinum", "diamond"):
+            requirement = awards.get(tier)
+            if not isinstance(requirement, dict):
+                continue
+            min_percent = cast(dict[str, Any], requirement).get("min_percent")
+            if isinstance(min_percent, (int, float)) and not isinstance(min_percent, bool):
+                thresholds[tier] = {"min_percent": min_percent}
+            elif cast(dict[str, Any], requirement).get("required") is True:
+                thresholds[tier] = {"required": True}
+        if thresholds:
+            awards_by_metric[metric_code] = thresholds
+    return awards_by_metric or None
 
 
 def _format_operator(value: str) -> str:
@@ -394,6 +428,23 @@ def _metric_value_axis_label(plan_chart: S.ChartSpec) -> str:
     return f"{display} ({unit})" if unit else display
 
 
+def _is_percent_measure(plan_chart: S.ChartSpec) -> bool:
+    semantics = getattr(plan_chart, "semantics", None)
+    measure = getattr(semantics, "measure", None) if semantics is not None else None
+    return str(getattr(measure, "type", "") or "").upper() == "RATE"
+
+
+def _plotted_statistic(plan_chart: S.ChartSpec) -> str:
+    """The statistic a grouped numeric chart plots: the mean for measure MEAN, else the median."""
+    semantics = getattr(plan_chart, "semantics", None)
+    measure = getattr(semantics, "measure", None) if semantics is not None else None
+    return "Mean" if str(getattr(measure, "type", "") or "").upper() == "MEAN" else "Median"
+
+
+def _cases_axis_label(plan_chart: S.ChartSpec) -> str:
+    return "Share of cases (%)" if _is_percent_measure(plan_chart) else "Cases"
+
+
 def _uses_distribution_axes(
     chart_type_upper: str,
     dimensions: List[Dimension],
@@ -429,7 +480,7 @@ def _derive_axes_from_dimensions(
             label=_metric_value_axis_label(plan_chart),
             type=ChartAxis.AxisType.LINEAR,
         )
-        y_axis = ChartAxis(label="Cases", type=ChartAxis.AxisType.LINEAR)
+        y_axis = ChartAxis(label=_cases_axis_label(plan_chart), type=ChartAxis.AxisType.LINEAR)
         return x_axis, y_axis
 
     primary = _primary_dimension_for_axes(dimensions)
@@ -442,58 +493,89 @@ def _derive_axes_from_dimensions(
         x_axis = ChartAxis(label="Category", type=ChartAxis.AxisType.CATEGORY)
 
     if chart_type_upper == ChartType.HISTOGRAM.value:
+        y_axis_label = _cases_axis_label(plan_chart)
+    elif _is_percent_measure(plan_chart):
+        y_axis_label = "Share of cases (%)"
+    elif any(is_enum_metric(code) for code in _metric_codes(plan_chart)):
         y_axis_label = "Cases"
     else:
-        y_axis_label = _metric_value_axis_label(plan_chart)
+        y_axis_label = f"{_plotted_statistic(plan_chart)} {_metric_value_axis_label(plan_chart)}"
 
     y_axis = ChartAxis(label=y_axis_label, type=ChartAxis.AxisType.LINEAR)
     return x_axis, y_axis
+
+
+def _fetched_value_range(plan_chart: S.ChartSpec) -> Optional[str]:
+    """The range the metric calculator was asked for, not the bins left after
+    tail trimming: a chart whose first bin starts at 30 was still fetched
+    over 0 to 520, and that is the fact the title should carry."""
+    metric_codes = _metric_codes(plan_chart)
+    if len(metric_codes) != 1 or is_enum_metric(metric_codes[0]):
+        return None
+    try:
+        lower, upper = numeric_request_bounds(plan_chart, metric_codes[0])
+    except Exception:
+        return None
+    unit = _metric_unit(metric_codes[0])
+    text = f"{lower:g} to {upper:g}"
+    return f"{text} {unit}" if unit else text
 
 
 def _derive_title(
     plan_chart: S.ChartSpec,
     dimensions: List[Dimension],
     sampled_period_override: Optional[str] = None,
+    value_range: Optional[str] = None,
+    is_distribution: bool = False,
 ) -> str:
-    metric_codes = _metric_codes(plan_chart)
-    metrics_part = ", ".join(metric_codes) if metric_codes else get_metric_display_name(plan_chart.chart_type or "CHART")
+    """Title parts, in order: what is shown, the value range it covers (for
+    distributions), the sampled period, and any filters, comma separated.
+    Each part only appears when it carries information, so the plain case
+    reads "Door to needle distribution, 30 to 290 minutes, 2024-10-02 to
+    2026-10-02" and a filtered split reads "Door to needle by sex, 2024-10-02
+    to 2026-10-02, filtered by stroke type = ischemic".
+    """
+    names: List[str] = []
+    for code in _metric_codes(plan_chart):
+        name = _normalize_title_token(get_metric_display_name(code))
+        if name and name not in names:
+            names.append(name)
+    subject = " and ".join(names) if names else _normalize_title_token(get_metric_display_name(plan_chart.chart_type or "CHART"))
 
-    across_dim: Optional[Dimension] = None
+    time_dim: Optional[Dimension] = next((d for d in dimensions if isinstance(d.spec, GroupByTime)), None)
+    split_labels: List[str] = []
     for dimension in dimensions:
-        if isinstance(dimension.spec, GroupByTime):
-            across_dim = dimension
-            break
-    if across_dim is None and dimensions:
-        across_dim = dimensions[0]
-
-    by_parts: List[str] = []
-    for dimension in dimensions:
-        if across_dim is not None and dimension is across_dim:
+        if dimension is time_dim:
             continue
         label = _dimension_label(dimension)
-        if not label:
-            continue
-        token = _normalize_title_token(label)
-        if token and token not in by_parts:
-            by_parts.append(token)
+        token = _normalize_title_token(label) if label else ""
+        if token and token not in split_labels:
+            split_labels.append(token)
 
-    if across_dim is None:
-        across_part = "category"
-    else:
-        across_label = _dimension_label(across_dim) or "category"
-        across_part = _normalize_title_token(across_label)
+    explicit_periods = list(getattr(time_dim.spec, "periods", None) or []) if time_dim is not None else []
+    if is_distribution and not dimensions:
+        subject += " distribution"
+    if explicit_periods:
+        subject += " for " + ", ".join(_grouped_time_period_label(p.start_date, p.end_date) for p in explicit_periods)
+    elif time_dim is not None:
+        subject += f" per {_normalize_title_token(_dimension_label(time_dim) or 'period')}"
+    if split_labels:
+        subject += " by " + " and ".join(split_labels)
+
+    parts: List[str] = [subject[:1].upper() + subject[1:]]
+    if value_range:
+        parts.append(value_range)
 
     filters_node = cast(Any, getattr(plan_chart, "filters", None))
-    sampled_period = sampled_period_override or _sample_period(filters_node)
-    filters_part = _format_filter_text(filters_node, include_date=sampled_period is None)
-
-    title = metrics_part
-    if by_parts:
-        title += f" by {' × '.join(by_parts)}"
+    # Explicit periods are already spelled out in the subject; the sampled
+    # span would only suggest a continuous range that was never requested.
+    sampled_period = None if explicit_periods else (sampled_period_override or _sample_period(filters_node))
     if sampled_period:
-        title += f" sampled from {sampled_period}"
-    title += f" across {across_part} ({filters_part})"
-    return title
+        parts.append(sampled_period)
+    filters_part = _format_filter_text(filters_node, include_date=sampled_period is None and not explicit_periods)
+    if filters_part and filters_part != "all patients":
+        parts.append(f"filtered by {filters_part}")
+    return ", ".join(parts)
 
 
 def build_chart_dto(
@@ -506,7 +588,6 @@ def build_chart_dto(
     histogram_original_bin_width: Optional[float] = None,
     apply_numeric_tail_trim: bool = True,
 ) -> ChartDTO:
-    title_text = _derive_title(plan_chart, dimensions, sampled_period_override=sampled_period_override)
     chart_type_upper = (plan_chart.chart_type or "").upper()
 
     series_to_render = series
@@ -530,10 +611,22 @@ def build_chart_dto(
             series=series_to_render,
         )
 
+    value_range: Optional[str] = None
+    if _uses_distribution_axes(chart_type_upper, dimensions, series_to_render):
+        value_range = _fetched_value_range(plan_chart)
+    title_text = _derive_title(
+        plan_chart,
+        dimensions,
+        sampled_period_override=sampled_period_override,
+        value_range=value_range,
+        is_distribution=value_range is not None,
+    )
+
     metadata = ChartMetadata(
         title=title_text,
         x_axis=x_axis,
         y_axis=y_axis,
+        angels_awards=_angels_awards_for_chart(plan_chart),
     )
 
     if chart_type_upper == ChartType.LINE.value:

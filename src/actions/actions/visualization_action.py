@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional, Protocol, cast
+from typing import Any, Dict, List, Optional, Protocol, Tuple, cast
 from uuid import uuid4
 
 from rasa_sdk import Action  # type: ignore
@@ -12,7 +12,10 @@ from src.actions.helpers.metric import resolve_next_metric_candidate
 from src.actions.helpers.visualization import (
     canonicalize_ssot_entities,
     extract_entities_from_latest_message,
+    question_with_resolved_metrics,
     format_execution_summary,
+    is_plan_only_request,
+    names_metric_and_chart_type,
     pretty_print_graphql_query,
     resolve_override_language,
     serialize_plan_for_frontend,
@@ -23,12 +26,15 @@ from src.actions.long_action.long_action_context import LongActionContext
 from src.domain.langchain import schema as lang_schema
 from src.executors import execute_plan_async
 from src.executors.orchestration.plan_executor import VisualizationExecutionError
+from src.planners.langchain.llm_errors import LLM_UNAVAILABLE
 from src.planners.langchain.request_orchestrator import (
     _PLANNER_MAX_RETRIES,
+    VisualizationRequestOutcome,
     orchestrate_visualization_request,
 )
 from src.shared import ssot_loader
 from src.util import env as env_util
+from src.util.llm_usage import llm_usage_field, start_llm_usage
 from src.util.logging_utils import log_context
 
 logger = logging.getLogger(__name__)
@@ -38,16 +44,7 @@ _ECHO_INTERNAL_ERRORS = env_util.env_flag("ACTIONS_ECHO_INTERNAL_ERRORS", defaul
 _SHOW_EXECUTION_SUMMARY = env_util.env_flag("ACTIONS_SHOW_EXECUTION_SUMMARY", default=True)
 _DEFER_CALLBACK_HANDOFF = env_util.env_flag("LONG_ACTION_DEFER_CALLBACK_HANDOFF", default=False)
 _EMIT_QUERY_DEBUG = env_util.env_flag("ACTIONS_EMIT_QUERY_DEBUG", default=False)
-_VISUALIZATION_CONTINUATION_INTENTS = {
-    "generate_visualization",
-    "update_visualization",
-    "clarify_visualization",
-}
-_VISUALIZATION_THREAD_INTENTS = {
-    "generate_visualization",
-    "update_visualization",
-    "clarify_visualization",
-}
+_VISUALIZATION_INTENT = "generate_visualization"
 _VISUALIZATION_PLAN_TYPE = "visualization_plan"
 _VISUALIZATION_GRAPHQL_QUERY_TYPE = "visualization_graphql_query"
 _VISUALIZATION_RESPONSE_SCHEMA_VERSION = 1
@@ -111,31 +108,6 @@ class TrackerLike(Protocol):
     def current_state(self) -> Dict[str, Any]: ...
 
 
-def _extract_intent_name_from_user_event(event: Dict[str, Any]) -> str:
-    parse_data_any = event.get("parse_data")
-    parse_data = cast(Dict[str, Any], parse_data_any) if isinstance(parse_data_any, dict) else {}
-
-    intent_any = parse_data.get("intent")
-    intent = cast(Dict[str, Any], intent_any) if isinstance(intent_any, dict) else {}
-    name_any = intent.get("name")
-    if isinstance(name_any, str) and name_any.strip():
-        return name_any.strip()
-
-    fallback_intent_any = event.get("intent")
-    fallback_intent = cast(Dict[str, Any], fallback_intent_any) if isinstance(fallback_intent_any, dict) else {}
-    fallback_name_any = fallback_intent.get("name")
-    if isinstance(fallback_name_any, str) and fallback_name_any.strip():
-        return fallback_name_any.strip()
-
-    metadata_any = event.get("metadata")
-    metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
-    metadata_intent_any = metadata.get("intentName")
-    if isinstance(metadata_intent_any, str) and metadata_intent_any.strip():
-        return metadata_intent_any.strip()
-
-    return ""
-
-
 def _emit_next_metric_followup(
     ctx: LongActionContext,
     plan_obj: lang_schema.AnalysisPlan,
@@ -155,8 +127,6 @@ def _emit_next_metric_followup(
 
     next_label = ssot_loader.get_metric_display_name(next_metric)
 
-    # payload = f'/update_visualization{{"metric":"{next_metric}","kpi":"{next_metric}"}}'
-    # payload = f"Update visualization with to use {next_metric} as the KPI"
     payload = translate(
         "action.visualization.next_metric_payload",
         language=language,
@@ -233,42 +203,11 @@ def _build_metric_clarification_prompt(
     buttons = [
         {
             "title": display_name,
-            "payload": f'/clarify_visualization{{"metric":"{metric_code}"}}',
+            "payload": f'/generate_visualization{{"metric":"{metric_code}"}}',
         }
         for metric_code, display_name in zip(canonical_options, display_names)
     ]
     return message, buttons
-
-
-def _collect_visualization_thread_messages(events: List[Dict[str, Any]], fallback_limit: int = 12) -> List[str]:
-    user_messages: List[str] = []
-    rejected_indices: set[int] = set()
-    last_user_index: Optional[int] = None
-
-    for ev in events:
-        if ev.get("event") == "user":
-            text_any = ev.get("text")
-            if isinstance(text_any, str) and text_any.strip():
-                user_messages.append(text_any.strip())
-                last_user_index = len(user_messages) - 1
-
-        elif ev.get("event") == "bot":
-            payload = _extract_bot_custom_payload(ev)
-            if payload and payload.get("type") == "visualization_query_decision" and payload.get("decision") == "reject" and last_user_index is not None:
-                rejected_indices.add(last_user_index)
-
-    if not user_messages:
-        return []
-
-    # Use the same topic-boundary rule as _collect_visualization_thread_entities so an
-    # off-topic turn (e.g. misclassified intent) breaks the thread here too, instead of
-    # letting stale, abandoned requests bleed into a brand-new unrelated question.
-    anchor_user_idx = _find_latest_visualization_anchor_user_ordinal(events)
-    thread_start = anchor_user_idx if anchor_user_idx >= 0 else max(0, len(user_messages) - fallback_limit)
-
-    sliced = user_messages[thread_start:][-fallback_limit:]
-    sliced_global_start = max(thread_start, len(user_messages) - fallback_limit)
-    return [msg for i, msg in enumerate(sliced) if (sliced_global_start + i) not in rejected_indices]
 
 
 def _merge_entities(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
@@ -319,44 +258,21 @@ def _extract_entities_from_user_event(event: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         value = ent["value"]
-        if key_any not in extracted:
-            extracted[key_any] = value
-            continue
-
-        existing = extracted[key_any]
-        if isinstance(existing, list):
-            cast(List[Any], existing).append(value)
-        else:
-            extracted[key_any] = [existing, value]
+        keys = [key_any]
+        role_any = ent.get("role")
+        if isinstance(role_any, str) and role_any.strip():
+            keys.append(f"{key_any}_{role_any.strip().lower()}")
+        for key in keys:
+            if key not in extracted:
+                extracted[key] = value
+                continue
+            existing = extracted[key]
+            if isinstance(existing, list):
+                cast(List[Any], existing).append(value)
+            else:
+                extracted[key] = [existing, value]
 
     return extracted
-
-
-def _collect_visualization_thread_entities(events: List[Dict[str, Any]], fallback_limit: int = 12) -> Dict[str, Any]:
-    user_events: List[Dict[str, Any]] = []
-    for ev in events:
-        if ev.get("event") != "user":
-            continue
-        text_any = ev.get("text")
-        if isinstance(text_any, str) and text_any.strip():
-            user_events.append(ev)
-
-    if not user_events:
-        return {}
-
-    anchor_user_idx = _find_latest_visualization_anchor_user_ordinal(events)
-    if anchor_user_idx < 0:
-        anchor_user_idx = max(0, len(user_events) - fallback_limit)
-
-    thread_slice = user_events[anchor_user_idx:]
-    if len(thread_slice) > fallback_limit:
-        thread_slice = thread_slice[-fallback_limit:]
-
-    merged: Dict[str, Any] = {}
-    for user_event in thread_slice:
-        merged = _merge_entities(merged, _extract_entities_from_user_event(user_event))
-
-    return merged
 
 
 def _dedupe_list_values(values: List[Any]) -> List[Any]:
@@ -380,85 +296,193 @@ _LATEST_ENTITY_PRECEDENCE_KEYS = {
 }
 
 
-def merge_latest_with_thread_entities(
-    latest_entities: Dict[str, Any],
-    events: List[Dict[str, Any]],
-    fallback_limit: int = 12,
-) -> Dict[str, Any]:
-    """Merge the current turn's entities with the anchored visualization
-    thread's entities. Only called when the caller has already decided the
-    thread should carry forward at all (see
-    _should_carry_forward_visualization_context) -- a fresh, unrelated
-    generate_visualization request skips this entirely rather than being
-    merged and then selectively un-merged, so there's nothing here to guard
-    against a stale identity entity (hospital, country, ...) leaking into an
-    unrelated request.
-    """
-    thread_entities = _collect_visualization_thread_entities(events, fallback_limit=fallback_limit)
-    if not thread_entities:
-        return dict(latest_entities)
-
-    merged = _merge_entities(thread_entities, latest_entities)
-    for key, value in list(merged.items()):
-        if isinstance(value, list):
-            merged[key] = _dedupe_list_values(cast(List[Any], value))
-
-    # A restated identity/cohort key in the latest turn is authoritative: it
-    # replaces (not appends to) whatever was inherited from earlier turns.
-    for key in _LATEST_ENTITY_PRECEDENCE_KEYS:
-        if key in latest_entities:
-            merged[key] = latest_entities[key]
-    return merged
-
-
-def _is_awaiting_clarification_reply(events: List[Dict[str, Any]]) -> bool:
-    """Whether the bot's most recent utterance before the current turn was a
-    clarification request -- i.e. this turn completes that pending ask rather
-    than starting a fresh one.
-
-    Deliberately derived from events rather than the
-    awaiting_visualization_clarification slot: action_clarify_visualization_request
-    flips that slot to False as part of its own return events (before its
-    FollowupAction, action_oneshot_generate_visualization, re-derives this same
-    context later in the same turn), so the slot can't be read consistently by
-    both. The events are stable across both reads.
-    """
+def _decision_for_latest_message(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The decision action_clarify_visualization_request already sent for the
+    user's current message, before it handed over to the one-shot action."""
     last_user_idx = -1
     for idx in range(len(events) - 1, -1, -1):
         if events[idx].get("event") == "user":
             last_user_idx = idx
             break
     if last_user_idx < 0:
-        return False
+        return None
 
-    for idx in range(last_user_idx - 1, -1, -1):
-        ev = events[idx]
+    for ev in reversed(events[last_user_idx + 1 :]):
         if ev.get("event") != "bot":
             continue
         payload = _extract_bot_custom_payload(ev)
         if payload and payload.get("type") == "visualization_query_decision":
-            return payload.get("decision") == "clarify"
-    return False
+            return payload
+    return None
 
 
-def _should_carry_forward_visualization_context(intent_name: str, events: List[Dict[str, Any]]) -> bool:
-    """Whether this turn should inherit entities/history from earlier turns
-    in the visualization thread at all.
+def _proceed_decided_for_latest_message(events: List[Dict[str, Any]]) -> Optional[str]:
+    """The reason of a proceed decision already taken for the user's current
+    message; None when there is none. The one-shot action then plans without
+    asking the decision stage the same question again."""
+    decision = _decision_for_latest_message(events)
+    if decision is None or decision.get("decision") != "proceed":
+        return None
+    return str(decision.get("reason") or "sufficient_information")
 
-    A fresh generate_visualization request starts clean: no entities, no
-    conversation history from earlier turns, full stop -- it's a new ask, not
-    a continuation. update_visualization explicitly means "modify the
-    existing plan", so it carries the thread forward by design. A reply while
-    the bot is awaiting clarification is completing the request that's
-    already anchored, not replacing it, so it also carries forward.
-    clarify_visualization carries forward even outside that state: per
-    rules/visualization.yml, its NLU training data is terse follow-on
-    instructions like "group by X" or "filter by Y", which only make sense as
-    a modification of the current chart, never as a standalone request.
-    """
-    if intent_name in ("update_visualization", "clarify_visualization"):
-        return True
-    return _is_awaiting_clarification_reply(events)
+
+def _user_turns(events: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]]:
+    """Each user message with the decision sent for it, if any, oldest first."""
+    turns: List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]] = []
+    for ev in events:
+        if ev.get("event") == "user":
+            turns.append((ev, None))
+        elif ev.get("event") == "bot" and turns and turns[-1][1] is None:
+            payload = _extract_bot_custom_payload(ev)
+            if payload and payload.get("type") == "visualization_query_decision":
+                turns[-1] = (turns[-1][0], payload)
+    return turns
+
+
+def _request_start(turns: List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]], index: int) -> int:
+    """The first turn of the request turn `index` belongs to: back over every
+    earlier turn that was answered with a clarify."""
+    start = index
+    while start > 0 and (turns[start - 1][1] or {}).get("decision") == "clarify":
+        start -= 1
+    return start
+
+
+def _edited_request_entities(turns: List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]], start: int) -> Dict[str, Any]:
+    """The entities of the request whose chart a request starting at `start`
+    edits: the latest earlier request that proceeded."""
+    for index in range(start - 1, -1, -1):
+        if (turns[index][1] or {}).get("decision") == "proceed":
+            return _request_entities(turns, index)
+    return {}
+
+
+def _request_entities(turns: List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]], index: int) -> Dict[str, Any]:
+    """The entities of the request turn `index` belongs to, up to that turn,
+    including those of the request it edits; never those of older, unrelated
+    requests."""
+    start = _request_start(turns, index)
+    edits = (turns[start][1] or {}).get("edits_previous_plan") is True
+    entities = _edited_request_entities(turns, start) if edits else {}
+    for event, _ in turns[start : index + 1]:
+        entities = _merge_entities(entities, _extract_entities_from_user_event(event))
+    return entities
+
+
+def _clarification_exchange(events: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    """The earlier turns of the request the current message answers: each user
+    message that was answered with a clarify decision, oldest first, back to
+    the message that started the request, with that decision. Empty when the
+    current message answers no pending clarification."""
+    turns = _user_turns(events)
+    exchange: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+    for user_event, decision in reversed(turns[:-1]):
+        if not decision or decision.get("decision") != "clarify":
+            break
+        exchange.append((user_event, decision))
+    return list(reversed(exchange))
+
+
+def _merge_request_entities(latest_entities: Dict[str, Any], earlier: Dict[str, Any]) -> Dict[str, Any]:
+    """The current message's entities over those of the earlier turns of the
+    same request; a restated identity or cohort key replaces the earlier one."""
+    merged = _merge_entities(dict(earlier), latest_entities)
+    for key, value in list(merged.items()):
+        if isinstance(value, list):
+            merged[key] = _dedupe_list_values(cast(List[Any], value))
+    for key in _LATEST_ENTITY_PRECEDENCE_KEYS:
+        if key in latest_entities:
+            merged[key] = latest_entities[key]
+    return merged
+
+
+def _planner_text(message: Dict[str, Any]) -> str:
+    """A message as the planner reads it: resolved metrics written as codes,
+    and a button payload ("/intent{...}") as the values it chose."""
+    text_any = message.get("text")
+    text = text_any.strip() if isinstance(text_any, str) else ""
+    if text.startswith("/"):
+        values = [str(e.get("value")) for e in message.get("entities") or [] if isinstance(e, dict) and e.get("value")]
+        return ", ".join(values) or text
+    return question_with_resolved_metrics(message)
+
+
+def _parse_data(event: Dict[str, Any]) -> Dict[str, Any]:
+    parse_data_any = event.get("parse_data")
+    return cast(Dict[str, Any], parse_data_any) if isinstance(parse_data_any, dict) else event
+
+
+def _request_context(events: List[Dict[str, Any]], latest_msg: Dict[str, Any], edits_previous_plan: bool) -> Dict[str, Any]:
+    """Question, entities, history and pending clarification for the request
+    the current message belongs to. A reply to a clarification continues the
+    request that started the exchange: its question is that request with each
+    question asked and answered, its entities those of the exchange, and the
+    previous plan its base only if that request edited it. Otherwise the
+    message stands alone, on top of the previous plan when edits_previous_plan.
+    message_entities are the entities the message itself states, or those of
+    the exchange it continues."""
+    latest_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg))
+    exchange = _clarification_exchange(events)
+    if exchange:
+        edits_previous_plan = exchange[0][1].get("edits_previous_plan") is True
+        answers = [_parse_data(event) for event, _ in exchange[1:]] + [latest_msg]
+        lines = [_planner_text(_parse_data(exchange[0][0]))]
+        for (_, decision), answer in zip(exchange, answers):
+            lines.append(f"The assistant asked: {decision.get('message') or ''}".rstrip())
+            lines.append(f"The user answered: {_planner_text(answer)}")
+        question = "\n".join(lines)
+        turns = _user_turns(events)
+        entities = canonicalize_ssot_entities(_merge_request_entities(latest_entities, _request_entities(turns, len(turns) - 2)))
+        history = [str(_parse_data(event).get("text") or "") for event, _ in exchange] + [str(latest_msg.get("text") or "")]
+        message_entities = entities
+        pending_clarification: Optional[Dict[str, Any]] = exchange[-1][1]
+    else:
+        question = question_with_resolved_metrics(latest_msg)
+        turns = _user_turns(events)
+        earlier = _edited_request_entities(turns, len(turns) - 1) if edits_previous_plan and turns else {}
+        entities = canonicalize_ssot_entities(_merge_request_entities(latest_entities, earlier)) if earlier else latest_entities
+        message_entities = latest_entities
+        history = []
+        pending_clarification = None
+    latest_plan_summary = _collect_latest_visualization_plan_summary(events) if edits_previous_plan else None
+    if latest_plan_summary:
+        question = f"{latest_plan_summary}\n\nUser's newest instruction:\n{question}".strip()
+    return {
+        "planner_question": question,
+        "extracted_entities": entities,
+        "message_entities": message_entities,
+        "conversation_history": history,
+        "latest_plan_summary": latest_plan_summary,
+        "pending_clarification": pending_clarification,
+        "answers_clarification": bool(exchange),
+        "edits_previous_plan": edits_previous_plan,
+    }
+
+
+async def _orchestrate(**kwargs: Any) -> VisualizationRequestOutcome:
+    """The orchestrator blocks on LLM calls for seconds at a time. Run in a worker
+    thread, it leaves the action server free to answer other requests meanwhile."""
+    return await asyncio.to_thread(orchestrate_visualization_request, **kwargs)
+
+
+def _hand_over_plan(ctx: LongActionContext, trace_id: str, plan: lang_schema.AnalysisPlan) -> PreworkResult:
+    """Hands the plan to the work phase, which fetches the data. A plan-only
+    request gets the plan in this reply and ends here: nothing is fetched
+    upstream and no callback follows."""
+    if is_plan_only_request(ctx.metadata):
+        ctx.say(json_message={"type": "visualization_plan", "trace_id": trace_id, "plan": serialize_plan_for_frontend(plan)})
+        ctx.say(json_message={"type": "visualization_plan_only", "trace_id": trace_id})
+        return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=False)
+    ctx.tracker_snapshot[_INTERNAL_PREPARED_PLAN_KEY] = plan
+    return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=True)
+
+
+def _decision_text(outcome: VisualizationRequestOutcome, language: str, default_key: str, message: Optional[str] = None) -> str:
+    """What the user reads for a clarify or reject. An unreachable LLM says so
+    instead of asking for detail the request does not lack."""
+    if outcome.reason == LLM_UNAVAILABLE:
+        return translate("action.visualization.llm_unavailable", language=language)
+    return message or outcome.message or translate(default_key, language=language)
 
 
 def _extract_bot_custom_payload(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -473,65 +497,6 @@ def _extract_bot_custom_payload(event: Dict[str, Any]) -> Optional[Dict[str, Any
         return cast(Dict[str, Any], nested_custom_any)
 
     return None
-
-
-def _is_visualization_payload(payload: Dict[str, Any]) -> bool:
-    payload_type_any = payload.get("type")
-    if isinstance(payload_type_any, str) and payload_type_any.strip() == _VISUALIZATION_PLAN_TYPE:
-        return True
-
-    schema_version_any = payload.get("schema_version")
-    charts_any = payload.get("charts")
-    return schema_version_any == _VISUALIZATION_RESPONSE_SCHEMA_VERSION and isinstance(charts_any, list)
-
-
-def _event_has_visualization_signal(event: Dict[str, Any]) -> bool:
-    event_name_any = event.get("event")
-    event_name = event_name_any.strip() if isinstance(event_name_any, str) else ""
-    if event_name == "user":
-        return _extract_intent_name_from_user_event(event) in _VISUALIZATION_THREAD_INTENTS
-
-    if event_name == "bot":
-        payload = _extract_bot_custom_payload(event)
-        if payload is not None and _is_visualization_payload(payload):
-            return True
-
-    return False
-
-
-def _find_latest_visualization_anchor_user_ordinal(events: List[Dict[str, Any]]) -> int:
-    signal_idx = -1
-    for idx in range(len(events) - 1, -1, -1):
-        if _event_has_visualization_signal(events[idx]):
-            signal_idx = idx
-            break
-
-    if signal_idx < 0:
-        return -1
-
-    user_ordinal = -1
-    for idx, event in enumerate(events):
-        if event.get("event") == "user":
-            user_ordinal += 1
-        if idx == signal_idx:
-            break
-
-    for idx in range(signal_idx, -1, -1):
-        ev = events[idx]
-        if ev.get("event") != "user":
-            continue
-
-        text_any = ev.get("text")
-        if isinstance(text_any, str) and text_any.strip():
-            intent_name = _extract_intent_name_from_user_event(ev)
-            if intent_name not in _VISUALIZATION_THREAD_INTENTS:
-                return user_ordinal + 1
-
-        user_ordinal -= 1
-
-    # If every user turn up to the latest signal is visualization-related,
-    # keep the full thread starting from the first user turn.
-    return 0
 
 
 def _collect_latest_visualization_plan_summary(
@@ -571,14 +536,11 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
         tracker: TrackerLike,
         domain: DomainDict,
     ) -> RasaEventList:
+        start_llm_usage()
         trace_id = uuid4().hex
         metadata: Dict[str, Any] = {}
         slots: Dict[str, Any] = {}
-        fallback_limit = 12
         latest_msg = tracker.latest_message
-
-        user_message_any = latest_msg.get("text")
-        user_message = user_message_any if isinstance(user_message_any, str) else ""
 
         metadata_any = latest_msg.get("metadata")
         metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
@@ -593,42 +555,52 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                 language = resolve_language(metadata=metadata, slots=slots, tracker=tracker)
 
                 events = tracker.events
-                intent_name = _extract_intent_name_from_user_event(latest_msg)
-                carry_forward = _should_carry_forward_visualization_context(intent_name, events)
-                latest_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg))
-                if carry_forward:
-                    extracted_entities = canonicalize_ssot_entities(
-                        merge_latest_with_thread_entities(latest_entities, events, fallback_limit=fallback_limit),
-                    )
-                    conversation_history = _collect_visualization_thread_messages(events, fallback_limit=fallback_limit)
-                else:
-                    # Fresh generate_visualization request, not completing a pending
-                    # clarification: start clean, no entities or history from earlier
-                    # turns (see _should_carry_forward_visualization_context).
-                    extracted_entities = latest_entities
-                    conversation_history = []
-                # The current turn's own text is the question; prior turns are carried
-                # via extracted_entities (structured) and conversation_history (passed
-                # separately to the orchestrator's own history field), not by joining
-                # raw text here — doing so previously confused the planner into
-                # blending unrelated requests together.
-                planner_question = user_message
+                # Judged against the previous plan unless the message answers a
+                # pending clarification; the decision stage says whether it edits
+                # it. It sees what the message states, not what an edit would
+                # inherit, so the earlier request does not make it look like one.
+                request = _request_context(events, latest_msg, edits_previous_plan=True)
+                planner_question = request["planner_question"]
+                conversation_history = request["conversation_history"]
+                latest_plan_summary = request["latest_plan_summary"]
+                pending_clarification = request["pending_clarification"]
 
-                if carry_forward:
-                    latest_plan_summary = _collect_latest_visualization_plan_summary(events)
-                    if latest_plan_summary:
-                        planner_question = f"{latest_plan_summary}\n\nUser's newest instruction:\n{planner_question}".strip()
-
-                outcome = orchestrate_visualization_request(
+                outcome = await _orchestrate(
                     question=planner_question,
-                    entities=extracted_entities,
+                    entities=request["message_entities"],
+                    edit_entities=request["extracted_entities"],
                     language=override_language,
                     trace_id=trace_id,
                     max_retries=_PLANNER_MAX_RETRIES,
                     include_plan=False,
                     conversation_history=conversation_history,
                     progress_cb=None,
+                    pending_clarification=pending_clarification,
                 )
+
+                # A new request is judged as if there were no previous chart. The
+                # previous plan in view colours that judgement, so a message not
+                # judged an edit is judged once more without it.
+                if not request["answers_clarification"] and latest_plan_summary and outcome.edits_previous_plan is not True:
+                    request = _request_context(events, latest_msg, edits_previous_plan=False)
+                    planner_question = request["planner_question"]
+                    outcome = await _orchestrate(
+                        question=planner_question,
+                        entities=request["extracted_entities"],
+                        language=override_language,
+                        trace_id=trace_id,
+                        max_retries=_PLANNER_MAX_RETRIES,
+                        include_plan=False,
+                        conversation_history=request["conversation_history"],
+                        progress_cb=None,
+                        pending_clarification=request["pending_clarification"],
+                    )
+                    latest_plan_summary = None
+
+                if request["answers_clarification"]:
+                    edits_previous_plan = bool(request["edits_previous_plan"])
+                else:
+                    edits_previous_plan = bool(latest_plan_summary and outcome.edits_previous_plan)
 
                 if outcome.decision == "clarify":
                     clarification_message, clarification_buttons = _build_metric_clarification_prompt(
@@ -641,12 +613,14 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                         json_message={
                             "type": "visualization_query_decision",
                             "trace_id": trace_id,
+                            **llm_usage_field(),
                             "decision": outcome.decision,
                             "reason": outcome.reason,
                             "clarification_type": outcome.clarification_type,
                             "clarification_options": outcome.clarification_options,
                             "message": clarification_message,
                             "missing_fields": outcome.missing_fields,
+                            "edits_previous_plan": edits_previous_plan,
                         }
                     )
                     dispatcher.utter_message(text=clarification_message, buttons=clarification_buttons)
@@ -659,17 +633,19 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                     json_message={
                         "type": "visualization_query_decision",
                         "trace_id": trace_id,
+                        **llm_usage_field(),
                         "decision": outcome.decision,
                         "reason": outcome.reason,
                         "clarification_type": outcome.clarification_type,
                         "clarification_options": outcome.clarification_options,
                         "message": outcome.message,
                         "missing_fields": outcome.missing_fields,
+                        "edits_previous_plan": edits_previous_plan,
                     }
                 )
 
                 if outcome.decision == "reject":
-                    dispatcher.utter_message(text=outcome.message or translate("action.visualization.reject_default", language=language))
+                    dispatcher.utter_message(text=_decision_text(outcome, language, "action.visualization.reject_default"))
                     return [SlotSet("awaiting_visualization_clarification", False)]
 
                 return [
@@ -763,31 +739,13 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
     language = resolve_language(metadata=latest_meta, slots=ctx.slots)
     events = ctx.events
 
-    intent_name = _extract_intent_name_from_user_event(latest_msg)
-    carry_forward = _should_carry_forward_visualization_context(intent_name, events)
-    latest_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg))
-    if carry_forward:
-        extracted_entities = canonicalize_ssot_entities(
-            merge_latest_with_thread_entities(latest_entities, events, fallback_limit=12),
-        )
-        conversation_history = _collect_visualization_thread_messages(events, fallback_limit=12)
-        latest_plan_summary = _collect_latest_visualization_plan_summary(events)
-    else:
-        # Fresh generate_visualization request, not completing a pending
-        # clarification: start clean, no entities or history from earlier
-        # turns (see _should_carry_forward_visualization_context).
-        extracted_entities = latest_entities
-        conversation_history = []
-        latest_plan_summary = None
-
-    # ctx.text is the current turn's own text; prior turns are carried via
-    # extracted_entities (structured) and conversation_history (passed separately to
-    # the orchestrator's own history field), not by joining raw text here — doing so
-    # previously confused the planner into blending unrelated requests together.
-    planner_question = ctx.text
-
-    if latest_plan_summary:
-        planner_question = f"{latest_plan_summary}\n\nUser's newest instruction:\n{planner_question}".strip()
+    decision = _decision_for_latest_message(events)
+    request = _request_context(events, latest_msg, edits_previous_plan=bool(decision and decision.get("edits_previous_plan") is True))
+    planner_question = request["planner_question"]
+    extracted_entities = request["extracted_entities"]
+    conversation_history = request["conversation_history"]
+    latest_plan_summary = request["latest_plan_summary"]
+    pending_clarification = request["pending_clarification"]
 
     return {
         "user_message": ctx.text,
@@ -801,6 +759,8 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
         "language": language,
         "conversation_history": conversation_history,
         "latest_plan_summary": latest_plan_summary,
+        "pending_clarification": pending_clarification,
+        "decided_proceed": _proceed_decided_for_latest_message(events),
     }
 
 
@@ -926,6 +886,7 @@ class ActionOneShotGenerateVisualization(LongAction):
         return "action_oneshot_generate_visualization"
 
     async def prework(self, ctx: LongActionContext) -> PreworkResult:
+        start_llm_usage()
         trace_id = _ensure_context_trace_id(ctx)
         with log_context(trace_id=trace_id, action=self.name()):
             logger.info("Starting one-shot prework")
@@ -937,101 +898,6 @@ class ActionOneShotGenerateVisualization(LongAction):
                             FollowupAction("action_guided_generate_visualization"),
                         ],
                         proceed=False,
-                    )
-
-                latest_message_any = ctx.tracker_snapshot.get("latest_message")
-                latest_message = cast(Dict[str, Any], latest_message_any) if isinstance(latest_message_any, dict) else {}
-                metadata_any: Any = latest_message.get("metadata") or {}
-                metadata = cast(Dict[str, Any], metadata_any) if isinstance(metadata_any, dict) else {}
-                is_retry = bool(metadata.get("is_retry"))
-                if is_retry:
-                    request_ctx = _extract_request_context(ctx)
-                    planner_question = str(request_ctx.get("planner_question") or request_ctx.get("user_message") or "")
-                    extracted_entities = cast(Dict[str, Any], request_ctx.get("extracted_entities") or {})
-                    override_language = cast(Optional[str], request_ctx.get("override_language"))
-                    conversation_history = cast(List[str], request_ctx.get("conversation_history") or [])
-                    retry_language = cast(str, request_ctx.get("language") or "en")
-
-                    outcome = orchestrate_visualization_request(
-                        question=planner_question,
-                        entities=extracted_entities,
-                        language=override_language,
-                        trace_id=trace_id,
-                        max_retries=_PLANNER_MAX_RETRIES,
-                        include_plan=True,
-                        conversation_history=conversation_history,
-                        progress_cb=None,
-                    )
-
-                    decision_name = str(outcome.decision or "").strip().lower()
-                    if decision_name == "clarify":
-                        clarification_message, clarification_buttons = _build_metric_clarification_prompt(
-                            outcome.clarification_type,
-                            outcome.clarification_options,
-                            retry_language,
-                            outcome.message,
-                        )
-                        ctx.say(
-                            json_message={
-                                "type": "visualization_query_decision",
-                                "trace_id": trace_id,
-                                "decision": outcome.decision,
-                                "reason": outcome.reason,
-                                "clarification_type": outcome.clarification_type,
-                                "clarification_options": outcome.clarification_options,
-                                "message": clarification_message,
-                            }
-                        )
-                        ctx.say(text=clarification_message, buttons=clarification_buttons)
-                        return PreworkResult(
-                            events=[SlotSet("awaiting_visualization_clarification", True)],
-                            proceed=False,
-                        )
-                    if decision_name == "reject":
-                        ctx.say(
-                            json_message={
-                                "type": "visualization_query_decision",
-                                "trace_id": trace_id,
-                                "decision": outcome.decision,
-                                "reason": outcome.reason,
-                                "clarification_type": outcome.clarification_type,
-                                "clarification_options": outcome.clarification_options,
-                                "message": outcome.message,
-                            }
-                        )
-                        ctx.say(text=outcome.message or translate("action.visualization.reject_default", language=retry_language))
-                        return PreworkResult(
-                            events=[SlotSet("awaiting_visualization_clarification", False)],
-                            proceed=False,
-                        )
-
-                    prepared_plan = outcome.plan if isinstance(outcome.plan, lang_schema.AnalysisPlan) else None
-                    if prepared_plan is None:
-                        raise RuntimeError("Orchestrator returned proceed without an analysis plan")
-
-                    empty_plan_message = _build_empty_plan_clarification(prepared_plan, retry_language)
-                    if empty_plan_message:
-                        ctx.say(
-                            json_message={
-                                "type": "visualization_query_decision",
-                                "trace_id": trace_id,
-                                "decision": "clarify",
-                                "reason": "empty_plan",
-                                "clarification_type": "analysis_plan",
-                                "clarification_options": [],
-                                "message": empty_plan_message,
-                            }
-                        )
-                        ctx.say(text=empty_plan_message)
-                        return PreworkResult(
-                            events=[SlotSet("awaiting_visualization_clarification", True)],
-                            proceed=False,
-                        )
-
-                    ctx.tracker_snapshot[_INTERNAL_PREPARED_PLAN_KEY] = prepared_plan
-                    return PreworkResult(
-                        events=[SlotSet("awaiting_visualization_clarification", False)],
-                        proceed=True,
                     )
 
                 latest_any = ctx.tracker_snapshot.get("latest_message")
@@ -1053,7 +919,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                 awaiting_clarification = bool(ctx.slots.get("awaiting_visualization_clarification"))
 
                 if awaiting_clarification:
-                    if intent_name in _VISUALIZATION_CONTINUATION_INTENTS:
+                    if intent_name == _VISUALIZATION_INTENT:
                         return PreworkResult(
                             events=[SlotSet("awaiting_visualization_clarification", False)],
                             proceed=True,
@@ -1067,7 +933,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                 # Defensive fallback: if routing reaches this action for an unrelated
                 # intent, always send a user-facing response instead of returning
                 # nothing and leaving the conversation hanging.
-                if intent_name and intent_name not in _VISUALIZATION_CONTINUATION_INTENTS and not _is_guided_visualization_request(ctx.slots):
+                if intent_name and intent_name != _VISUALIZATION_INTENT and not names_metric_and_chart_type(latest_msg) and not _is_guided_visualization_request(ctx.slots):
                     language = resolve_language(metadata=ctx.metadata, slots=ctx.slots)
                     ctx.say(
                         text=translate(
@@ -1081,8 +947,8 @@ class ActionOneShotGenerateVisualization(LongAction):
                     )
 
                 request_ctx = _extract_request_context(ctx)
-                outcome = orchestrate_visualization_request(
-                    question=str(request_ctx.get("planner_question") or request_ctx.get("user_message") or ""),
+                outcome = await _orchestrate(
+                    question=cast(str, request_ctx["planner_question"]),
                     entities=cast(Dict[str, Any], request_ctx.get("extracted_entities") or {}),
                     language=cast(Optional[str], request_ctx.get("override_language")),
                     trace_id=trace_id,
@@ -1090,6 +956,8 @@ class ActionOneShotGenerateVisualization(LongAction):
                     include_plan=True,
                     conversation_history=cast(List[str], request_ctx.get("conversation_history") or []),
                     progress_cb=None,
+                    pending_clarification=cast(Optional[Dict[str, Any]], request_ctx.get("pending_clarification")),
+                    decided_proceed=cast(Optional[str], request_ctx.get("decided_proceed")),
                 )
                 decision_name = str(outcome.decision or "").strip().lower()
                 language = cast(str, request_ctx.get("language") or "en")
@@ -1104,6 +972,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         json_message={
                             "type": "visualization_query_decision",
                             "trace_id": trace_id,
+                            **llm_usage_field(),
                             "decision": outcome.decision,
                             "reason": outcome.reason,
                             "clarification_type": outcome.clarification_type,
@@ -1121,6 +990,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         json_message={
                             "type": "visualization_query_decision",
                             "trace_id": trace_id,
+                            **llm_usage_field(),
                             "decision": outcome.decision,
                             "reason": outcome.reason,
                             "clarification_type": outcome.clarification_type,
@@ -1128,7 +998,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             "message": outcome.message,
                         }
                     )
-                    ctx.say(text=outcome.message or translate("action.visualization.reject_default", language=language))
+                    ctx.say(text=_decision_text(outcome, language, "action.visualization.reject_default"))
                     return PreworkResult(
                         events=[SlotSet("awaiting_visualization_clarification", False)],
                         proceed=False,
@@ -1144,6 +1014,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         json_message={
                             "type": "visualization_query_decision",
                             "trace_id": trace_id,
+                            **llm_usage_field(),
                             "decision": "clarify",
                             "reason": "empty_plan",
                             "clarification_type": "analysis_plan",
@@ -1157,12 +1028,11 @@ class ActionOneShotGenerateVisualization(LongAction):
                         proceed=False,
                     )
 
-                ctx.tracker_snapshot[_INTERNAL_PREPARED_PLAN_KEY] = prepared_plan
-
                 ctx.say(
                     json_message={
                         "type": "visualization_query_decision",
                         "trace_id": trace_id,
+                        **llm_usage_field(),
                         "decision": outcome.decision,
                         "reason": outcome.reason,
                         "clarification_type": outcome.clarification_type,
@@ -1170,10 +1040,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         "message": outcome.message,
                     }
                 )
-                return PreworkResult(
-                    events=[SlotSet("awaiting_visualization_clarification", False)],
-                    proceed=True,
-                )
+                return _hand_over_plan(ctx, trace_id, prepared_plan)
             except Exception as e:
                 logger.exception(
                     "Error generating visualization during prework",
@@ -1218,6 +1085,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                 return PreworkResult(events=[], proceed=False)
 
     async def work(self, ctx: LongActionContext) -> Any:
+        start_llm_usage()
         completed_successfully = False
         execution_summary: Optional[Any] = None
         plan_obj: Optional[lang_schema.AnalysisPlan] = None
@@ -1287,13 +1155,14 @@ class ActionOneShotGenerateVisualization(LongAction):
                             outcome="degraded",
                         ),
                     )
-                    planner_question = cast(str, request_ctx.get("planner_question") or user_message)
+                    planner_question = cast(str, request_ctx["planner_question"])
                     extracted_entities = cast(Dict[str, Any], request_ctx["extracted_entities"])
                     override_language = cast(Optional[str], request_ctx["override_language"])
                     conversation_history = cast(List[str], request_ctx.get("conversation_history") or [])
+                    pending_clarification = cast(Optional[Dict[str, Any]], request_ctx.get("pending_clarification"))
 
                     progress("Calling orchestrator to build a plan")
-                    outcome = orchestrate_visualization_request(
+                    outcome = await _orchestrate(
                         question=planner_question,
                         entities=extracted_entities,
                         language=override_language,
@@ -1302,6 +1171,8 @@ class ActionOneShotGenerateVisualization(LongAction):
                         include_plan=True,
                         conversation_history=conversation_history,
                         progress_cb=progress,
+                        pending_clarification=pending_clarification,
+                        decided_proceed=cast(Optional[str], request_ctx.get("decided_proceed")),
                     )
 
                     decision_name = str(outcome.decision or "").strip().lower()
@@ -1319,6 +1190,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             json_message={
                                 "type": "visualization_query_decision",
                                 "trace_id": trace_id,
+                                **llm_usage_field(),
                                 "decision": outcome.decision,
                                 "reason": outcome.reason,
                                 "clarification_type": outcome.clarification_type,
@@ -1327,7 +1199,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             }
                         )
                         default_key = "action.visualization.clarify_default" if decision_name == "clarify" else "action.visualization.reject_default"
-                        ctx.say(text=clarification_message or translate(default_key, language=language), buttons=clarification_buttons)
+                        ctx.say(text=_decision_text(outcome, language, default_key, clarification_message), buttons=clarification_buttons)
                         return None
 
                     plan_obj = outcome.plan if isinstance(outcome.plan, lang_schema.AnalysisPlan) else None
@@ -1341,6 +1213,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             json_message={
                                 "type": "visualization_query_decision",
                                 "trace_id": trace_id,
+                                **llm_usage_field(),
                                 "decision": "clarify",
                                 "reason": "empty_plan",
                                 "clarification_type": "analysis_plan",
@@ -1356,6 +1229,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         "type": "visualization_plan",
                         "trace_id": trace_id,
                         "plan": serialize_plan_for_frontend(plan_obj),
+                        **llm_usage_field(),
                     }
                 )
 
@@ -1387,8 +1261,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                             ctx.say(text=f"Note: {warning.strip()}")
 
                 completed_successfully = True
-                planner_question_str = str(request_ctx.get("planner_question") or request_ctx.get("user_message") or "")
-                is_update_flow: bool = planner_question_str.startswith("Previous chart plan")
+                is_update_flow = bool(request_ctx["latest_plan_summary"])
                 confirmation = _build_confirmation_message(plan_obj, is_update=is_update_flow)
                 ctx.say(text=confirmation)
             except asyncio.TimeoutError:
@@ -1432,6 +1305,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         json_message={
                             "type": "visualization_query_decision",
                             "trace_id": trace_id,
+                            **llm_usage_field(),
                             "decision": "clarify",
                             "reason": "missing_time_bounds",
                             "clarification_type": "date",
@@ -1447,6 +1321,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         json_message={
                             "type": "visualization_query_decision",
                             "trace_id": trace_id,
+                            **llm_usage_field(),
                             "decision": "clarify",
                             "reason": e.reason,
                             "clarification_type": e.clarification_type,

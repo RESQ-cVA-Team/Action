@@ -1,4 +1,4 @@
-FROM rasa/rasa-sdk:3.19.0@sha256:39ddf4e684d300f43cdbfbde3d1f445b0a9d64110944f54e36388738486db743
+FROM rasa/rasa-sdk:3.21.0@sha256:4a80e0e80b4e7c9af9e57ed78387dba24e92dfcfad4e5ccd7353e12c587405b3
 
 USER root
 
