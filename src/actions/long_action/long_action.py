@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 _LOG_CALLBACK_STATUS = env_util.env_flag("LONG_ACTION_LOG_CALLBACK_STATUS", default=False)
 _LOG_CALLBACK_ERRORS = env_util.env_flag("LONG_ACTION_LOG_CALLBACK_ERRORS", default=False)
 _DEFER_CALLBACK_HANDOFF = env_util.env_flag("LONG_ACTION_DEFER_CALLBACK_HANDOFF", default=False)
+# (connect, read). The receiver appends the message to the conversation in Rasa,
+# which waits while Rasa holds that conversation's lock for another message (up to 60 s).
+_CALLBACK_TIMEOUT_SECONDS = (5, 90)
 
 
 def _callback_endpoint_label(url: str) -> str:
@@ -616,7 +619,7 @@ class LongAction(Action, ABC):
                     callback_url,
                     headers=headers,
                     data=json.dumps(payload, default=str),
-                    timeout=10,
+                    timeout=_CALLBACK_TIMEOUT_SECONDS,
                 )
                 status_code = getattr(resp, "status_code", None)
                 if isinstance(status_code, int) and 200 <= status_code < 300:
