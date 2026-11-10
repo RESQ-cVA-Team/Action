@@ -106,6 +106,9 @@ except Exception:
         _PLANNER_REQUEST_TIMEOUT_SECONDS * (_PLANNER_MAX_RETRIES + 1) * 2 + 10.0,
     )
 _PLAN_GENERATION_TIMEOUT_SECONDS = _plan_generation_timeout_value
+# Longest a request can spend on its decision and plan, both of which run
+# before the action server answers Rasa's webhook call.
+PLANNING_TIME_BUDGET_SECONDS = _ORCHESTRATOR_TIMEOUT_SECONDS + _PLAN_GENERATION_TIMEOUT_SECONDS
 
 _ORCHESTRATOR_TEMPERATURE_RAW = env_util.get_env("ACTIONS_LLM_REQUEST_ORCHESTRATOR_TEMPERATURE", default="0") or "0"
 _orchestrator_temperature_value = 0.0

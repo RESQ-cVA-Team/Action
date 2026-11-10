@@ -42,6 +42,13 @@ def init_hooks(manager: pluggy.PluginManager) -> None:
 # introspection and must belong to the sender the action runs for.
 @hookimpl
 def attach_sanic_app_extensions(app: Sanic) -> None:
+    # Sanic abandons a request after 60 s by default, while the decision and
+    # plan alone may take far longer; an abandoned webhook leaves the user with
+    # no reply at all. The margin covers the rest of the prework.
+    from src.planners.langchain.request_orchestrator import PLANNING_TIME_BUDGET_SECONDS
+
+    app.config.RESPONSE_TIMEOUT = PLANNING_TIME_BUDGET_SECONDS + 30
+
     @app.on_request
     async def _require_user_token(request) -> Optional[HTTPResponse]:
         # /health, /version and /actions stay open (container health checks,

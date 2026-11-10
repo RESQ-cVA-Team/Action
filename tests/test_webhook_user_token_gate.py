@@ -10,6 +10,7 @@ from src.util import keycloak_introspection
 class _StubApp:
     def __init__(self):
         self.request_hooks = []
+        self.config = SimpleNamespace()
 
     def on_request(self, fn):
         self.request_hooks.append(fn)
@@ -92,3 +93,12 @@ def test_webhook_is_503_when_the_token_cannot_be_checked(gate, monkeypatch):
 
     monkeypatch.setattr(rasa_sdk_plugins, "introspect_token_sync", unavailable)
     assert _run(gate, _request("/webhook", "good", {"sender_id": "user-1"})).status == 503
+
+
+def test_response_timeout_outlasts_the_planning_budget():
+    from src.planners.langchain.request_orchestrator import PLANNING_TIME_BUDGET_SECONDS
+
+    app = _StubApp()
+    rasa_sdk_plugins.attach_sanic_app_extensions(app)
+    assert PLANNING_TIME_BUDGET_SECONDS > 60
+    assert app.config.RESPONSE_TIMEOUT > PLANNING_TIME_BUDGET_SECONDS
