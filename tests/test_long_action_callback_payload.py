@@ -99,6 +99,21 @@ class LongActionCallbackPayloadTests(unittest.TestCase):
         self.assertEqual(event["data"]["custom"], {"progress": "working"})
         self.assertEqual(event["data"]["buttons"], [{"title": "Retry", "payload": "/retry"}])
 
+    def test_callback_waits_longer_than_rasas_conversation_lock(self) -> None:
+        ctx = LongActionContext(sender_id="u1:thread:7", tracker_snapshot={})
+        ok = types.SimpleNamespace(status_code=200, text="")
+
+        with patch.object(long_action_module, "get_service_account_token_or_raise", return_value="tok"), patch.object(
+            long_action_module.requests, "post", return_value=ok
+        ) as post:
+            self.action._send_progress_blocking(
+                ctx, "job-abc", "http://webapp:3000/api/rasa/long-task-callback?jobId=j", {"text": "Hi"}
+            )
+
+        connect, read = post.call_args.kwargs["timeout"]
+        self.assertLessEqual(connect, 10)
+        self.assertGreater(read, 60)
+
     def test_build_callback_payload_emits_lock_as_control_signal(self) -> None:
         ctx = LongActionContext(sender_id="u1:thread:7", tracker_snapshot={})
         ctx._job_id = "job-abc"
