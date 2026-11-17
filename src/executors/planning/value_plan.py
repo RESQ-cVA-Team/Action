@@ -48,3 +48,20 @@ def value_chart(value: S.ValueSpec) -> S.ChartSpec:
             time=S.TimeSemanticsSpec(periods=[S.TimeRange(start_date=start, end_date=end)]),
         ),
     )
+
+
+def value_trend_chart(value: S.ValueSpec) -> S.ChartSpec:
+    """The value as a line over its period: per month for a period of up to a
+    quarter, which per quarter would be one point, otherwise per quarter."""
+    start, end = value_period(value)
+    grain = "MONTH" if (date.fromisoformat(end) - date.fromisoformat(start)).days < 92 else "QUARTER"
+    return S.ChartSpec(
+        chart_type="LINE",
+        metrics=[value.metric_spec()],
+        filters=value.filters,
+        semantics=S.AnalysisSemanticsSpec(
+            intent="TREND",
+            measure=value.measure,
+            time=S.TimeSemanticsSpec(grain=grain, window=S.TimeRange(start_date=start, end_date=end)),
+        ),
+    )

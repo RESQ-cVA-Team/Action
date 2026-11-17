@@ -747,19 +747,6 @@ def serialize_plan_for_frontend(plan: Any) -> Dict[str, Any]:
 
         return out
 
-    def _value_preview(value_any: Any) -> Dict[str, Any]:
-        value = _mapping_to_dict(value_any)
-        out = _metric_preview(value)
-        if not out:
-            return {}
-        measure_type = _mapping_to_dict(value.get("measure")).get("type")
-        if isinstance(measure_type, str) and measure_type.strip():
-            out["measure"] = {"type": measure_type.strip().upper()}
-        period = {key: item for key, item in _mapping_to_dict(value.get("period")).items() if key in ("start_date", "end_date", "last_n", "unit")}
-        out["period"] = period or None
-        out["filters"] = _filter_preview(value.get("filters")) or None
-        return out
-
     charts_any = payload_dict.get("charts")
     charts: List[Dict[str, Any]] = []
     if isinstance(charts_any, list):
@@ -776,7 +763,8 @@ def serialize_plan_for_frontend(plan: Any) -> Dict[str, Any]:
             if preview:
                 tests.append(preview)
 
-    values = [preview for preview in (_value_preview(item) for item in cast(List[Any], payload_dict.get("values") or [])) if preview]
+    # A value is sent as planned: the chart its button shows is built from it.
+    values = [_mapping_to_dict(item) for item in cast(List[Any], payload_dict.get("values") or []) if _mapping_to_dict(item)]
 
     out_payload: Dict[str, Any] = {}
     if charts:

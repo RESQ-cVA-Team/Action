@@ -26,6 +26,7 @@ from src.actions.long_action.long_action_context import LongActionContext
 from src.domain.langchain import schema as lang_schema
 from src.executors import execute_plan_async
 from src.executors.orchestration.plan_executor import VisualizationExecutionError
+from src.executors.planning.value_plan import value_trend_chart
 from src.planners.langchain.chart_describer import describe_charts
 from src.planners.langchain.value_answer import answer_values
 from src.planners.langchain.llm_errors import LLM_UNAVAILABLE
@@ -48,6 +49,8 @@ _DEFER_CALLBACK_HANDOFF = env_util.env_flag("LONG_ACTION_DEFER_CALLBACK_HANDOFF"
 _EMIT_QUERY_DEBUG = env_util.env_flag("ACTIONS_EMIT_QUERY_DEBUG", default=False)
 _VISUALIZATION_INTENT = "generate_visualization"
 _VISUALIZATION_PLAN_TYPE = "visualization_plan"
+# The intent payload of the button under a number answer.
+_SHOW_ANSWER_AS_CHART_PAYLOAD = "/show_answer_as_chart"
 _VISUALIZATION_GRAPHQL_QUERY_TYPE = "visualization_graphql_query"
 _VISUALIZATION_RESPONSE_SCHEMA_VERSION = 1
 
@@ -1187,8 +1190,12 @@ class ActionOneShotGenerateVisualization(LongAction):
                 completed_successfully = True
                 for description in await describe_charts(visualization.charts, language):
                     ctx.say(text=description)
-                for sentence in await answer_values(visualization.values, language):
+                sentences = await answer_values(visualization.values, language)
+                for sentence in sentences[:-1]:
                     ctx.say(text=sentence)
+                if sentences:
+                    button = {"title": translate("action.visualization.show_answer_as_chart", language=language), "payload": _SHOW_ANSWER_AS_CHART_PAYLOAD}
+                    ctx.say(text=sentences[-1], buttons=[button])
             except asyncio.TimeoutError:
                 timeout_message = "The visualization execution took too long and timed out. Please try again, narrow the scope, or shorten the date range."
                 logger.warning(
@@ -1306,3 +1313,34 @@ class ActionOneShotGenerateVisualization(LongAction):
                         _emit_next_metric_followup(ctx=ctx, plan_obj=plan_obj, language=language)
                 ctx.done()
         return None
+
+
+def _latest_answer_values(events: List[Dict[str, Any]]) -> List[lang_schema.ValueSpec]:
+    """The values of the latest plan in the thread, when that plan answered with numbers."""
+    for event in reversed(events):
+        payload = _extract_bot_custom_payload(event) if event.get("event") == "bot" else None
+        if not isinstance(payload, dict) or payload.get("type") != _VISUALIZATION_PLAN_TYPE:
+            continue
+        plan = cast(Dict[str, Any], payload.get("plan") or {})
+        return lang_schema.AnalysisPlan.model_validate({"values": plan.get("values") or None}).values or []
+    return []
+
+
+class ActionShowAnswerAsChart(ActionOneShotGenerateVisualization):
+    """The button under a number answer: each value of the latest answer as a
+    chart per quarter over the value's period, built without parsing or
+    planning. Fetching and describing it is the one-shot action's work."""
+
+    def name(self) -> str:
+        return "action_show_answer_as_chart"
+
+    async def prework(self, ctx: LongActionContext) -> PreworkResult:
+        start_llm_usage()
+        trace_id = _ensure_context_trace_id(ctx)
+        with log_context(trace_id=trace_id, action=self.name()):
+            values = _latest_answer_values(ctx.events)
+            if not values:
+                language = resolve_language(metadata=ctx.metadata, slots=ctx.slots)
+                ctx.say(text=translate("action.visualization.no_answer_to_chart", language=language))
+                return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=False)
+            return _hand_over_plan(ctx, trace_id, lang_schema.AnalysisPlan(charts=[value_trend_chart(value) for value in values]))

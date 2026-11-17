@@ -4,6 +4,7 @@ from .actions import (
     ActionGuidedGenerateVisualization,
     ActionListHospitals,
     ActionOneShotGenerateVisualization,
+    ActionShowAnswerAsChart,
     ValidateGuidedVisualizationForm,
 )
 from .cli.router import ActionCliRouter
@@ -14,6 +15,7 @@ __all__ = [
     "ActionGuidedGenerateVisualization",
     "ActionClarifyVisualizationRequest",
     "ActionOneShotGenerateVisualization",
+    "ActionShowAnswerAsChart",
     "ActionListHospitals",
     "ValidateGuidedVisualizationForm",
 ]
