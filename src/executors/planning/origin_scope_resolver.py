@@ -995,12 +995,7 @@ def _resolve_metric_origin(
                 raise OriginScopeResolutionError("Origin scope resolution failed unexpectedly.") from exc
             resolved_data_origin = None
 
-    return S.MetricSpec(
-        metric=metric.metric,
-        dataOrigin=resolved_data_origin,
-        originScope=scope_ref,
-        include_category_detail=metric.include_category_detail,
-    )
+    return metric.model_copy(update={"data_origin": resolved_data_origin, "origin_scope": scope_ref})
 
 
 def _metric_needs_country_inference(metric: S.MetricSpec) -> bool:
@@ -1054,17 +1049,7 @@ def resolve_plan_metric_origins(plan: S.AnalysisPlan, user_sub: str, job_id: Opt
             )
             resolved_metrics.append(resolved_metric)
 
-        chart_filters = cast(Optional[S.FilterNode], getattr(chart, "filters", None))
-        chart_semantics = cast(Optional[S.AnalysisSemanticsSpec], getattr(chart, "semantics", None))
-        chart_numeric_resolution = cast(Optional[S.NumericResolutionSpec], getattr(chart, "numeric_resolution", None))
-        resolved_chart = S.ChartSpec(
-            chart_type=chart.chart_type,
-            semantics=chart_semantics,
-            filters=chart_filters,
-            metrics=resolved_metrics,
-            numericResolution=chart_numeric_resolution,
-        )
-        resolved_charts.append(resolved_chart)
+        resolved_charts.append(chart.model_copy(update={"metrics": resolved_metrics}))
 
     statistical_tests = plan.statistical_tests or []
     resolved_tests: List[S.StatisticalTestSpec] = []
@@ -1082,12 +1067,6 @@ def resolve_plan_metric_origins(plan: S.AnalysisPlan, user_sub: str, job_id: Opt
             )
             resolved_test_metrics.append(resolved_metric)
 
-        resolved_test = S.StatisticalTestSpec(
-            test_type=test.test_type,
-            metrics=resolved_test_metrics,
-            group_by=cast(Optional[List[S.GroupBySpec]], getattr(test, "group_by", None)),
-            filters=cast(Optional[S.FilterNode], getattr(test, "filters", None)),
-        )
-        resolved_tests.append(resolved_test)
+        resolved_tests.append(test.model_copy(update={"metrics": resolved_test_metrics}))
 
-    return S.AnalysisPlan(charts=resolved_charts or None, statistical_tests=resolved_tests or None)
+    return plan.model_copy(update={"charts": resolved_charts or None, "statistical_tests": resolved_tests or None})
