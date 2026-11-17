@@ -174,3 +174,27 @@ def test_a_proceed_decision_sent_for_the_current_message_is_found() -> None:
     # A decision before the current message belongs to an earlier one.
     assert va._proceed_decided_for_latest_message([_decision("proceed"), message]) is None
     assert va._proceed_decided_for_latest_message([message]) is None
+
+
+def test_earlier_turns_follow_the_same_entity_rules_as_the_latest_message() -> None:
+    # Live: "Show me admission NIHSS as a bar chart" carries DIET's metric and a lookup
+    # group_by on the same words; the first chart drops the group_by, but the edit
+    # "Label the y axis Patients" picked it up from that turn and split by NIHSS.
+    text = "Show me admission NIHSS as a bar chart"
+    first_turn = [
+        {"entity": "metric", "value": "ADMISSION_NIHSS", "start": 8, "end": 23, "extractor": "DIETClassifier",
+         "extractors": [{"extractor": "DIETClassifier"}, {"extractor": "RegexEntityExtractor"}]},
+        {"entity": "group_by", "value": "NIHSS", "start": 8, "end": 23, "extractor": "RegexEntityExtractor",
+         "extractors": [{"extractor": "RegexEntityExtractor"}]},
+        {"entity": "chart_type", "value": "BAR", "start": 27, "end": 30, "extractor": "DIETClassifier",
+         "extractors": [{"extractor": "DIETClassifier"}]},
+    ]
+    events = [
+        _user_event(text, first_turn),
+        _decision("proceed", edits=False),
+        _plan("ADMISSION_NIHSS"),
+        _user_event("Label the y axis Patients", []),
+    ]
+    request = va._request_context(events, _latest("Label the y axis Patients", []), edits_previous_plan=True)
+    assert request["extracted_entities"]["metric"] == "ADMISSION_NIHSS"
+    assert "group_by" not in request["extracted_entities"]

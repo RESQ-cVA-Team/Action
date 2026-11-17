@@ -11,7 +11,7 @@ from src.actions.error_messages import visualization_error_payload
 from src.actions.helpers.metric import resolve_next_metric_candidate
 from src.actions.helpers.visualization import (
     canonicalize_ssot_entities,
-    extract_entities_from_latest_message,
+    extract_message_entities,
     question_with_resolved_metrics,
     format_execution_summary,
     is_plan_only_request,
@@ -233,48 +233,6 @@ def _merge_entities(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str,
     return merged
 
 
-def _extract_entities_from_user_event(event: Dict[str, Any]) -> Dict[str, Any]:
-    parse_data_any = event.get("parse_data")
-    parse_data = cast(Dict[str, Any], parse_data_any) if isinstance(parse_data_any, dict) else {}
-
-    parse_entities_any = parse_data.get("entities")
-    event_entities_any = event.get("entities")
-
-    entities_list: List[Any]
-    if isinstance(parse_entities_any, list):
-        entities_list = cast(List[Any], parse_entities_any)
-    elif isinstance(event_entities_any, list):
-        entities_list = cast(List[Any], event_entities_any)
-    else:
-        return {}
-
-    extracted: Dict[str, Any] = {}
-    for ent_any in entities_list:
-        if not isinstance(ent_any, dict):
-            continue
-        ent = cast(Dict[str, Any], ent_any)
-        key_any = ent.get("entity")
-        if not isinstance(key_any, str) or "value" not in ent:
-            continue
-
-        value = ent["value"]
-        keys = [key_any]
-        role_any = ent.get("role")
-        if isinstance(role_any, str) and role_any.strip():
-            keys.append(f"{key_any}_{role_any.strip().lower()}")
-        for key in keys:
-            if key not in extracted:
-                extracted[key] = value
-                continue
-            existing = extracted[key]
-            if isinstance(existing, list):
-                cast(List[Any], existing).append(value)
-            else:
-                extracted[key] = [existing, value]
-
-    return extracted
-
-
 def _dedupe_list_values(values: List[Any]) -> List[Any]:
     deduped: List[Any] = []
     seen: set[str] = set()
@@ -365,7 +323,7 @@ def _request_entities(turns: List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]
     edits = (turns[start][1] or {}).get("edits_previous_plan") is True
     entities = _edited_request_entities(turns, start) if edits else {}
     for event, _ in turns[start : index + 1]:
-        entities = _merge_entities(entities, _extract_entities_from_user_event(event))
+        entities = _merge_entities(entities, extract_message_entities(_parse_data(event)))
     return entities
 
 
@@ -421,7 +379,7 @@ def _request_context(events: List[Dict[str, Any]], latest_msg: Dict[str, Any], e
     message stands alone, on top of the previous plan when edits_previous_plan.
     message_entities are the entities the message itself states, or those of
     the exchange it continues."""
-    latest_entities = canonicalize_ssot_entities(extract_entities_from_latest_message(latest_msg))
+    latest_entities = canonicalize_ssot_entities(extract_message_entities(latest_msg))
     exchange = _clarification_exchange(events)
     if exchange:
         edits_previous_plan = exchange[0][1].get("edits_previous_plan") is True
