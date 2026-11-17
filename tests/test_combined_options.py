@@ -55,8 +55,9 @@ class CategoriesSpecTests(unittest.TestCase):
             MetricSpec(metric="IMAGING_TYPE", categories=["pet"])
         with self.assertRaisesRegex(ValueError, "has no options"):
             MetricSpec(metric="DTN", categories=["ct"])
-        with self.assertRaisesRegex(ValueError, "every option"):
-            MetricSpec(metric="SEX", categories=["male", "female", "unknown_other"])
+        self.assertIsNone(MetricSpec(metric="SEX", categories=["male", "female", "unknown_other"]).categories)
+        both = MetricSpec(metric="AA_STROKE_UNIT", categories=["yes", "no"])
+        self.assertEqual((both.categories, both.include_category_detail), (None, True))
         with self.assertRaisesRegex(ValueError, "not both"):
             MetricSpec(metric="AA_STROKE_UNIT", categories=["yes"], include_category_detail=True)
 
