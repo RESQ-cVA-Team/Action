@@ -862,7 +862,10 @@ class MetricSpec(BaseModel):
             raise ValueError(f"{self.metric} has no option {unknown}; its options are {sorted(options.values())}.")
         chosen = list(dict.fromkeys(options[category.strip().lower()] for category in self.categories))
         if len(chosen) == len(options):
-            raise ValueError(f"categories lists every option of {self.metric}; leave categories out to show each option on its own.")
+            raise ValueError(
+                f"categories lists every option of {self.metric}: leave categories out to show each option on its own, "
+                "or give each group of options its own metric entry to compare groups."
+            )
         if self.include_category_detail:
             raise ValueError("Set either categories or includeCategoryDetail on a metric, not both.")
         self.categories = chosen
