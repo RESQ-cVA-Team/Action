@@ -1401,7 +1401,14 @@ async def execute_plan_async(
             # one scope) is dropped rather than failing the entire chart -- the
             # other requested scopes still render. Only total failure (every
             # scope empty) is fatal; see the `if not all_series` check below.
-            empty_scope_labels = [_request_scope_label(result.spec) for result in request_results if not result.series]
+            # A split runs one request per category under the same scope, so a
+            # scope is missing only when none of its requests returned rows.
+            scopes_with_data = {_request_scope_label(result.spec) for result in request_results if result.series}
+            empty_scope_labels = [
+                label
+                for label in (_request_scope_label(result.spec) for result in request_results if not result.series)
+                if label not in scopes_with_data
+            ]
             if empty_scope_labels:
                 missing_labels = ", ".join(sorted(set(empty_scope_labels)))
                 request_warnings.append(f"No data returned for: {missing_labels}. This scope was omitted from the chart.")
