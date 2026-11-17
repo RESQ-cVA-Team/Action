@@ -28,6 +28,7 @@ from src.actions.helpers.visualization import (
 )
 from src.actions.i18n import resolve_language_from_tracker, translate
 from src.executors import execute_plan_async
+from src.planners.langchain.chart_describer import describe_charts
 from src.util import env as env_util
 from src.util.logging_utils import log_context
 
@@ -171,10 +172,12 @@ class ActionGuidedGenerateVisualization(Action):  # pyright: ignore
                         if isinstance(warning, str) and warning.strip():
                             dispatcher.utter_message(text=f"Note: {warning.strip()}")
 
+                for description in await describe_charts(visualization.charts, language):
+                    dispatcher.utter_message(text=description)
                 if _SHOW_EXECUTION_SUMMARY and execution_summary is not None:
-                    dispatcher.utter_message(text=format_execution_summary(execution_summary, language=language))
-                else:
-                    dispatcher.utter_message(text=translate("action.visualization.success_complete", language=language))
+                    closing = format_execution_summary(execution_summary, language=language)
+                    if closing:
+                        dispatcher.utter_message(text=closing)
 
                 return [SlotSet("awaiting_visualization_clarification", False), *guided_slots_clear_events()]
             except Exception as e:

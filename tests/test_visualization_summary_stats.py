@@ -57,7 +57,7 @@ class VisualizationSummaryStatsTests(unittest.TestCase):
 
         self.assertEqual(msg, "Here's your statistical comparison.")
 
-    def test_mixed_summary_reports_a_single_natural_line_no_technical_detail(self) -> None:
+    def test_mixed_summary_speaks_only_for_the_tests_with_no_technical_detail(self) -> None:
         formatter = _load_format_execution_summary()
         summary = {
             "trace_id": "abc123",
@@ -69,7 +69,7 @@ class VisualizationSummaryStatsTests(unittest.TestCase):
 
         msg = formatter(summary, language="en")
 
-        self.assertEqual(msg, "Here's your chart and statistical comparison.")
+        self.assertEqual(msg, "Here are your 3 statistical comparisons.")
         # None of the developer diagnostics this used to dump into the chat
         # should ever appear -- see CVaLab for that detail instead.
         self.assertNotIn("Trace ID", msg)
@@ -90,7 +90,7 @@ class VisualizationSummaryStatsTests(unittest.TestCase):
         self.assertIn("One statistical test couldn't be completed.", msg)
         self.assertNotIn("skipped", msg.lower())
 
-    def test_many_charts_and_skipped_stats_use_plural_phrasing(self) -> None:
+    def test_many_tests_and_skipped_tests_use_plural_phrasing(self) -> None:
         formatter = _load_format_execution_summary()
         summary = {
             "chart_count": 2,
@@ -100,33 +100,26 @@ class VisualizationSummaryStatsTests(unittest.TestCase):
 
         msg = formatter(summary, language="en")
 
-        self.assertIn("Here's your chart and statistical comparison.", msg)
+        self.assertIn("Here are your 2 statistical comparisons.", msg)
         self.assertIn("2 statistical tests were skipped.", msg)
 
-    def test_opening_line_can_be_suppressed_to_avoid_duplicate_confirmation(self) -> None:
-        # visualization_action.py's one-shot flow already sends its own
-        # specific confirmation (_build_confirmation_message) before this is
-        # called -- this must return empty (not "Here's your chart.") when
-        # there's nothing else to add, so callers don't send a second,
-        # redundant chat bubble.
+    def test_charts_without_tests_get_no_closing_line(self) -> None:
+        # Charts are described on their own; callers skip an empty string.
         formatter = _load_format_execution_summary()
 
-        msg = formatter({"chart_count": 1, "stats_count": 0}, language="en", include_opening_line=False)
-        self.assertEqual(msg, "")
+        self.assertEqual(formatter({"chart_count": 1, "stats_count": 0}, language="en"), "")
+        self.assertEqual(formatter({"chart_count": 2}, language="en"), "")
 
-        msg = formatter({}, language="en", include_opening_line=False)
-        self.assertEqual(msg, "")
+    def test_nothing_at_all_says_done(self) -> None:
+        formatter = _load_format_execution_summary()
+        self.assertEqual(formatter({}, language="en"), "Done!")
 
-    def test_opening_line_suppressed_still_reports_a_genuine_caveat(self) -> None:
+    def test_a_chart_with_a_failed_test_reports_the_caveat(self) -> None:
         formatter = _load_format_execution_summary()
 
-        msg = formatter(
-            {"chart_count": 1, "stats_count": 1, "stats_errors": 1},
-            language="en",
-            include_opening_line=False,
-        )
+        msg = formatter({"chart_count": 1, "stats_count": 1, "stats_errors": 1}, language="en")
 
-        self.assertEqual(msg, "One statistical test couldn't be completed.")
+        self.assertEqual(msg, "Here's your statistical comparison.\nOne statistical test couldn't be completed.")
 
     def test_no_emoji_anywhere_in_output(self) -> None:
         formatter = _load_format_execution_summary()

@@ -42,6 +42,22 @@ def _flatten_synonyms(value: Any) -> List[str]:
     return out
 
 
+def _localized_synonyms(value: Any) -> Dict[str, List[str]]:
+    """Return synonyms as language -> names from localized SSOT blocks."""
+
+    out: Dict[str, List[str]] = {}
+
+    if isinstance(value, dict):
+        for lang_any, localized in cast(Dict[Any, Any], value).items():
+            if not isinstance(lang_any, str) or not isinstance(localized, list):
+                continue
+            names = [item.strip() for item in cast(List[Any], localized) if isinstance(item, str) and item.strip()]
+            if names:
+                out[lang_any.strip()] = names
+
+    return out
+
+
 def _coerce_description_map(value: Any) -> Dict[str, str]:
     """Return descriptions as language -> text from localized SSOT blocks."""
 
@@ -182,6 +198,9 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
         synonyms = _flatten_synonyms(item.get("synonyms"))
         if synonyms:
             meta["synonyms"] = synonyms
+        names = _localized_synonyms(item.get("synonyms"))
+        if names:
+            meta["names"] = names
 
         for key in ("data_type", "properties"):
             val = item.get(key)
@@ -617,6 +636,23 @@ def _first_synonym(item: Dict[str, Any]) -> Optional[str]:
 @lru_cache(maxsize=1)
 def _metric_meta_cached() -> Dict[str, Dict[str, Any]]:
     return get_metric_metadata()
+
+
+def get_metric_name(metric_code: str, language: str) -> str:
+    """The metric's first SSOT name in `language`, else in English, else its code."""
+    code = (metric_code or "").upper()
+    names = (_metric_meta_cached().get(code) or {}).get("names") or {}
+    for lang in (language, "en"):
+        localized = names.get(lang)
+        if localized:
+            return localized[0]
+    return code
+
+
+def get_metric_description(metric_code: str, language: str) -> Optional[str]:
+    """The metric's SSOT description in `language`, else in English."""
+    descriptions = (_metric_meta_cached().get((metric_code or "").upper()) or {}).get("descriptions") or {}
+    return descriptions.get(language) or descriptions.get("en")
 
 
 def get_metric_display_name(metric_code: str) -> str:
