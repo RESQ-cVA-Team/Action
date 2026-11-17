@@ -58,6 +58,15 @@ def _localized_synonyms(value: Any) -> Dict[str, List[str]]:
     return out
 
 
+def _option_names(value: Any) -> List[str]:
+    """An enum option's English names: SSOT gives them per language, an older form as a list."""
+    if isinstance(value, dict):
+        value = cast(Dict[Any, Any], value).get("en")
+    if isinstance(value, list):
+        return [item.strip() for item in cast(List[Any], value) if isinstance(item, str) and item.strip()]
+    return []
+
+
 def _coerce_description_map(value: Any) -> Dict[str, str]:
     """Return descriptions as language -> text from localized SSOT blocks."""
 
@@ -287,17 +296,17 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
                         continue
                     opt = cast(Dict[str, Any], opt)
                     key = opt.get("key")
-                    syns = opt.get("synonyms")
+                    syns = _option_names(opt.get("synonyms"))
                     if not (isinstance(key, str) and key):
                         continue
-                    if not (isinstance(syns, list) and syns and isinstance(syns[0], str)):
+                    if not syns:
                         # Fallback: fabricate a human label from key
                         human_label = key.replace("_", " ").title()
                         syns = [human_label]
                         opt["synonyms"] = syns
-                    option_map[key] = {k: v for k, v in opt.items() if k in ("synonyms", "value")}
+                    option_map[key] = {"synonyms": syns, **({"value": opt["value"]} if "value" in opt else {})}
                     option_keys.append(key)
-                    derived_labels.append(cast(str, syns[0]))
+                    derived_labels.append(syns[0])
                 # Attach raw options map for downstream richer usage
                 enum_block["options"] = options  # preserve original list
                 meta["enum_options"] = option_map
@@ -324,17 +333,17 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
                     continue
                 entry = cast(Dict[str, Any], entry)
                 key = entry.get("key")
-                syns = entry.get("synonyms")
+                syns = _option_names(entry.get("synonyms"))
                 if not (isinstance(key, str) and key):
                     continue
-                if not (isinstance(syns, list) and syns and isinstance(syns[0], str)):
+                if not syns:
                     # fabricate human label from key
                     fabricated = key.replace("_", " ").title()
                     syns = [fabricated]
                     entry["synonyms"] = syns
-                option_map[key] = {k: v for k, v in entry.items() if k in ("synonyms", "value")}
+                option_map[key] = {"synonyms": syns, **({"value": entry["value"]} if "value" in entry else {})}
                 option_keys.append(key)
-                labels.append(cast(str, syns[0]))
+                labels.append(syns[0])
             if option_keys:
                 # Do not overwrite properties/labels if already derived from other enum forms
                 if "properties" not in meta:
