@@ -11,7 +11,6 @@
       "reject_default": "This request is outside the visualization flow.",
       "llm_unavailable": "I can't reach the language model I use right now, so I can't answer this. Please try again in a few minutes.",
       "non_visualization_intent": "I can help with visualization requests. Try asking to generate a chart, or ask to update the current chart.",
-      "success_complete": "Done!",
       "internal_error_routing": "Error routing visualization request: {error}",
       "internal_error_generating": "Error generating visualization: {error}",
       "internal_error_guided": "Error generating guided visualization: {error}",
@@ -65,11 +64,8 @@
       "prompt_chart_type": "I couldn't match that chart type. Please enter a valid chart type or skip."
     },
     "summary": {
-      "complete_chart_one": "Here's your chart.",
-      "complete_chart_many": "Here are your {chart_count} charts.",
       "complete_stat_one": "Here's your statistical comparison.",
       "complete_stat_many": "Here are your {stats_count} statistical comparisons.",
-      "complete_mixed": "Here's your chart and statistical comparison.",
       "complete_fallback": "Done!",
       "stats_skipped_one": "One statistical test was skipped.",
       "stats_skipped_many": "{stats_skipped} statistical tests were skipped.",

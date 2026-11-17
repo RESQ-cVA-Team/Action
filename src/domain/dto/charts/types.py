@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, model_serializer
+from pydantic import BaseModel, Field, model_serializer
 
 
 class ChartType(str, Enum):
@@ -60,6 +60,9 @@ class ChartMetadata(BaseModel):
     width: Optional[int] = None
     height: Optional[int] = None
     angels_awards: Optional[Dict[str, Dict[str, Dict[str, Union[bool, int, float]]]]] = None
+    # What the chart plots: SSOT metric codes and the statistic (MEDIAN, MEAN, COUNT, RATE, DISTRIBUTION).
+    metrics: List[str] = Field(default_factory=list)
+    statistic: Optional[str] = None
 
     @model_serializer(mode="wrap")
     def omit_absent_angels_awards(self, handler: Any) -> Any:

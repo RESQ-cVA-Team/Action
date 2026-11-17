@@ -26,6 +26,7 @@ from src.actions.long_action.long_action_context import LongActionContext
 from src.domain.langchain import schema as lang_schema
 from src.executors import execute_plan_async
 from src.executors.orchestration.plan_executor import VisualizationExecutionError
+from src.planners.langchain.chart_describer import describe_charts
 from src.planners.langchain.llm_errors import LLM_UNAVAILABLE
 from src.planners.langchain.request_orchestrator import (
     _PLANNER_MAX_RETRIES,
@@ -771,42 +772,6 @@ def _is_guided_visualization_request(slots: Dict[str, Any]) -> bool:
     return slots.get("guided_hospital_scope") is not None
 
 
-def _build_confirmation_message(plan_obj: lang_schema.AnalysisPlan, is_update: bool) -> str:
-    """Build a short confirmation message describing what was just visualized."""
-    charts = list(plan_obj.charts or [])
-    tests = list(plan_obj.statistical_tests or [])
-    if not charts:
-        if tests:
-            verb = "Updated" if is_update else "Completed"
-            if len(tests) == 1:
-                return f"{verb} statistical analysis: 1 test result is ready."
-            return f"{verb} statistical analysis: {len(tests)} test results are ready."
-        return "Done."
-
-    chart = charts[0]
-    metrics = [m.metric for m in (chart.metrics or [])]
-    metric_str = " & ".join(metrics) if metrics else "the metric"
-    chart_type = (chart.chart_type or "chart").lower()
-
-    # Time grouping
-    semantics = chart.semantics
-    semantic_grain = None if semantics is None or semantics.time is None else semantics.time.grain
-    if semantic_grain is not None:
-        grain_str = f" per {str(semantic_grain).lower()}"
-    else:
-        grain_str = ""
-
-    # Filters
-    filters = chart.filters
-    if filters is None:
-        filter_str = " with no filters" if is_update else ""
-    else:
-        filter_str = " with filters applied"
-
-    verb = "Updated —" if is_update else "Here's your"
-    return f"{verb} {chart_type} chart of {metric_str}{grain_str}{filter_str}."
-
-
 def _temporal_bounds_clarification(language: str) -> str:
     return translate(
         "action.visualization.missing_time_bounds",
@@ -1219,9 +1184,8 @@ class ActionOneShotGenerateVisualization(LongAction):
                             ctx.say(text=f"Note: {warning.strip()}")
 
                 completed_successfully = True
-                is_update_flow = bool(request_ctx["latest_plan_summary"])
-                confirmation = _build_confirmation_message(plan_obj, is_update=is_update_flow)
-                ctx.say(text=confirmation)
+                for description in await describe_charts(visualization.charts, language):
+                    ctx.say(text=description)
             except asyncio.TimeoutError:
                 timeout_message = "The visualization execution took too long and timed out. Please try again, narrow the scope, or shorten the date range."
                 logger.warning(
@@ -1330,13 +1294,9 @@ class ActionOneShotGenerateVisualization(LongAction):
                         )
                     )
             finally:
-                # _build_confirmation_message already sent the "here's your
-                # X" confirmation above (unconditionally, right after
-                # completed_successfully is set) -- this only adds anything
-                # when there's a genuine caveat (skipped/failed stats) to
-                # report, never a second redundant "here's your chart".
+                # Charts were described above; this covers statistical tests and their caveats.
                 if completed_successfully and _SHOW_EXECUTION_SUMMARY and execution_summary is not None:
-                    caveat = format_execution_summary(execution_summary, language=language, include_opening_line=False)
+                    caveat = format_execution_summary(execution_summary, language=language)
                     if caveat:
                         ctx.say(text=caveat)
                     if plan_obj is not None:

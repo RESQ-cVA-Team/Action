@@ -11,7 +11,6 @@
       "reject_default": "Tento požadavek je mimo tok vizualizace.",
       "llm_unavailable": "Momentálně se nemohu spojit s jazykovým modelem, který používám, takže na to nemohu odpovědět. Zkuste to prosím za pár minut znovu.",
       "non_visualization_intent": "Mohu pomoci s požadavky na vizualizaci. Zkuste požádat o vytvoření grafu nebo o aktualizaci aktuálního grafu.",
-      "success_complete": "Hotovo!",
       "internal_error_routing": "Chyba při směrování požadavku na vizualizaci: {error}",
       "internal_error_generating": "Chyba při generování vizualizace: {error}",
       "internal_error_guided": "Chyba při generování řízené vizualizace: {error}"
@@ -62,11 +61,8 @@
       "prompt_chart_type": "Nepodařilo se mi přiřadit tento typ grafu. Zadejte platný typ grafu nebo krok přeskočte."
     },
     "summary": {
-      "complete_chart_one": "Tady je váš graf.",
-      "complete_chart_many": "Tady máte {chart_count} grafů.",
       "complete_stat_one": "Tady je vaše statistické srovnání.",
       "complete_stat_many": "Tady máte {stats_count} statistických srovnání.",
-      "complete_mixed": "Tady je váš graf a statistické srovnání.",
       "complete_fallback": "Hotovo!",
       "stats_skipped_one": "Jeden statistický test byl přeskočen.",
       "stats_skipped_many": "Bylo přeskočeno {stats_skipped} statistických testů.",

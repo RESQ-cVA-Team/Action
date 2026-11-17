@@ -771,24 +771,10 @@ def serialize_plan_for_frontend(plan: Any) -> Dict[str, Any]:
 def format_execution_summary(
     summary: Dict[str, Any] | Any,
     language: Optional[str] = None,
-    include_opening_line: bool = True,
 ) -> str:
-    """A short, natural closing line for the chat -- the chart(s)/stat(s)
-    themselves render in the UI, so this doesn't need to describe them in
-    detail, just close the loop conversationally. Diagnostic detail (trace
-    id, cache stats, query batching, plan normalization) used to be dumped
-    here too; that's developer information, not something an end user
-    needs, and CVaLab's own debug chat already surfaces it from the
-    structured payload -- see visualization_plan/visualization_response.
-
-    `include_opening_line` exists because the one-shot flow
-    (visualization_action.py) already sends its own specific confirmation
-    via `_build_confirmation_message` (e.g. "Here's your line chart of
-    DTN.") before calling this -- without it, callers would get two
-    redundant "here's your chart" sentences back to back. The guided flow
-    has no such confirmation elsewhere, so it keeps the default. May return
-    an empty string (e.g. opening line suppressed and nothing else to add);
-    callers should skip sending a message in that case."""
+    """The closing line for statistical tests: that they are ready, and any
+    that were skipped or failed. Charts are described on their own, so a reply
+    with charts and no tests gets nothing here; callers skip an empty string."""
 
     def t(key: str, default: str, params: Optional[Dict[str, Any]] = None) -> str:
         return translate(key, language=language, params=params, default=default)
@@ -797,7 +783,7 @@ def format_execution_summary(
     if summary_dict is None and isinstance(summary, dict):
         summary_dict = _mapping_to_dict(summary)
     if summary_dict is None:
-        return t("action.summary.complete_fallback", "Done!") if include_opening_line else ""
+        return ""
 
     chart_count = summary_dict.get("chart_count")
     stats_count = summary_dict.get("stats_count")
@@ -808,21 +794,13 @@ def format_execution_summary(
     has_stats = isinstance(stats_count, int) and stats_count > 0
 
     lines: List[str] = []
-    if include_opening_line:
-        if has_charts and has_stats:
-            lines.append(t("action.summary.complete_mixed", "Here's your chart and statistical comparison."))
-        elif has_charts:
-            if chart_count == 1:
-                lines.append(t("action.summary.complete_chart_one", "Here's your chart."))
-            else:
-                lines.append(t("action.summary.complete_chart_many", "Here are your {chart_count} charts.", {"chart_count": chart_count}))
-        elif has_stats:
-            if stats_count == 1:
-                lines.append(t("action.summary.complete_stat_one", "Here's your statistical comparison."))
-            else:
-                lines.append(t("action.summary.complete_stat_many", "Here are your {stats_count} statistical comparisons.", {"stats_count": stats_count}))
+    if has_stats:
+        if stats_count == 1:
+            lines.append(t("action.summary.complete_stat_one", "Here's your statistical comparison."))
         else:
-            lines.append(t("action.summary.complete_fallback", "Done!"))
+            lines.append(t("action.summary.complete_stat_many", "Here are your {stats_count} statistical comparisons.", {"stats_count": stats_count}))
+    elif not has_charts:
+        lines.append(t("action.summary.complete_fallback", "Done!"))
 
     if isinstance(stats_errors, int) and stats_errors > 0:
         if stats_errors == 1:

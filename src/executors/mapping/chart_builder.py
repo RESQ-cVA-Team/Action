@@ -429,22 +429,23 @@ def _metric_value_axis_label(plan_chart: S.ChartSpec) -> str:
 
 
 def _is_percent_measure(plan_chart: S.ChartSpec) -> bool:
+    return _plotted_measure(plan_chart) == "RATE"
+
+
+def _plotted_measure(plan_chart: S.ChartSpec) -> Optional[str]:
     semantics = getattr(plan_chart, "semantics", None)
     measure = getattr(semantics, "measure", None) if semantics is not None else None
-    return str(getattr(measure, "type", "") or "").upper() == "RATE"
+    measure_type = str(getattr(measure, "type", "") or "").upper()
+    return measure_type or None
 
 
 def _is_count_measure(plan_chart: S.ChartSpec) -> bool:
-    semantics = getattr(plan_chart, "semantics", None)
-    measure = getattr(semantics, "measure", None) if semantics is not None else None
-    return str(getattr(measure, "type", "") or "").upper() == "COUNT"
+    return _plotted_measure(plan_chart) == "COUNT"
 
 
 def _plotted_statistic(plan_chart: S.ChartSpec) -> str:
     """The statistic a grouped numeric chart plots: the mean for measure MEAN, else the median."""
-    semantics = getattr(plan_chart, "semantics", None)
-    measure = getattr(semantics, "measure", None) if semantics is not None else None
-    return "Mean" if str(getattr(measure, "type", "") or "").upper() == "MEAN" else "Median"
+    return "Mean" if _plotted_measure(plan_chart) == "MEAN" else "Median"
 
 
 def _cases_axis_label(plan_chart: S.ChartSpec) -> str:
@@ -633,6 +634,8 @@ def build_chart_dto(
         x_axis=x_axis,
         y_axis=y_axis,
         angels_awards=_angels_awards_for_chart(plan_chart),
+        metrics=_metric_codes(plan_chart),
+        statistic=_plotted_measure(plan_chart),
     )
 
     if chart_type_upper == ChartType.LINE.value:
