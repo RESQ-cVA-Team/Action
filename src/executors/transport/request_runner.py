@@ -75,7 +75,7 @@ async def run_graphql_request(
     batched_time_periods: Optional[List[Any]] = None,
     query_cb: Optional[GraphQLQueryCallback] = None,
     is_filter_grouped: bool = False,
-    value_mode: str = "count",
+    value_mode: str = "median",
     category_detail_metric_codes: Optional[List[str]] = None,
 ) -> tuple[List[ChartSeries], Optional[MetricsPayload]]:
     trace_label = trace_id

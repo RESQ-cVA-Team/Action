@@ -43,8 +43,9 @@ class PercentSeriesMappingTests(unittest.TestCase):
         kpi = _kpi(median=42.0, mean=51.5, case_count=[120])
         kpi.time_period = SimpleNamespace(start_date="2026-01-01", end_date="2026-03-31")
         payload = {"metric_DTN": SimpleNamespace(kpi_group=[kpi], labels=None)}
-        self.assertEqual(_map(payload, "count", add_time_period_labels=True)[0].data[0].y, 42.0)
+        self.assertEqual(_map(payload, "median", add_time_period_labels=True)[0].data[0].y, 42.0)
         self.assertEqual(_map(payload, "mean", add_time_period_labels=True)[0].data[0].y, 51.5)
+        self.assertEqual(_map(payload, "count", add_time_period_labels=True)[0].data[0].y, 120.0)
 
     def test_grouped_multi_category_row_plots_every_category(self) -> None:
         labels = get_enum_labels("STROKE_TYPE")
@@ -154,10 +155,11 @@ class PercentAxisAndModeTests(unittest.TestCase):
 
     def test_value_mode_follows_the_measure(self) -> None:
         self.assertEqual(_chart_value_mode(self._chart("RATE")), "percent")
-        self.assertEqual(_chart_value_mode(self._chart("DISTRIBUTION")), "count")
+        self.assertEqual(_chart_value_mode(self._chart("DISTRIBUTION")), "median")
         self.assertEqual(_chart_value_mode(self._chart("MEAN")), "mean")
-        self.assertEqual(_chart_value_mode(self._chart("MEDIAN")), "count")
-        self.assertEqual(_chart_value_mode(ChartSpec(chart_type="BAR", metrics=[MetricSpec(metric="DTN")])), "count")
+        self.assertEqual(_chart_value_mode(self._chart("MEDIAN")), "median")
+        self.assertEqual(_chart_value_mode(self._chart("COUNT")), "count")
+        self.assertEqual(_chart_value_mode(ChartSpec(chart_type="BAR", metrics=[MetricSpec(metric="DTN")])), "median")
         self.assertEqual(_chart_value_mode(self._chart_for_aa("RATE")), "percent")
         self.assertEqual(_chart_value_mode(self._chart_for_aa("COUNT")), "count")
 
@@ -194,6 +196,16 @@ class PercentAxisAndModeTests(unittest.TestCase):
             labels[measure] = build_chart_dto(plan_chart=chart, dimensions=[], series=series, derived_axes=None).metadata.y_axis.label
         self.assertTrue(labels["MEDIAN"].startswith("Median "), labels)
         self.assertTrue(labels["MEAN"].startswith("Mean "), labels)
+
+    def test_numeric_case_count_axis_is_labelled_as_cases(self) -> None:
+        series = [ChartSeries(name="DTN", data=[ChartPoint(x="2026-Q1", y=17.0)])]
+        chart = ChartSpec(
+            chart_type="BAR",
+            metrics=[MetricSpec(metric="DTN")],
+            semantics=AnalysisSemanticsSpec(intent="DISTRIBUTION", measure=MeasureSemanticsSpec(type="COUNT")),
+        )
+        label = build_chart_dto(plan_chart=chart, dimensions=[], series=series, derived_axes=None).metadata.y_axis.label
+        self.assertEqual(label, "Cases")
 
     def test_percent_chart_labels_its_y_axis_as_a_share(self) -> None:
         series = [ChartSeries(name="arrival mode", data=[ChartPoint(x="ems", y=30.0), ChartPoint(x="private", y=70.0)])]

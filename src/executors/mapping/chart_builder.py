@@ -434,6 +434,12 @@ def _is_percent_measure(plan_chart: S.ChartSpec) -> bool:
     return str(getattr(measure, "type", "") or "").upper() == "RATE"
 
 
+def _is_count_measure(plan_chart: S.ChartSpec) -> bool:
+    semantics = getattr(plan_chart, "semantics", None)
+    measure = getattr(semantics, "measure", None) if semantics is not None else None
+    return str(getattr(measure, "type", "") or "").upper() == "COUNT"
+
+
 def _plotted_statistic(plan_chart: S.ChartSpec) -> str:
     """The statistic a grouped numeric chart plots: the mean for measure MEAN, else the median."""
     semantics = getattr(plan_chart, "semantics", None)
@@ -496,7 +502,7 @@ def _derive_axes_from_dimensions(
         y_axis_label = _cases_axis_label(plan_chart)
     elif _is_percent_measure(plan_chart):
         y_axis_label = "Share of cases (%)"
-    elif any(is_enum_metric(code) for code in _metric_codes(plan_chart)):
+    elif _is_count_measure(plan_chart) or any(is_enum_metric(code) for code in _metric_codes(plan_chart)):
         y_axis_label = "Cases"
     else:
         y_axis_label = f"{_plotted_statistic(plan_chart)} {_metric_value_axis_label(plan_chart)}"
