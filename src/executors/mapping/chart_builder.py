@@ -32,6 +32,7 @@ from src.executors.planning.ssot_metric_defaults import (
 )
 from src.shared.ssot_loader import (
     get_canonical_display_name,
+    get_enum_option_label,
     get_metric_display_name,
     get_metric_metadata,
     get_operator_symbol,
@@ -543,8 +544,11 @@ def _derive_title(
     to 2026-10-02, filtered by stroke type = ischemic".
     """
     names: List[str] = []
-    for code in _metric_codes(plan_chart):
+    for metric in plan_chart.metrics:
+        code = (metric.metric or "").strip().upper()
         name = _normalize_title_token(get_metric_display_name(code))
+        if name and metric.categories:
+            name += " (" + ", ".join(get_enum_option_label(code, key) or key for key in metric.categories) + ")"
         if name and name not in names:
             names.append(name)
     subject = " and ".join(names) if names else _normalize_title_token(get_metric_display_name(plan_chart.chart_type or "CHART"))

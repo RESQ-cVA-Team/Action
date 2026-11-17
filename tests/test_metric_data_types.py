@@ -3,7 +3,7 @@ import re
 from pathlib import Path
 
 from src.planners.langchain.examples import get_few_shot_examples
-from src.planners.langchain.metric_data_types import metric_data_types
+from src.planners.langchain.metric_data_types import metric_data_types, metric_options
 from src.shared.ssot_loader import get_metric_data_type
 
 _EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "src" / "planners" / "langchain" / "fewshot_examples"
@@ -25,9 +25,25 @@ def test_codes_that_are_not_metrics_are_left_out() -> None:
     assert get_metric_data_type("NOT_A_METRIC") is None
 
 
-def test_few_shot_examples_show_the_data_types() -> None:
+def test_options_are_listed_for_enum_metrics_other_than_yes_no() -> None:
+    options = metric_options("", {"metric": ["SEX", "DTN", "AA_STROKE_UNIT"]})
+    assert options == {"SEX": {"male": "male", "female": "female", "unknown_other": "unknown or other"}}
+
+
+def test_few_shot_examples_show_the_data_types_and_options() -> None:
     sex = next(ex for ex in get_few_shot_examples() if ex["name"] == "sex_distribution_bar")
-    assert sex["user"].endswith('METRIC_DATA_TYPES(JSON):\n{"SEX": "Enum"}')
+    assert sex["user"].endswith(
+        'METRIC_DATA_TYPES(JSON):\n{"SEX": "Enum"}\n\nMETRIC_OPTIONS(JSON):\n{"SEX": {"male": "male", "female": "female", "unknown_other": "unknown or other"}}'
+    )
+
+
+def test_few_shot_categories_are_options_the_example_lists() -> None:
+    for path in sorted(_EXAMPLES_DIR.glob("*.json")):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        listed = metric_options(data["user_utterance"], data["entities_detected"])
+        for chart in data["assistant"].get("charts") or []:
+            for metric in chart.get("metrics") or []:
+                assert set(metric.get("categories") or []) <= set(listed.get(metric["metric"], {})), path.name
 
 
 def test_few_shot_measures_follow_the_data_type() -> None:

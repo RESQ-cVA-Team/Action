@@ -575,6 +575,10 @@ def serialize_plan_for_frontend(plan: Any) -> Dict[str, Any]:
             if origin_scope_out:
                 out["origin_scope"] = origin_scope_out
 
+        categories = metric.get("categories")
+        if isinstance(categories, list) and categories:
+            out["categories"] = [str(category) for category in categories]
+
         return out
 
     def _split_preview(split_any: Any) -> Dict[str, Any]:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, List, Optional, Sequence, cast
+from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
 from src.domain.graphql.request import (
     DataOrigin,
@@ -14,6 +14,16 @@ from src.domain.graphql.request import DateFilter as GQLDateFilter
 from src.domain.graphql.request import LogicalFilter as GQLLogicalFilter
 from src.domain.graphql.ssot_enums import GroupByType
 from src.executors.planning.query_compiler import Dimension
+
+
+@dataclass(frozen=True)
+class CategoryView:
+    """How an Enum metric's options are plotted: each on its own (a yes/no
+    metric shows its yes, and its no too with include_no), or the combined
+    options counted together as one."""
+
+    include_no: bool = False
+    combined: Tuple[str, ...] = ()
 
 
 @dataclass
@@ -34,7 +44,7 @@ class RequestSpec:
     # "count" plots case counts (measure COUNT); "percent" the share of cases (RATE);
     # "mean" the mean (MEAN); "median" the median of a numeric metric, else case counts.
     value_mode: str = "median"
-    category_detail_metric_codes: List[str] = field(default_factory=lambda: cast(List[str], []))
+    category_views: Dict[str, CategoryView] = field(default_factory=lambda: cast(Dict[str, CategoryView], {}))
 
 
 def _collect_date_bounds(
@@ -103,20 +113,20 @@ def build_primary_request_specs(
     data_origin: Optional[DataOrigin] = None,
     include_general_stats: bool = False,
     value_mode: str = "median",
-    category_detail_metric_codes: Optional[Sequence[str]] = None,
-    category_detail_metric_flags: Optional[Sequence[bool]] = None,
+    category_views: Optional[Sequence[CategoryView]] = None,
 ) -> List[RequestSpec]:
     specs: List[RequestSpec] = []
     per_metric_data_origin = any(origin is not None for origin in (metric_data_origins or []))
 
-    def category_detail_codes_for(indices: Sequence[int]) -> List[str]:
-        if category_detail_metric_flags is None:
-            return list(category_detail_metric_codes or [])
-        return [
-            str(metric_requests[idx].metric_type.value)
-            for idx in indices
-            if idx < len(category_detail_metric_flags) and category_detail_metric_flags[idx]
-        ]
+    def category_views_for(indices: Sequence[int]) -> Dict[str, CategoryView]:
+        views = category_views or []
+        out: Dict[str, CategoryView] = {}
+        for idx in indices:
+            code = str(metric_requests[idx].metric_type.value)
+            view = views[idx] if idx < len(views) else CategoryView()
+            if out.setdefault(code, view) != view:
+                raise ValueError(f"One request cannot plot the options of {code} in two ways.")
+        return {code: view for code, view in out.items() if view != CategoryView()}
 
     for combo in combos_list:
         case_filter, label_parts = _build_case_filter(chart_filter, filter_dims, combo)
@@ -157,7 +167,7 @@ def build_primary_request_specs(
                         batched_time_periods=batched_time_periods,
                         is_filter_grouped=bool(filter_dims),
                         value_mode=value_mode,
-                        category_detail_metric_codes=category_detail_codes_for([idx]),
+                        category_views=category_views_for([idx]),
                     )
                 )
         else:
@@ -183,7 +193,7 @@ def build_primary_request_specs(
                     batched_time_periods=batched_time_periods,
                     is_filter_grouped=bool(filter_dims),
                     value_mode=value_mode,
-                    category_detail_metric_codes=category_detail_codes_for(range(len(metric_requests))),
+                    category_views=category_views_for(range(len(metric_requests))),
                 )
             )
 

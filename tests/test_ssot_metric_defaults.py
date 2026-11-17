@@ -20,9 +20,12 @@ class PrettyDistributionBinsTests(unittest.TestCase):
         self.assertTrue(is_angels_awards_metric("metric_AA_DTN_LE60"))
         self.assertFalse(is_angels_awards_metric("ARRIVAL_MODE"))
 
-    def test_enum_option_key_resolves_aa_display_labels(self) -> None:
-        self.assertEqual(get_enum_option_key("AA_DTN_LE60", "yes"), "yes")
+    def test_enum_option_key_reads_data_api_labels(self) -> None:
         self.assertEqual(get_enum_option_key("AA_DTN_LE60", "No"), "no")
+        self.assertEqual(get_enum_option_key("ARRIVAL_MODE", "ems from home/scene"), "ems_from_home_scene")
+        self.assertEqual(get_enum_option_key("ARRIVAL_MODE", "ems from GP"), "ems_from_gp")
+        self.assertEqual(get_enum_option_key("IMAGING_TYPE", "CT CTA perfusion"), "ct_cta_perfusion")
+        self.assertIsNone(get_enum_option_key("IMAGING_TYPE", "ct with cta"))
 
     def test_pretty_bins_choose_clean_divisor_close_to_target(self) -> None:
         bins = resolve_pretty_distribution_bins(31, 89, target_bins=6)

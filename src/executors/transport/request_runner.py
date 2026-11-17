@@ -10,6 +10,7 @@ from src.domain.graphql.request import GraphQLQueryRequest
 from src.domain.graphql.response import Metric
 from src.executors.graphql.client import GraphQLProxyClient, GraphQLProxyError
 from src.executors.mapping.series_mapper import map_metrics_payload_to_series
+from src.executors.planning.request_plan import CategoryView
 from src.util.logging_utils import log_context
 
 logger = logging.getLogger(__name__)
@@ -76,7 +77,7 @@ async def run_graphql_request(
     query_cb: Optional[GraphQLQueryCallback] = None,
     is_filter_grouped: bool = False,
     value_mode: str = "median",
-    category_detail_metric_codes: Optional[List[str]] = None,
+    category_views: Optional[Dict[str, CategoryView]] = None,
 ) -> tuple[List[ChartSeries], Optional[MetricsPayload]]:
     trace_label = trace_id
     request_label = scope_label or " | ".join([part for part in label_parts if part]) or "(none)"
@@ -263,7 +264,7 @@ async def run_graphql_request(
         batched_time_periods=batched_time_periods,
         is_filter_grouped=is_filter_grouped,
         value_mode=value_mode,
-        category_detail_metric_codes=category_detail_metric_codes,
+        category_views=category_views,
     )
 
     skipped_rows = 0

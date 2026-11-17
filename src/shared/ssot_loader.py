@@ -592,6 +592,16 @@ def get_operator_symbol(operator_code: str) -> str:
     return code
 
 
+def get_enum_options(metric_code: str) -> Dict[str, str]:
+    """An Enum metric's SSOT option keys with their first English name, in SSOT order; empty otherwise."""
+    options = cast(Dict[str, Any], (_metric_meta_cached().get((metric_code or "").upper()) or {}).get("enum_options") or {})
+    out: Dict[str, str] = {}
+    for key, entry in options.items():
+        names = cast(Dict[str, Any], entry).get("synonyms") if isinstance(entry, dict) else None
+        out[key] = str(names[0]) if isinstance(names, list) and names else key
+    return out
+
+
 def get_enum_option_label(metric_code: str, key: str) -> Optional[str]:
     """Return preferred label for an enum option of a given metric from SSOT.
 

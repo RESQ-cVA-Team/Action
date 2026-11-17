@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, Optional, cast
 
 from src.domain.dto.charts.types import ChartAxis
 from src.shared.ssot_loader import get_metric_display_name, get_metric_metadata
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 _METRIC_METADATA: Dict[str, Any] = get_metric_metadata()
 
+_NON_KEY_CHARACTERS = re.compile(r"[^a-z0-9]+")
 _AXIS_ACRONYMS = {"NIHSS", "DTN", "IVT", "EVT", "TIA", "LVO", "ICH", "SAH", "CT", "MRI"}
 _NICE_BIN_BASES: tuple[float, ...] = (1.0, 2.0, 2.5, 5.0, 10.0)
 _IMPLICIT_DISTRIBUTION_TARGET_BINS = 20
@@ -46,22 +48,12 @@ def is_angels_awards_metric(metric_code: str) -> bool:
 
 
 def get_enum_option_key(metric_code: str, label: str) -> Optional[str]:
-    """Resolve a displayed enum label to its normalized SSOT option key."""
-    code = (metric_code or "").strip().upper()
-    normalized_label = (label or "").strip().casefold()
-    if not code or not normalized_label:
-        return None
-
-    meta = _mapping_to_dict(_METRIC_METADATA.get(code))
-    options = _mapping_to_dict(meta.get("enum_options"))
-    for option_key, option_any in options.items():
-        if option_key.strip().casefold() == normalized_label:
-            return option_key
-        option = _mapping_to_dict(option_any)
-        synonyms = cast(List[str], option.get("synonyms") or [])
-        if any(value.strip().casefold() == normalized_label for value in synonyms):
-            return option_key
-    return None
+    """The SSOT option key of a data API category label: the label in lower
+    case with each run of other characters as one underscore ("ems from
+    home/scene" is ems_from_home_scene)."""
+    key = _NON_KEY_CHARACTERS.sub("_", (label or "").casefold()).strip("_")
+    meta = _mapping_to_dict(_METRIC_METADATA.get((metric_code or "").strip().upper()))
+    return key if key and key in _mapping_to_dict(meta.get("enum_options")) else None
 
 
 def _format_decimal_label(value: float) -> str:

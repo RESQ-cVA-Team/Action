@@ -20,7 +20,10 @@
         "chart_type": "LINE",
         "metrics": [
           {
-            "metric": "STROKE_TYPE"
+            "metric": "STROKE_TYPE",
+            "categories": [
+              "ischemic"
+            ]
           }
         ],
         "semantics": {
