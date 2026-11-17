@@ -41,9 +41,10 @@ def test_few_shot_categories_are_options_the_example_lists() -> None:
     for path in sorted(_EXAMPLES_DIR.glob("*.json")):
         data = json.loads(path.read_text(encoding="utf-8"))
         listed = metric_options(data["user_utterance"], data["entities_detected"])
-        for chart in data["assistant"].get("charts") or []:
-            for metric in chart.get("metrics") or []:
-                assert set(metric.get("categories") or []) <= set(listed.get(metric["metric"], {})), path.name
+        metrics = [metric for chart in data["assistant"].get("charts") or [] for metric in chart.get("metrics") or []]
+        metrics += data["assistant"].get("values") or []
+        for metric in metrics:
+            assert set(metric.get("categories") or []) <= set(listed.get(metric["metric"], {})), path.name
 
 
 def test_few_shot_measures_follow_the_data_type() -> None:

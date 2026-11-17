@@ -14,21 +14,14 @@ from langchain_core.prompts import ChatPromptTemplate
 from src.planners.langchain.llm_errors import is_llm_service_error
 from src.planners.langchain.llm_factory import create_chat_llm
 from src.planners.langchain.prompt_loader import load_prompt_text
-from src.shared.ssot_loader import get_enum_option_label, get_metric_description, get_metric_name
+from src.planners.langchain.user_terms import language_name, option_names, statistic_name
+from src.shared.ssot_loader import get_metric_description, get_metric_name
 from src.util.llm_usage import record_llm_call
 
 logger = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 20.0
 _MAX_NAMED = 3
-_LANGUAGE_NAMES = {"en": "English", "cs": "Czech", "el": "Greek"}
-_STATISTICS = {
-    "MEDIAN": {"en": "median", "cs": "medián", "el": "διάμεση τιμή"},
-    "MEAN": {"en": "mean", "cs": "průměr", "el": "μέση τιμή"},
-    "COUNT": {"en": "number of cases", "cs": "počet případů", "el": "αριθμός περιστατικών"},
-    "RATE": {"en": "share of cases (%)", "cs": "podíl případů (%)", "el": "ποσοστό περιστατικών (%)"},
-    "DISTRIBUTION": {"en": "number of cases per value", "cs": "počet případů podle hodnoty", "el": "αριθμός περιστατικών ανά τιμή"},
-}
 
 _BANDS_NOTE = {
     "en": "coloured bands mark the Angels Awards gold, platinum and diamond thresholds",
@@ -80,19 +73,14 @@ def _metric_facts(metric: Any, language: str, with_meaning: bool) -> Dict[str, A
     if with_meaning:
         facts["meaning"] = get_metric_description(metric.metric, language)
     if len(metric.categories) == 1:
-        facts["option_counted"] = _option_names(metric, language)[0]
+        facts["option_counted"] = option_names(metric, language)[0]
     return facts
-
-
-def _option_names(metric: Any, language: str) -> List[str]:
-    return [get_enum_option_label(metric.metric, key, language) or key for key in metric.categories]
 
 
 def chart_facts(chart: Any, language: str) -> Dict[str, Any]:
     """How a finished chart is built, without any of its values."""
     metadata = chart.metadata
     measure = (metadata.statistic or "").upper()
-    statistic = _STATISTICS.get(measure) or {}
     # A count or share is of cases; the metric's own unit would only mislead.
     with_meaning = measure not in ("COUNT", "RATE", "DISTRIBUTION")
     facts: Dict[str, Any] = {
@@ -101,10 +89,10 @@ def chart_facts(chart: Any, language: str) -> Dict[str, Any]:
         "x_axis": metadata.x_axis.label if metadata.x_axis else None,
         "y_axis": metadata.y_axis.label if metadata.y_axis else None,
         "metrics": [_metric_facts(metric, language, with_meaning) for metric in metadata.metrics],
-        "statistic": statistic.get(language) or statistic.get("en"),
+        "statistic": statistic_name(measure, language),
     }
     notes = [
-        (_COUNTED_TOGETHER_NOTE.get(language) or _COUNTED_TOGETHER_NOTE["en"]).format(options=", ".join(_option_names(metric, language)))
+        (_COUNTED_TOGETHER_NOTE.get(language) or _COUNTED_TOGETHER_NOTE["en"]).format(options=", ".join(option_names(metric, language)))
         for metric in metadata.metrics
         if len(metric.categories) > 1
     ]
@@ -121,7 +109,7 @@ def chart_facts(chart: Any, language: str) -> Dict[str, Any]:
 
 
 def _describe_now(chart: Any, language: str) -> Optional[str]:
-    inputs = {"language": _LANGUAGE_NAMES.get(language, "English"), "facts": json.dumps(chart_facts(chart, language), ensure_ascii=False)}
+    inputs = {"language": language_name(language), "facts": json.dumps(chart_facts(chart, language), ensure_ascii=False)}
     started_at = time.monotonic()
     try:
         response = (_PROMPT | _get_llm()).invoke(inputs)

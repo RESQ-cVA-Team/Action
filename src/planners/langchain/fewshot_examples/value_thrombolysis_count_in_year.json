@@ -1,0 +1,25 @@
+{
+  "user_utterance": "How many patients received thrombolysis in 2025?",
+  "entities_detected": {
+    "metric": [
+      "THROMBOLYSIS"
+    ],
+    "date": [
+      "2025"
+    ]
+  },
+  "assistant": {
+    "values": [
+      {
+        "metric": "THROMBOLYSIS",
+        "measure": {
+          "type": "COUNT"
+        },
+        "period": {
+          "start_date": "2025-01-01",
+          "end_date": "2025-12-31"
+        }
+      }
+    ]
+  }
+}

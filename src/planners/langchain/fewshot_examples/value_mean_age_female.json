@@ -1,0 +1,25 @@
+{
+  "user_utterance": "What is the average age of female patients?",
+  "entities_detected": {
+    "metric": [
+      "AGE"
+    ],
+    "sex": [
+      "FEMALE"
+    ]
+  },
+  "assistant": {
+    "values": [
+      {
+        "metric": "AGE",
+        "measure": {
+          "type": "MEAN"
+        },
+        "filters": {
+          "type": "SexFilter",
+          "value": "FEMALE"
+        }
+      }
+    ]
+  }
+}

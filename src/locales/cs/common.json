@@ -63,7 +63,6 @@
     "summary": {
       "complete_stat_one": "Tady je vaše statistické srovnání.",
       "complete_stat_many": "Tady máte {stats_count} statistických srovnání.",
-      "complete_fallback": "Hotovo!",
       "stats_skipped_one": "Jeden statistický test byl přeskočen.",
       "stats_skipped_many": "Bylo přeskočeno {stats_skipped} statistických testů.",
       "stats_errors_one": "Jeden statistický test se nepodařilo dokončit.",

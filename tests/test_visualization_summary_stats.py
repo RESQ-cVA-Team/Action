@@ -110,9 +110,9 @@ class VisualizationSummaryStatsTests(unittest.TestCase):
         self.assertEqual(formatter({"chart_count": 1, "stats_count": 0}, language="en"), "")
         self.assertEqual(formatter({"chart_count": 2}, language="en"), "")
 
-    def test_nothing_at_all_says_done(self) -> None:
+    def test_values_without_tests_get_no_closing_line(self) -> None:
         formatter = _load_format_execution_summary()
-        self.assertEqual(formatter({}, language="en"), "Done!")
+        self.assertEqual(formatter({"chart_count": 0, "stats_count": 0}, language="en"), "")
 
     def test_a_chart_with_a_failed_test_reports_the_caveat(self) -> None:
         formatter = _load_format_execution_summary()

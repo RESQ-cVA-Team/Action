@@ -1,0 +1,42 @@
+{
+  "user_utterance": "Previous chart plan (carry over everything except what the user explicitly changes):\n{\n  \"values\": [\n    {\n      \"metric\": \"DTN\",\n      \"measure\": {\n        \"type\": \"MEDIAN\"\n      },\n      \"period\": {\n        \"start_date\": \"2025-01-01\",\n        \"end_date\": \"2025-12-31\"\n      },\n      \"filters\": null\n    }\n  ]\n}\n\nUser's newest instruction:\nShow it per quarter",
+  "entities_detected": {
+    "group_by": [
+      "QUARTER"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "LINE",
+        "metrics": [
+          {
+            "metric": "DTN"
+          }
+        ],
+        "semantics": {
+          "intent": "TREND",
+          "measure": {
+            "type": "MEDIAN"
+          },
+          "time": {
+            "grain": "QUARTER",
+            "window": {
+              "start_date": "2025-01-01",
+              "end_date": "2025-12-31"
+            }
+          },
+          "x_axis": {
+            "role": "TIME",
+            "grain": "QUARTER"
+          },
+          "y_axis": {
+            "role": "AGGREGATE_VALUE",
+            "metric": "DTN",
+            "aggregation": "MEDIAN"
+          }
+        }
+      }
+    ]
+  }
+}

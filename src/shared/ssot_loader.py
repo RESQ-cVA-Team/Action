@@ -556,6 +556,13 @@ def get_metric_name(metric_code: str, language: str) -> str:
     return code
 
 
+def get_metric_unit(metric_code: str) -> Optional[str]:
+    """A Numeric metric's SSOT unit (minutes, years, score, ...)."""
+    numeric = (_metric_meta_cached().get((metric_code or "").upper()) or {}).get("numeric") or {}
+    unit = _ci_get(numeric, "unit")
+    return unit if isinstance(unit, str) and unit else None
+
+
 def get_metric_description(metric_code: str, language: str) -> Optional[str]:
     """The metric's SSOT description in `language`, else in English."""
     descriptions = (_metric_meta_cached().get((metric_code or "").upper()) or {}).get("descriptions") or {}

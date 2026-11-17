@@ -1,0 +1,33 @@
+{
+  "user_utterance": "What share of my patients had imaging type CT over the last year?",
+  "entities_detected": {
+    "hospital_scope_reference": [
+      "MY"
+    ],
+    "metric": [
+      "IMAGING_TYPE"
+    ],
+    "date": [
+      "last year"
+    ]
+  },
+  "assistant": {
+    "values": [
+      {
+        "metric": "IMAGING_TYPE",
+        "categories": [
+          "ct",
+          "ct_cta",
+          "ct_cta_perfusion"
+        ],
+        "measure": {
+          "type": "RATE"
+        },
+        "period": {
+          "last_n": 1,
+          "unit": "YEAR"
+        }
+      }
+    ]
+  }
+}

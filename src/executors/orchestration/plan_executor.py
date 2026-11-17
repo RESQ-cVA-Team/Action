@@ -8,10 +8,12 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, cast
 from uuid import uuid4
 
 from src.domain.dto.analytics import StatisticalTestResult
-from src.domain.dto.charts.types import ChartSeries
+from src.domain.dto.charts.types import ChartMetric, ChartSeries
 from src.domain.dto.execution_summary import ExecutionBatchSummary, ExecutionSummary
 from src.domain.dto.response import VisualizationResponse
+from src.domain.dto.value import ValueResult
 from src.domain.graphql.request import BooleanFilter as GQLBooleanFilter
+from src.domain.graphql.request import DataOrigin, MetricRequest
 from src.domain.graphql.request import DateFilter as GQLDateFilter
 from src.domain.graphql.request import IntegerFilter as GQLIntegerFilter
 from src.domain.graphql.request import LogicalFilter as GQLLogicalFilter
@@ -19,9 +21,9 @@ from src.domain.graphql.request import SexFilter as GQLSexFilter
 from src.domain.graphql.request import StrokeFilter as GQLStrokeFilter
 from src.domain.graphql.request import TimePeriod, default_time_bounds
 from src.domain.graphql.response import Metric
-from src.domain.langchain.schema import AnalysisPlan, StatisticalTestSpec
+from src.domain.langchain.schema import AnalysisPlan, ChartSpec, StatisticalTestSpec, ValueSpec
 from src.executors.graphql.client import GraphQLProxyClient
-from src.executors.mapping.chart_builder import build_chart_dto, trim_numeric_chart_zero_tails
+from src.executors.mapping.chart_builder import build_chart_dto, format_filter_text, trim_numeric_chart_zero_tails
 from src.executors.mapping.filter_mapper import to_gql_filter
 from src.executors.mapping.series_mapper import merge_series_by_name
 from src.executors.mapping.summary_builder import (
@@ -35,6 +37,7 @@ from src.executors.planning.origin_scope_resolver import (
     resolve_plan_metric_origins,
 )
 from src.executors.planning.query_compiler import (
+    CompiledBatch,
     Dimension,
     compile_chart_grouping,
     estimate_query_count_for_plan,
@@ -44,6 +47,7 @@ from src.executors.planning.request_plan import (
     RequestSpec,
     build_primary_request_specs,
 )
+from src.executors.planning.value_plan import value_chart, value_period
 from src.executors.transport.request_runner import run_graphql_request
 from src.shared.ssot_loader import (
     get_statistics_metric_enum_map,
@@ -1132,6 +1136,66 @@ def _chart_value_mode(chart: Any) -> str:
     return {"RATE": "percent", "MEAN": "mean", "COUNT": "count"}.get(measure_type, "median")
 
 
+def _primary_specs(
+    plan_chart: ChartSpec,
+    batch: CompiledBatch,
+    metric_requests: List[MetricRequest],
+    metric_data_origins: List[Optional[DataOrigin]],
+    metric_scope_labels: List[Optional[str]],
+) -> List[RequestSpec]:
+    return build_primary_request_specs(
+        metric_requests=metric_requests,
+        metric_data_origins=metric_data_origins,
+        chart_filter=to_gql_filter(coalesce(plan_chart.filters, None)),
+        filter_dims=batch.filter_dims,
+        combos_list=batch.combos_list,
+        batched_time_enabled=batch.batched_time_enabled,
+        batched_time_periods=batch.batched_time_periods,
+        include_metric_alias=len(plan_chart.metrics) > 1,
+        group_by_field=batch.server_groupby,
+        metric_scope_labels=metric_scope_labels,
+        include_general_stats=_INCLUDE_GENERAL_STATS,
+        value_mode=_chart_value_mode(plan_chart),
+        category_views=[CategoryView(include_no=metric.include_category_detail, combined=tuple(metric.categories or ())) for metric in plan_chart.metrics],
+    )
+
+
+async def _execute_value(value: ValueSpec, context: ExecutionContext, trace_id: str) -> ValueResult:
+    """A value is fetched as a chart over its one period; its number is that
+    period's single point and its patients the metric's cohort there."""
+    chart = value_chart(value)
+    metric_requests, _, metric_data_origins, metric_scope_labels = build_metric_requests(plan_chart=chart)
+    (batch,) = compile_chart_grouping(chart).batches
+    specs = _primary_specs(chart, batch, metric_requests, metric_data_origins, metric_scope_labels)
+    request_failures: List[str] = []
+    results = await _execute_specs_concurrent(
+        specs=specs,
+        request_failures=request_failures,
+        request_warnings=[],
+        context=context,
+        trace_id=trace_id,
+        total_requests=len(specs),
+    )
+    points = [point for result in results for series in result.series for point in series.data]
+    if not points:
+        raise _to_execution_error(request_failures or ["no_data"], trace_id=trace_id)
+    if len(points) != 1:
+        raise ValueError(f"A value's request returned {len(points)} points instead of one.")
+    cohorts = [kpi.kpi1.cohort_size for result in results for metric in (result.metrics_payload or {}).values() for kpi in metric.kpi_group if kpi.kpi1 is not None]
+    start, end = value_period(value)
+    filters = format_filter_text(value.filters, include_date=False)
+    return ValueResult(
+        metric=ChartMetric(metric=value.metric, categories=list(value.categories or [])),
+        statistic=value.measure.type,
+        value=points[0].y,
+        patients=cohorts[0] if cohorts else None,
+        start_date=start,
+        end_date=end,
+        scope=specs[0].scope_label,
+        filters=filters if filters and filters != "all patients" else None,
+    )
+
+
 async def _execute_request_spec(
     spec: RequestSpec,
     request_failures: List[str],
@@ -1356,31 +1420,7 @@ async def execute_plan_async(
         for batch in compiled_grouping.batches:
             request_failures: List[str] = []
             request_warnings: List[str] = []
-            filter_dims = batch.filter_dims
-            batched_time_enabled = batch.batched_time_enabled
-            batched_time_periods = batch.batched_time_periods
-            combos_list = batch.combos_list
-
-            gb_field = batch.server_groupby
-            include_metric_alias = len(planChart.metrics) > 1
-
-            chart_filter = to_gql_filter(coalesce(planChart.filters, None))
-
-            primary_specs = build_primary_request_specs(
-                metric_requests=metric_requests,
-                metric_data_origins=metric_data_origins,
-                chart_filter=chart_filter,
-                filter_dims=filter_dims,
-                combos_list=combos_list,
-                batched_time_enabled=batched_time_enabled,
-                batched_time_periods=batched_time_periods,
-                include_metric_alias=include_metric_alias,
-                group_by_field=gb_field,
-                metric_scope_labels=metric_scope_labels,
-                include_general_stats=_INCLUDE_GENERAL_STATS,
-                value_mode=_chart_value_mode(planChart),
-                category_views=[CategoryView(include_no=metric.include_category_detail, combined=tuple(metric.categories or ())) for metric in planChart.metrics],
-            )
+            primary_specs = _primary_specs(planChart, batch, metric_requests, metric_data_origins, metric_scope_labels)
             total_requests = max(1, len(primary_specs))
             actual_queries += total_requests
 
@@ -1492,6 +1532,10 @@ async def execute_plan_async(
         # them in the summary count so stats-only plans are not reported as zero.
         actual_queries += len(plan.statistical_tests)
         response.stats.extend(_dedupe_statistical_results(_execute_statistical_tests(plan=plan, user_sub=user_sub, job_id=job_id, trace_id=trace_id_resolved)))
+
+    for value in plan.values or []:
+        response.values.append(await _execute_value(value, execution_context, trace_id_resolved))
+        actual_queries += 1
 
     stats_count = len(response.stats)
     stats_skipped = sum(1 for result in response.stats if result.status == "skipped")
