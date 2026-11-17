@@ -302,7 +302,7 @@ class PlanExecutorStatisticalTestTests(unittest.TestCase):
         self.assertEqual(err.exception.reason, "unsupported_statistical_test_type")
         self.assertEqual(err.exception.code, "EXEC_STATS_UNSUPPORTED_TEST_TYPE")
 
-    def test_execute_plan_async_drops_empty_scope_and_renders_the_rest(self) -> None:
+    def _run_with_scope_results(self, results):
         chart = AnalysisPlan(
             charts=[
                 ChartSpec(
@@ -321,44 +321,8 @@ class PlanExecutorStatisticalTestTests(unittest.TestCase):
             ]
         )
 
-        first = plan_executor.RequestExecutionResult(
-            spec=plan_executor.RequestSpec(
-                req=GraphQLQueryRequest(
-                    metrics=[],
-                    timePeriod=TimePeriod(startDate="2023-01-01", endDate="2023-12-31"),
-                    dataOrigin=DataOrigin(providerId=[1]),
-                ),
-                label_parts=["A"],
-                include_metric_alias=False,
-                group_by_field=None,
-                add_time_period_labels=False,
-                scope_label="Scope A",
-            ),
-            series=[
-                ChartSeries(
-                    name="DTN",
-                    data=[ChartPoint(x="2023-01", y=1.0)],
-                )
-            ],
-        )
-        second = plan_executor.RequestExecutionResult(
-            spec=plan_executor.RequestSpec(
-                req=GraphQLQueryRequest(
-                    metrics=[],
-                    timePeriod=TimePeriod(startDate="2023-01-01", endDate="2023-12-31"),
-                    dataOrigin=DataOrigin(providerId=[2]),
-                ),
-                label_parts=["B"],
-                include_metric_alias=False,
-                group_by_field=None,
-                add_time_period_labels=False,
-                scope_label="Scope B",
-            ),
-            series=[],
-        )
-
         async def _fake_execute_specs_concurrent(**kwargs):
-            return [first, second]
+            return results
 
         with (
             patch.object(plan_executor, "resolve_plan_metric_origins", return_value=chart),
@@ -386,7 +350,7 @@ class PlanExecutorStatisticalTestTests(unittest.TestCase):
             patch.object(
                 plan_executor,
                 "build_primary_request_specs",
-                return_value=[first.spec, second.spec],
+                return_value=[result.spec for result in results],
             ),
             patch.object(
                 plan_executor,
@@ -396,16 +360,40 @@ class PlanExecutorStatisticalTestTests(unittest.TestCase):
             patch.object(
                 plan_executor,
                 "estimate_query_count_for_plan",
-                return_value=2,
+                return_value=len(results),
             ),
         ):
-            response = asyncio.run(
+            return asyncio.run(
                 plan_executor.execute_plan_async(
                     plan=chart,
                     user_sub="user-1",
                     trace_id="trace-1",
                 )
             )
+
+    @staticmethod
+    def _scope_result(provider_id, label, scope_label, series):
+        return plan_executor.RequestExecutionResult(
+            spec=plan_executor.RequestSpec(
+                req=GraphQLQueryRequest(
+                    metrics=[],
+                    timePeriod=TimePeriod(startDate="2023-01-01", endDate="2023-12-31"),
+                    dataOrigin=DataOrigin(providerId=[provider_id]),
+                ),
+                label_parts=[label],
+                include_metric_alias=False,
+                group_by_field=None,
+                add_time_period_labels=False,
+                scope_label=scope_label,
+            ),
+            series=series,
+        )
+
+    def test_execute_plan_async_drops_empty_scope_and_renders_the_rest(self) -> None:
+        first = self._scope_result(1, "A", "Scope A", [ChartSeries(name="DTN", data=[ChartPoint(x="2023-01", y=1.0)])])
+        second = self._scope_result(2, "B", "Scope B", [])
+
+        response = self._run_with_scope_results([first, second])
 
         self.assertEqual(len(response.charts), 1)
         self.assertEqual(len(response.charts[0].series), 1)
@@ -414,6 +402,17 @@ class PlanExecutorStatisticalTestTests(unittest.TestCase):
             any("Scope B" in warning for warning in response.warnings),
             response.warnings,
         )
+
+    def test_an_empty_category_of_a_scope_with_data_is_not_reported_as_a_missing_scope(self) -> None:
+        # Live: "DTN split by sex" plotted man and woman for My Hospital, yet noted
+        # "No data returned for: My Hospital" because one category came back empty.
+        man = self._scope_result(1, "man", "My Hospital", [ChartSeries(name="man", data=[ChartPoint(x="value", y=68.0)])])
+        other = self._scope_result(1, "other", "My Hospital", [])
+
+        response = self._run_with_scope_results([man, other])
+
+        self.assertEqual([series.name for series in response.charts[0].series], ["man"])
+        self.assertFalse(any("No data returned" in warning for warning in response.warnings), response.warnings)
 
     def test_execute_plan_async_fails_when_every_scope_returns_no_data(self) -> None:
         chart = AnalysisPlan(
