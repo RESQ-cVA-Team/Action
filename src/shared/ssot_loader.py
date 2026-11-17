@@ -58,15 +58,6 @@ def _localized_synonyms(value: Any) -> Dict[str, List[str]]:
     return out
 
 
-def _option_names(value: Any) -> List[str]:
-    """An enum option's English names: SSOT gives them per language, an older form as a list."""
-    if isinstance(value, dict):
-        value = cast(Dict[Any, Any], value).get("en")
-    if isinstance(value, list):
-        return [item.strip() for item in cast(List[Any], value) if isinstance(item, str) and item.strip()]
-    return []
-
-
 def _coerce_description_map(value: Any) -> Dict[str, str]:
     """Return descriptions as language -> text from localized SSOT blocks."""
 
@@ -191,9 +182,10 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
     - Always returns common top-level keys when present: synonyms, data_type, properties.
     - Supports type-specific nested sections for cleanliness in SSOT YAML:
         • For Numeric metrics: a nested "numeric" block may contain unit, range_min, range_max, distribution_default_buckets.
-        • For Enum metrics: a nested "enum" block may contain labels.
-    - Backwards compatibility: numeric/enum fields are also promoted to top-level keys
-      (e.g., unit, range_min, labels) for existing consumers.
+    - Enum metrics get enum_options (option key -> English names), properties
+      (the option keys) and labels (each option's first English name), in SSOT order.
+    - Backwards compatibility: numeric fields are also promoted to top-level keys
+      (e.g., unit, range_min) for existing consumers.
     """
     items = _load_yaml("MetricType.yml")
     out: Dict[str, Dict[str, Any]] = {}
@@ -247,113 +239,19 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
             if k in item and k not in meta:
                 meta[k] = item[k]
 
-        # Enum-specific (nested or flat)
-        enum_block = item.get("enum")
-        if isinstance(enum_block, dict):
-            enum_block = cast(Dict[str, Any], enum_block)
-            meta["enum"] = enum_block
-            # Promote labels when provided
-            if "labels" in enum_block and "labels" not in meta:
-                meta["labels"] = enum_block["labels"]
-            # Promote id_field to properties for single-ID categoricals
-            id_field = enum_block.get("id_field")
-            if isinstance(id_field, str) and id_field and "properties" not in meta:
-                meta["properties"] = [id_field]
-            # Promote flags (multi-flag categoricals) to properties and labels
-            flags_obj = enum_block.get("flags")
-            if isinstance(flags_obj, list) and flags_obj and "properties" not in meta:
-                flags = cast(List[Any], flags_obj)
-                flag_keys: List[str] = []
-                flag_labels: List[str] = []
-                for f in flags:
-                    if isinstance(f, dict):
-                        f = cast(Dict[str, Any], f)
-                        key = f.get("key")
-                        label = f.get("label")
-                        if isinstance(key, str) and key:
-                            flag_keys.append(key)
-                            flag_labels.append(label if isinstance(label, str) and label else key)
-                    elif isinstance(f, str):
-                        flag_keys.append(f)
-                        flag_labels.append(f)
-                if flag_keys:
-                    meta["properties"] = flag_keys
-                    # Only set labels from flags if not already provided
-                    if "labels" not in meta:
-                        meta["labels"] = flag_labels
-            # New unified options format: enum.options with per-option synonyms.
-            # Supports two shapes:
-            #  - Single-choice (id_field present): properties = [id_field], labels derived from option.synonyms[0]
-            #  - Multi-flag (no id_field): properties = [option.key ...], labels derived from option.synonyms[0]
-            options_obj = enum_block.get("options")
-            if isinstance(options_obj, list) and options_obj:
-                options = cast(List[Any], options_obj)
-                option_map: Dict[str, Any] = {}
-                derived_labels: List[str] = []
-                option_keys: List[str] = []
-                for opt in options:
-                    if not isinstance(opt, dict):
-                        continue
-                    opt = cast(Dict[str, Any], opt)
-                    key = opt.get("key")
-                    syns = _option_names(opt.get("synonyms"))
-                    if not (isinstance(key, str) and key):
-                        continue
-                    if not syns:
-                        # Fallback: fabricate a human label from key
-                        human_label = key.replace("_", " ").title()
-                        syns = [human_label]
-                        opt["synonyms"] = syns
-                    option_map[key] = {"synonyms": syns, **({"value": opt["value"]} if "value" in opt else {})}
-                    option_keys.append(key)
-                    derived_labels.append(syns[0])
-                # Attach raw options map for downstream richer usage
-                enum_block["options"] = options  # preserve original list
-                meta["enum_options"] = option_map
-                # Single-choice vs multi-flag determination
-                if enum_block.get("id_field"):
-                    # Single-choice: keep properties as id_field (do not overwrite if already set)
-                    if "labels" not in meta:
-                        meta["labels"] = derived_labels
-                else:
-                    # Multi-flag: use option keys as properties if not already set
-                    if "properties" not in meta:
-                        meta["properties"] = option_keys
-                    if "labels" not in meta:
-                        meta["labels"] = derived_labels
-        # Simplified Enum list form (uppercase key) for multi-flag-like enums
-        enum_list = item.get("Enum")
-        if isinstance(enum_list, list) and enum_list:
-            entries = cast(List[Any], enum_list)
-            option_map: Dict[str, Any] = {}
-            option_keys: List[str] = []
-            labels: List[str] = []
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-                entry = cast(Dict[str, Any], entry)
-                key = entry.get("key")
-                syns = _option_names(entry.get("synonyms"))
-                if not (isinstance(key, str) and key):
-                    continue
-                if not syns:
-                    # fabricate human label from key
-                    fabricated = key.replace("_", " ").title()
-                    syns = [fabricated]
-                    entry["synonyms"] = syns
-                option_map[key] = {"synonyms": syns, **({"value": entry["value"]} if "value" in entry else {})}
-                option_keys.append(key)
-                labels.append(syns[0])
-            if option_keys:
-                # Do not overwrite properties/labels if already derived from other enum forms
-                if "properties" not in meta:
-                    meta["properties"] = option_keys
-                if "labels" not in meta:
-                    meta["labels"] = labels
-                meta["enum_options"] = option_map
-        # Legacy flat labels
-        if "labels" in item and "labels" not in meta:
-            meta["labels"] = item["labels"]
+        enum_options: Dict[str, Any] = {}
+        for entry in cast(List[Any], item.get("Enum") or []):
+            key = cast(Dict[str, Any], entry).get("key") if isinstance(entry, dict) else None
+            if not (isinstance(key, str) and key):
+                continue
+            english = _localized_synonyms(cast(Dict[str, Any], entry).get("synonyms")).get("en")
+            if not english:
+                raise ValueError(f"SSOT option {canonical}.{key} has no English name.")
+            enum_options[key] = {"synonyms": english}
+        if enum_options:
+            meta["enum_options"] = enum_options
+            meta["properties"] = list(enum_options)
+            meta["labels"] = [option["synonyms"][0] for option in enum_options.values()]
 
         # If properties still missing, leave absent to avoid guessing wrong field names.
 
