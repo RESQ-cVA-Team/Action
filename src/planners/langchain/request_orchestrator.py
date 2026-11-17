@@ -25,6 +25,7 @@ from src.domain.langchain.schema import (
     OriginScopeSpec,
     SplitSpec,
     StatisticalTestSpec,
+    TimeSemanticsSpec,
 )
 from src.planners.langchain.llm_errors import LLM_UNAVAILABLE, is_llm_service_error
 from src.planners.langchain.llm_factory import create_chat_llm
@@ -1096,6 +1097,29 @@ def _drop_unrequested_explicit_periods(plan: AnalysisPlan, question: str, entiti
     if not plan_changed:
         return plan
     return plan.model_copy(update={"charts": charts})
+
+
+def _default_trend_grain(plan: AnalysisPlan) -> AnalysisPlan:
+    """A TREND chart is a series over time: without a grain or named periods it
+    is plotted per quarter, over the default range for that grain."""
+    for chart in plan.charts or []:
+        semantics = chart.semantics
+        if semantics is None or semantics.intent != "TREND":
+            continue
+        time = semantics.time
+        if time is None:
+            semantics.time = TimeSemanticsSpec(grain="QUARTER")
+        elif not time.grain and not time.periods:
+            time.grain = "QUARTER"
+    return plan
+
+
+def _normalize_generated_plan(plan: AnalysisPlan, question: str, entities: Dict[str, Any]) -> AnalysisPlan:
+    plan = _normalize_plan_semantic_splits(plan)
+    plan = _split_mixed_unit_charts(plan)
+    plan = _drop_hospital_scopes_from_metric_words(plan, entities)
+    plan = _drop_unrequested_explicit_periods(plan, question, entities)
+    return _default_trend_grain(plan)
 
 
 def _normalize_plan_semantic_splits(plan: AnalysisPlan) -> AnalysisPlan:
@@ -2192,10 +2216,7 @@ def orchestrate_visualization_request(
                 trace_id=trace_id,
                 progress_cb=progress_cb,
             )
-            plan = _normalize_plan_semantic_splits(plan)
-            plan = _split_mixed_unit_charts(plan)
-            plan = _drop_hospital_scopes_from_metric_words(plan, normalized_entities)
-            plan = _drop_unrequested_explicit_periods(plan, question, normalized_entities)
+            plan = _normalize_generated_plan(plan, question, normalized_entities)
             logger.info("Plan generation completed successfully", extra={"plan_type": type(plan).__name__})
 
             logger.info("Starting validation of statistical plan readiness")
@@ -2248,10 +2269,7 @@ def orchestrate_visualization_request(
                         trace_id=trace_id,
                         progress_cb=progress_cb,
                     )
-                    plan = _normalize_plan_semantic_splits(plan)
-                    plan = _split_mixed_unit_charts(plan)
-                    plan = _drop_hospital_scopes_from_metric_words(plan, entities)
-                    plan = _drop_unrequested_explicit_periods(plan, question, entities)
+                    plan = _normalize_generated_plan(plan, question, entities)
                     return VisualizationRequestOutcome(
                         decision="proceed",
                         reason="orchestrator_fallback_to_plan",
