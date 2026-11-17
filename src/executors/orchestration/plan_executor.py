@@ -1128,7 +1128,7 @@ def _chart_value_mode(chart: Any) -> str:
     semantics = getattr(chart, "semantics", None)
     measure = getattr(semantics, "measure", None) if semantics is not None else None
     measure_type = str(getattr(measure, "type", "") or "").upper()
-    return {"RATE": "percent", "MEAN": "mean"}.get(measure_type, "count")
+    return {"RATE": "percent", "MEAN": "mean", "COUNT": "count"}.get(measure_type, "median")
 
 
 async def _execute_request_spec(

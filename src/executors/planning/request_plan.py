@@ -31,9 +31,9 @@ class RequestSpec:
     # native groupBy for arbitrary buckets), but the series mapper still needs
     # to know each request represents one category, not an ungrouped whole.
     is_filter_grouped: bool = False
-    # "count" plots case counts, or the median of a numeric metric; "percent" plots
-    # the share of cases (measure RATE); "mean" plots the mean (measure MEAN).
-    value_mode: str = "count"
+    # "count" plots case counts (measure COUNT); "percent" the share of cases (RATE);
+    # "mean" the mean (MEAN); "median" the median of a numeric metric, else case counts.
+    value_mode: str = "median"
     category_detail_metric_codes: List[str] = field(default_factory=lambda: cast(List[str], []))
 
 
@@ -102,7 +102,7 @@ def build_primary_request_specs(
     metric_scope_labels: Optional[Sequence[Optional[str]]] = None,
     data_origin: Optional[DataOrigin] = None,
     include_general_stats: bool = False,
-    value_mode: str = "count",
+    value_mode: str = "median",
     category_detail_metric_codes: Optional[Sequence[str]] = None,
     category_detail_metric_flags: Optional[Sequence[bool]] = None,
 ) -> List[RequestSpec]:

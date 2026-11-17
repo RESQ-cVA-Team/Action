@@ -161,10 +161,17 @@ def _percent_values(percents: Optional[List[Any]], counts: List[Any]) -> List[fl
     return [float(c) / total * 100.0 if isinstance(c, (int, float)) else 0.0 for c in counts]
 
 
+def _has_empty_cohort(kpi1: Any) -> bool:
+    cohort = getattr(kpi1, "cohort_size", None)
+    return isinstance(cohort, (int, float)) and cohort == 0
+
+
 def _first_percent(kpi1: Any) -> Optional[float]:
     """Share of cases for one grouped row: the backend's first percent (the
     first category, e.g. the yes of an Angels Awards metric), else the first
-    count over the cohort size."""
+    count over the cohort size. An empty cohort has no share."""
+    if _has_empty_cohort(kpi1):
+        return None
     percents = getattr(kpi1, "percents", None)
     if isinstance(percents, list):
         for value in percents:
@@ -211,6 +218,8 @@ def _category_value(
     count = float(case_counts[index])
     if value_mode != "percent":
         return count
+    if _has_empty_cohort(kpi1):
+        return None
 
     percents = getattr(kpi1, "percents", None)
     if not derived_complement and isinstance(percents, list) and index < len(percents):
@@ -224,6 +233,30 @@ def _category_value(
     return _percent_values(None, case_counts)[index]
 
 
+def _first_case_count(kpi1: Any) -> Optional[float]:
+    counts = getattr(kpi1, "case_count", None) or []
+    if not counts:
+        return None
+    try:
+        return float(counts[0])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Grouped KPI case_count must provide a numeric first value") from exc
+
+
+def _numeric_row_value(kpi1: Any, value_mode: str) -> Optional[float]:
+    """One numeric row's y-value: the case count for "count", the share of
+    cases for "percent", else the mean or median. The statistics never fall
+    back to the case count, so a period without cases has no value."""
+    if value_mode == "count":
+        return _first_case_count(kpi1)
+    if value_mode == "percent":
+        percent = _first_percent(kpi1)
+        if percent is not None:
+            return percent
+    statistics = (kpi1.mean, kpi1.median) if value_mode == "mean" else (kpi1.median, kpi1.mean)
+    return next((float(s) for s in statistics if isinstance(s, (int, float))), None)
+
+
 def map_metrics_payload_to_series(
     metrics_payload: Dict[str, Any],
     label_parts: List[str],
@@ -233,7 +266,7 @@ def map_metrics_payload_to_series(
     scope_label: Optional[str] = None,
     batched_time_periods: Optional[List[Any]] = None,
     is_filter_grouped: bool = False,
-    value_mode: str = "count",
+    value_mode: str = "median",
     category_detail_metric_codes: Optional[List[str]] = None,
 ) -> List[ChartSeries]:
     series: List[ChartSeries] = []
@@ -305,7 +338,7 @@ def map_metrics_payload_to_series(
                             value_mode,
                             derived_complement,
                         )
-                        if y_value is None and not (add_time_period_labels and tp_start):
+                        if y_value is None and not _has_empty_cohort(kpi.kpi1) and not (add_time_period_labels and tp_start):
                             raise ValueError("Grouped Enum KPI row is missing the requested category value.")
 
                         name_parts: List[str] = []
@@ -328,19 +361,11 @@ def map_metrics_payload_to_series(
                         )
                     continue
 
-                y_value = _first_percent(kpi.kpi1) if value_mode == "percent" else None
-                if y_value is None:
-                    statistics = (kpi.kpi1.mean, kpi.kpi1.median) if value_mode == "mean" else (kpi.kpi1.median, kpi.kpi1.mean)
-                    y_value = next((float(s) for s in statistics if isinstance(s, (int, float))), None)
-                if y_value is None and kpi.kpi1.case_count:
-                    try:
-                        y_value = float(kpi.kpi1.case_count[0])
-                    except (TypeError, ValueError, IndexError) as exc:
-                        raise ValueError("Grouped KPI case_count must provide a numeric first value") from exc
+                y_value = _numeric_row_value(kpi.kpi1, value_mode)
 
-                # Preserve explicit time buckets as missing points (y=None)
-                # so frontend can render gaps instead of implied zeros.
-                if y_value is None and not (add_time_period_labels and tp_start):
+                # A row without cases has no mean or median: a gap, not a zero.
+                # Explicit time buckets are kept as missing points too.
+                if y_value is None and _first_case_count(kpi.kpi1) != 0 and not (add_time_period_labels and tp_start):
                     raise ValueError("Grouped KPI row is missing numeric y-value (median/mean/case_count[0]).")
 
                 name_parts: List[str] = []
