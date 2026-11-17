@@ -11,7 +11,7 @@ from src.domain.dto.charts.histogram import Histogram, HistogramBin
 from src.domain.dto.charts.pie import PieChart, PieSlice
 from src.domain.dto.charts.radar import RadarChart
 from src.domain.dto.charts.scatter import ScatterPlot
-from src.domain.dto.charts.types import ChartAxis, ChartMetadata, ChartPoint, ChartSeries, ChartType
+from src.domain.dto.charts.types import ChartAxis, ChartMetadata, ChartMetric, ChartPoint, ChartSeries, ChartType
 from src.domain.dto.charts.waterfall import WaterfallChart, WaterfallStep
 from src.domain.langchain import schema as S
 from src.domain.langchain.schema import (
@@ -180,6 +180,15 @@ def _metric_codes(plan_chart: S.ChartSpec) -> List[str]:
         code = (metric.metric or "").strip().upper()
         if code and code not in out:
             out.append(code)
+    return out
+
+
+def _chart_metrics(plan_chart: S.ChartSpec) -> List[ChartMetric]:
+    out: List[ChartMetric] = []
+    for metric in plan_chart.metrics:
+        entry = ChartMetric(metric=(metric.metric or "").strip().upper(), categories=list(metric.categories or []))
+        if entry.metric and entry not in out:
+            out.append(entry)
     return out
 
 
@@ -638,7 +647,7 @@ def build_chart_dto(
         x_axis=x_axis,
         y_axis=y_axis,
         angels_awards=_angels_awards_for_chart(plan_chart),
-        metrics=_metric_codes(plan_chart),
+        metrics=_chart_metrics(plan_chart),
         statistic=_plotted_measure(plan_chart),
     )
 

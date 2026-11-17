@@ -244,10 +244,10 @@ def get_metric_metadata() -> Dict[str, Dict[str, Any]]:
             key = cast(Dict[str, Any], entry).get("key") if isinstance(entry, dict) else None
             if not (isinstance(key, str) and key):
                 continue
-            english = _localized_synonyms(cast(Dict[str, Any], entry).get("synonyms")).get("en")
-            if not english:
+            names = _localized_synonyms(cast(Dict[str, Any], entry).get("synonyms"))
+            if not names.get("en"):
                 raise ValueError(f"SSOT option {canonical}.{key} has no English name.")
-            enum_options[key] = {"synonyms": english}
+            enum_options[key] = {"synonyms": names["en"], "names": names}
         if enum_options:
             meta["enum_options"] = enum_options
             meta["properties"] = list(enum_options)
@@ -595,15 +595,12 @@ def get_operator_symbol(operator_code: str) -> str:
 def get_enum_options(metric_code: str) -> Dict[str, str]:
     """An Enum metric's SSOT option keys with their first English name, in SSOT order; empty otherwise."""
     options = cast(Dict[str, Any], (_metric_meta_cached().get((metric_code or "").upper()) or {}).get("enum_options") or {})
-    out: Dict[str, str] = {}
-    for key, entry in options.items():
-        names = cast(Dict[str, Any], entry).get("synonyms") if isinstance(entry, dict) else None
-        out[key] = str(names[0]) if isinstance(names, list) and names else key
-    return out
+    return {key: entry["synonyms"][0] for key, entry in options.items()}
 
 
-def get_enum_option_label(metric_code: str, key: str) -> Optional[str]:
-    """Return preferred label for an enum option of a given metric from SSOT.
+def get_enum_option_label(metric_code: str, key: str, language: str = "en") -> Optional[str]:
+    """Return preferred label for an enum option of a given metric from SSOT,
+    in `language` when SSOT names it there, else in English.
 
     Looks up MetricType.yml entry, then 'enum_options' mapping derived by get_metric_metadata.
     Fallbacks: None if not found.
@@ -623,9 +620,7 @@ def get_enum_option_label(metric_code: str, key: str) -> Optional[str]:
                 break
     if isinstance(entry, dict):
         entry_dict: Dict[str, Any] = cast(Dict[str, Any], entry)
-        syns = entry_dict.get("synonyms")
-        if isinstance(syns, list) and syns and isinstance(syns[0], str):
-            return syns[0]
+        return (entry_dict["names"].get(language) or entry_dict["synonyms"])[0]
     return None
 
 
