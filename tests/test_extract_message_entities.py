@@ -1,4 +1,4 @@
-from src.actions.helpers.visualization import extract_entities_from_latest_message
+from src.actions.helpers.visualization import extract_message_entities
 
 
 def _message(entities, text: str = ""):
@@ -13,7 +13,7 @@ def test_repeated_identical_entity_value_stays_a_scalar() -> None:
     metric candidates to choose between, producing a spurious "which
     metric?" clarification for an otherwise unambiguous request.
     """
-    entities = extract_entities_from_latest_message(
+    entities = extract_message_entities(
         _message(
             [
                 {"entity": "chart_type", "value": "LINE"},
@@ -30,7 +30,7 @@ def test_repeated_identical_entity_value_stays_a_scalar() -> None:
 
 
 def test_repeated_distinct_entity_values_still_become_a_list() -> None:
-    entities = extract_entities_from_latest_message(
+    entities = extract_message_entities(
         _message(
             [
                 {"entity": "group_id", "value": "289"},
@@ -43,7 +43,7 @@ def test_repeated_distinct_entity_values_still_become_a_list() -> None:
 
 
 def test_repeated_distinct_values_in_an_existing_list_are_appended_once() -> None:
-    entities = extract_entities_from_latest_message(
+    entities = extract_message_entities(
         _message(
             [
                 {"entity": "group_id", "value": "289"},
@@ -67,7 +67,7 @@ def test_regex_only_entity_dropped_when_diet_claims_the_same_span_differently() 
     metric candidate -- it previously produced metric=["DTN", "AGE"], read by
     the decision-stage LLM as genuine ambiguity for an unambiguous request.
     """
-    entities = extract_entities_from_latest_message(
+    entities = extract_message_entities(
         _message(
             [
                 {
@@ -111,7 +111,7 @@ def test_regex_only_entity_dropped_when_diet_claims_the_same_span_differently() 
 
 
 def test_regex_only_entity_kept_when_diet_agrees_or_is_silent() -> None:
-    entities = extract_entities_from_latest_message(
+    entities = extract_message_entities(
         _message(
             [
                 {
@@ -140,7 +140,7 @@ def test_metric_preserved_when_diet_conflicts_on_same_span_in_chart_context() ->
     text = "show me a line chart of HEMORRHAGIC_TRANSFORMATION"
     start = text.index("HEMORRHAGIC_TRANSFORMATION")
     end = start + len("HEMORRHAGIC_TRANSFORMATION")
-    entities = extract_entities_from_latest_message(
+    entities = extract_message_entities(
         _message(
             [
                 {
@@ -175,7 +175,7 @@ def test_metric_preserved_when_diet_conflicts_on_same_span_in_chart_context() ->
 
 def test_regex_only_nested_metric_span_is_dropped_when_diet_metric_contains_it() -> None:
     text = "Show me a line graph of ivt dose"
-    entities = extract_entities_from_latest_message(
+    entities = extract_message_entities(
         _message(
             [
                 {
@@ -239,7 +239,7 @@ def _nested_metric_message(text: str, outer: str, outer_value: str, inner: str, 
 
 
 def test_wider_regex_metric_span_wins_when_it_is_an_exact_ssot_synonym() -> None:
-    entities = extract_entities_from_latest_message(
+    entities = extract_message_entities(
         _nested_metric_message("Show me a line graph of ivt dose", "ivt dose", "THROMBOLYSIS_DRUG_DOSE", "ivt", "THROMBOLYSIS")
     )
 
@@ -247,7 +247,7 @@ def test_wider_regex_metric_span_wins_when_it_is_an_exact_ssot_synonym() -> None
 
 
 def test_angels_awards_synonym_wins_over_the_base_metric_diet_finds_inside_it() -> None:
-    entities = extract_entities_from_latest_message(
+    entities = extract_message_entities(
         _nested_metric_message(
             "Show me a line graph of aa recanalization", "aa recanalization", "AA_RECANALIZATION", "recanalization", "RECANALIZATION"
         )
@@ -257,7 +257,7 @@ def test_angels_awards_synonym_wins_over_the_base_metric_diet_finds_inside_it() 
 
 
 def test_wider_regex_metric_span_is_dropped_when_it_is_not_an_exact_ssot_synonym() -> None:
-    entities = extract_entities_from_latest_message(
+    entities = extract_message_entities(
         _nested_metric_message("Show me a line graph of ivt dosage", "ivt dosage", "THROMBOLYSIS_DRUG_DOSE", "ivt", "THROMBOLYSIS")
     )
 
@@ -268,7 +268,7 @@ def test_intraventricular_hemorrhage_metric_preserved_in_chart_context() -> None
     text = "line graph of INTRAVENTICULAR_HEMORRHAGE"
     start = text.index("INTRAVENTICULAR_HEMORRHAGE")
     end = start + len("INTRAVENTICULAR_HEMORRHAGE")
-    entities = extract_entities_from_latest_message(
+    entities = extract_message_entities(
         _message(
             [
                 {
@@ -298,7 +298,7 @@ def test_metric_value_is_remapped_from_parent_metric_when_span_matches_exact_can
     start = text.index("CRANIECTOMY")
     end = start + len("CRANIECTOMY")
 
-    entities = extract_entities_from_latest_message(
+    entities = extract_message_entities(
         _message(
             [
                 {
@@ -321,7 +321,7 @@ def test_role_tagged_range_entities_keep_their_bound_as_companion_keys() -> None
     key collapses them to a single "50"; the lower/upper companions keep
     what each one meant.
     """
-    entities = extract_entities_from_latest_message(
+    entities = extract_message_entities(
         _message(
             [
                 {"entity": "metric", "value": "DTN"},
@@ -338,7 +338,7 @@ def test_role_tagged_range_entities_keep_their_bound_as_companion_keys() -> None
 
 
 def test_role_tagged_range_with_distinct_bounds() -> None:
-    entities = extract_entities_from_latest_message(
+    entities = extract_message_entities(
         _message(
             [
                 {"entity": "age", "value": "40", "role": "lower"},
@@ -354,14 +354,14 @@ def test_role_tagged_range_with_distinct_bounds() -> None:
 
 
 def test_entities_without_a_role_get_no_companion_keys() -> None:
-    entities = extract_entities_from_latest_message(_message([{"entity": "age", "value": "60"}], text="patients aged 60"))
+    entities = extract_message_entities(_message([{"entity": "age", "value": "60"}], text="patients aged 60"))
 
     assert entities == {"age": "60"}
 
 
 def test_between_wording_decides_the_bounds_when_diet_labels_both_as_lower() -> None:
     # Live: "between 10 and 30" came back with role=lower on both numbers.
-    entities = extract_entities_from_latest_message(
+    entities = extract_message_entities(
         _message(
             [
                 {"entity": "metric", "value": "ADMISSION_NIHSS"},
@@ -378,7 +378,7 @@ def test_between_wording_decides_the_bounds_when_diet_labels_both_as_lower() -> 
 
 
 def test_from_to_wording_derives_bounds_without_any_roles() -> None:
-    entities = extract_entities_from_latest_message(
+    entities = extract_message_entities(
         _message(
             [{"entity": "age", "value": "60"}, {"entity": "age", "value": "30"}],
             text="DTN for patients from 30 to 60 years old",
@@ -390,7 +390,7 @@ def test_from_to_wording_derives_bounds_without_any_roles() -> None:
 
 
 def test_two_numbers_without_range_wording_keep_whatever_roles_diet_gave() -> None:
-    entities = extract_entities_from_latest_message(
+    entities = extract_message_entities(
         _message(
             [{"entity": "age", "value": "30", "role": "upper"}, {"entity": "age", "value": "50", "role": "lower"}],
             text="compare patients under 30 with patients over 50",
@@ -403,7 +403,7 @@ def test_two_numbers_without_range_wording_keep_whatever_roles_diet_gave() -> No
 
 def test_over_and_under_the_same_number_gives_both_bounds() -> None:
     # Live: "over 50 and under 50" came back as one "50" with only the upper role.
-    entities = extract_entities_from_latest_message(
+    entities = extract_message_entities(
         _message(
             [{"entity": "metric", "value": "DTN"}, {"entity": "age", "value": "50", "role": "upper"}],
             text="Show me a bar chart of dtn for patients over 50 and under 50",
@@ -416,7 +416,7 @@ def test_over_and_under_the_same_number_gives_both_bounds() -> None:
 
 
 def test_wording_overrides_a_role_that_contradicts_it() -> None:
-    entities = extract_entities_from_latest_message(
+    entities = extract_message_entities(
         _message([{"entity": "age", "value": "60", "role": "upper"}], text="admission nihss for patients older than 60 years")
     )
 
@@ -425,13 +425,13 @@ def test_wording_overrides_a_role_that_contradicts_it() -> None:
 
 
 def test_one_sided_wording_fills_in_a_missing_role() -> None:
-    entities = extract_entities_from_latest_message(_message([{"entity": "nihss", "value": "10"}], text="dtn for patients with nihss under 10"))
+    entities = extract_message_entities(_message([{"entity": "nihss", "value": "10"}], text="dtn for patients with nihss under 10"))
 
     assert entities == {"nihss": "10", "nihss_upper": "10"}
 
 
 def test_a_bound_phrase_about_another_number_is_ignored() -> None:
-    entities = extract_entities_from_latest_message(
+    entities = extract_message_entities(
         _message(
             [{"entity": "age", "value": "60", "role": "lower"}, {"entity": "nihss", "value": "10"}],
             text="patients over 60 with nihss under 10",

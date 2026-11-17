@@ -205,11 +205,13 @@ def pretty_print_graphql_query(query: str) -> str:
     return "\n".join(lines)
 
 
-def extract_entities_from_latest_message(
-    latest_message: Dict[str, Any],
+def extract_message_entities(
+    message: Dict[str, Any],
 ) -> Dict[str, Any]:
+    """A user message's entities after the extractor-conflict rules, for the
+    latest message and for the earlier turns of a request alike."""
     extracted: Dict[str, Any] = {}
-    for ent in _kept_entities(latest_message):
+    for ent in _kept_entities(message):
         _accumulate_entity_value(extracted, ent["entity"], ent["value"])
         # Range entities (age/nihss/date) carry a DIET role saying which
         # bound a number is ("over 50" -> lower, "under 50" -> upper). The
@@ -219,7 +221,7 @@ def extract_entities_from_latest_message(
         if isinstance(role_any, str) and role_any.strip():
             _accumulate_entity_value(extracted, f"{ent['entity']}_{role_any.strip().lower()}", ent["value"])
 
-    question_text_any = latest_message.get("text")
+    question_text_any = message.get("text")
     _derive_range_bounds_from_wording(extracted, question_text_any if isinstance(question_text_any, str) else "")
     return extracted
 
@@ -251,15 +253,15 @@ def question_with_resolved_metrics(latest_message: Dict[str, Any]) -> str:
     return "".join(parts)
 
 
-def _kept_entities(latest_message: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _kept_entities(message: Dict[str, Any]) -> List[Dict[str, Any]]:
     """NLU entities of the message that survive the extractor-conflict rules
     below, each with its value, span and role."""
-    entities_any = latest_message.get("entities", [])
+    entities_any = message.get("entities", [])
     if not isinstance(entities_any, list):
         return []
 
     entities_list = cast(List[Any], entities_any)
-    question_text_any = latest_message.get("text")
+    question_text_any = message.get("text")
     question_text = question_text_any if isinstance(question_text_any, str) else ""
 
     # RegexEntityExtractor's SSOT-derived lookup tables match a literal word
