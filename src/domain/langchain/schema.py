@@ -21,7 +21,7 @@ from src.domain.graphql.ssot_enums import (
 from src.domain.graphql.ssot_enums import (
     Operator as OperatorType,
 )
-from src.shared.ssot_loader import resolve_metric
+from src.shared.ssot_loader import get_enum_options, resolve_metric
 
 
 def _deep_freeze(value: Any) -> Any:
@@ -837,12 +837,39 @@ class MetricSpec(BaseModel):
         alias="includeCategoryDetail",
         description="For a yes/no metric, set true only when the user explicitly asks to include or compare both Yes and No categories.",
     )
+    categories: Optional[List[str]] = Field(
+        default=None,
+        description="For an Enum metric, the option keys counted together when the user asks about some of its options "
+        "(CT imaging: ct, ct_cta, ct_cta_perfusion). None shows every option on its own.",
+    )
 
     model_config = ConfigDict(populate_by_name=True)
 
     @field_validator("metric")
     def validate_metric_type(cls, v: str) -> str:
         return _metric_code(v)
+
+    @model_validator(mode="after")
+    def validate_categories(self) -> "MetricSpec":
+        if not self.categories:
+            self.categories = None
+            return self
+        options = {key.lower(): key for key in get_enum_options(self.metric)}
+        if not options:
+            raise ValueError(f"categories apply to an Enum metric; {self.metric} has no options.")
+        unknown = [category for category in self.categories if category.strip().lower() not in options]
+        if unknown:
+            raise ValueError(f"{self.metric} has no option {unknown}; its options are {sorted(options.values())}.")
+        chosen = list(dict.fromkeys(options[category.strip().lower()] for category in self.categories))
+        if len(chosen) == len(options):
+            raise ValueError(
+                f"categories lists every option of {self.metric}: leave categories out to show each option on its own, "
+                "or give each group of options its own metric entry to compare groups."
+            )
+        if self.include_category_detail:
+            raise ValueError("Set either categories or includeCategoryDetail on a metric, not both.")
+        self.categories = chosen
+        return self
 
 
 class NumericValueDomainSpec(BaseModel):

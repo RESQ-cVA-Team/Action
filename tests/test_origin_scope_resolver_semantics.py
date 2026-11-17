@@ -81,6 +81,8 @@ class OriginScopeResolverSemanticsTests(unittest.TestCase):
 
         self.assertIsNotNone(resolved.charts)
         resolved_chart = resolved.charts[0]
+        # The resolver changes only the metrics; every other chart field is kept as planned.
+        self.assertEqual(resolved_chart.model_dump(exclude={"metrics"}), plan.charts[0].model_dump(exclude={"metrics"}))
         self.assertIsNotNone(resolved_chart.semantics)
         self.assertEqual(resolved_chart.semantics.intent, "TREND")
         self.assertIsNotNone(resolved_chart.semantics.measure)

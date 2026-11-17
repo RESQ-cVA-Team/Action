@@ -7,7 +7,7 @@ from unittest.mock import patch
 from langchain_core.runnables import RunnableLambda
 
 from src.domain.dto.charts.pie import PieChart, PieSlice
-from src.domain.dto.charts.types import ChartMetadata, ChartPoint, ChartSeries
+from src.domain.dto.charts.types import ChartMetadata, ChartMetric, ChartPoint, ChartSeries
 from src.domain.langchain.schema import AnalysisPlan
 from src.executors.mapping.chart_builder import build_chart_dto
 from src.planners.langchain import chart_describer
@@ -24,7 +24,7 @@ def _line_chart():
 class ChartMetadataTests(unittest.TestCase):
     def test_a_chart_names_its_metrics_and_statistic(self) -> None:
         metadata = _line_chart().metadata
-        self.assertEqual((metadata.metrics, metadata.statistic), (["DTN"], "MEDIAN"))
+        self.assertEqual((metadata.metrics, metadata.statistic), ([ChartMetric(metric="DTN")], "MEDIAN"))
 
 
 class ChartFactsTests(unittest.TestCase):
@@ -39,7 +39,7 @@ class ChartFactsTests(unittest.TestCase):
         self.assertNotIn("57.25", text)
 
     def test_a_pie_chart_gives_its_categories_but_not_their_values(self) -> None:
-        pie = PieChart(metadata=ChartMetadata(title="Stroke type", metrics=["STROKE_TYPE"], statistic="RATE"), data=[PieSlice(label="ischemic", value=61.0), PieSlice(label="tia", value=12.0)])
+        pie = PieChart(metadata=ChartMetadata(title="Stroke type", metrics=[ChartMetric(metric="STROKE_TYPE")], statistic="RATE"), data=[PieSlice(label="ischemic", value=61.0), PieSlice(label="tia", value=12.0)])
         facts = chart_describer.chart_facts(pie, "en")
         self.assertEqual(facts["categories"], ["ischemic", "tia"])
         self.assertEqual(facts["statistic"], "share of cases (%)")
@@ -51,6 +51,18 @@ class ChartFactsTests(unittest.TestCase):
         chart = _line_chart()
         chart.metadata.angels_awards = {"AA_DTN_LE60": {"gold": {"min_percent": 50}}}
         self.assertEqual(chart_describer.chart_facts(chart, "el")["notes"], [chart_describer._BANDS_NOTE["el"]])
+
+    def test_options_counted_together_are_named_in_the_users_language(self) -> None:
+        chart = _line_chart()
+        chart.metadata.metrics = [ChartMetric(metric="STROKE_TYPE", categories=["ischemic"])]
+        chart.metadata.statistic = "RATE"
+        self.assertEqual(chart_describer.chart_facts(chart, "cs")["metrics"][0]["option_counted"], "ischemický iktus")
+        self.assertNotIn("notes", chart_describer.chart_facts(chart, "cs"))
+        chart.metadata.metrics = [ChartMetric(metric="ARRIVAL_MODE", categories=["ems_from_home_scene", "ems_from_gp"])]
+        self.assertEqual(
+            chart_describer.chart_facts(chart, "en")["notes"],
+            ["ems from home or scene, ems from general practitioner are counted together as one group"],
+        )
 
     def test_a_count_leaves_out_the_metrics_own_meaning(self) -> None:
         chart = _line_chart()

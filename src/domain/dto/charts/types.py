@@ -50,6 +50,14 @@ class ChartAxis(BaseModel):
     unit: Optional[str] = None
 
 
+class ChartMetric(BaseModel):
+    """A metric a chart plots: its SSOT code and, when the chart counts some of
+    its options together, their SSOT option keys."""
+
+    metric: str
+    categories: List[str] = Field(default_factory=list)
+
+
 class ChartMetadata(BaseModel):
     """Common chart metadata"""
 
@@ -60,8 +68,8 @@ class ChartMetadata(BaseModel):
     width: Optional[int] = None
     height: Optional[int] = None
     angels_awards: Optional[Dict[str, Dict[str, Dict[str, Union[bool, int, float]]]]] = None
-    # What the chart plots: SSOT metric codes and the statistic (MEDIAN, MEAN, COUNT, RATE, DISTRIBUTION).
-    metrics: List[str] = Field(default_factory=list)
+    # What the chart plots: its metrics and the statistic (MEDIAN, MEAN, COUNT, RATE, DISTRIBUTION).
+    metrics: List[ChartMetric] = Field(default_factory=list)
     statistic: Optional[str] = None
 
     @model_serializer(mode="wrap")

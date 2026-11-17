@@ -40,6 +40,7 @@ from src.executors.planning.query_compiler import (
     estimate_query_count_for_plan,
 )
 from src.executors.planning.request_plan import (
+    CategoryView,
     RequestSpec,
     build_primary_request_specs,
 )
@@ -1157,7 +1158,7 @@ async def _execute_request_spec(
         query_cb=context.query_cb,
         is_filter_grouped=spec.is_filter_grouped,
         value_mode=spec.value_mode,
-        category_detail_metric_codes=spec.category_detail_metric_codes,
+        category_views=spec.category_views,
     )
     return RequestExecutionResult(spec=spec, series=series, metrics_payload=metrics_payload)
 
@@ -1378,7 +1379,7 @@ async def execute_plan_async(
                 metric_scope_labels=metric_scope_labels,
                 include_general_stats=_INCLUDE_GENERAL_STATS,
                 value_mode=_chart_value_mode(planChart),
-                category_detail_metric_flags=[metric.include_category_detail for metric in planChart.metrics],
+                category_views=[CategoryView(include_no=metric.include_category_detail, combined=tuple(metric.categories or ())) for metric in planChart.metrics],
             )
             total_requests = max(1, len(primary_specs))
             actual_queries += total_requests

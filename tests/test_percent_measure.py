@@ -7,6 +7,7 @@ from src.domain.langchain.schema import AnalysisSemanticsSpec, ChartSpec, Measur
 from src.executors.mapping.chart_builder import build_chart_dto
 from src.executors.mapping.series_mapper import map_metrics_payload_to_series, merge_series_by_name
 from src.executors.orchestration.plan_executor import _chart_value_mode
+from src.executors.planning.request_plan import CategoryView
 from src.executors.planning.ssot_metric_defaults import get_enum_labels
 from src.planners.langchain.request_orchestrator import _decision_stage, _infer_stroke_type_share_metric
 
@@ -97,7 +98,7 @@ class PercentSeriesMappingTests(unittest.TestCase):
             )
         }
 
-        series = _map(payload, "percent", category_detail_metric_codes=["AA_DTN_LE60"])
+        series = _map(payload, "percent", category_views={"AA_DTN_LE60": CategoryView(include_no=True)})
 
         self.assertEqual([(point.x, point.y) for point in series[0].data], [("yes", 80.0), ("no", 20.0)])
 
@@ -112,7 +113,7 @@ class PercentSeriesMappingTests(unittest.TestCase):
             payload,
             "percent",
             add_time_period_labels=True,
-            category_detail_metric_codes=["AA_DTN_LE60"],
+            category_views={"AA_DTN_LE60": CategoryView(include_no=True)},
         )
 
         self.assertEqual(len(series), 4)

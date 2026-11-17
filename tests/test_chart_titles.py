@@ -22,6 +22,10 @@ class ChartTitleTests(unittest.TestCase):
         title = _derive_title(_chart(chart_type="LINE"), [Dimension(GroupByTime(grain="QUARTER"))], sampled_period_override="2024-08-24 to 2026-08-24")
         self.assertEqual(title, "Door to needle per quarter, 2024-08-24 to 2026-08-24")
 
+    def test_chosen_options_are_named(self) -> None:
+        chart = ChartSpec(chart_type="LINE", metrics=[MetricSpec(metric="STROKE_TYPE", categories=["ischemic"])])
+        self.assertEqual(_derive_title(chart, [Dimension(GroupByTime(grain="QUARTER"))]), "Stroke type (ischemic stroke) per quarter")
+
     def test_split_and_filter_are_told_apart(self) -> None:
         title = _derive_title(_chart(filters=StrokeFilter(value="ISCHEMIC")), [Dimension(GroupBySex())])
         self.assertEqual(title, "Door to needle by sex type, filtered by stroke type = ischemic")

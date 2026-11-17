@@ -1,0 +1,41 @@
+{
+  "user_utterance": "Show arrival mode per quarter in percent",
+  "entities_detected": {
+    "metric": [
+      "ARRIVAL_MODE"
+    ],
+    "group_by": [
+      "QUARTER"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "BAR",
+        "metrics": [
+          {
+            "metric": "ARRIVAL_MODE"
+          }
+        ],
+        "semantics": {
+          "intent": "TREND",
+          "measure": {
+            "type": "RATE"
+          },
+          "time": {
+            "grain": "QUARTER"
+          },
+          "x_axis": {
+            "role": "TIME",
+            "grain": "QUARTER"
+          },
+          "y_axis": {
+            "role": "AGGREGATE_VALUE",
+            "metric": "ARRIVAL_MODE",
+            "aggregation": "RATE"
+          }
+        }
+      }
+    ]
+  }
+}

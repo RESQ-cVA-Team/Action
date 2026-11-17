@@ -1,0 +1,48 @@
+{
+  "user_utterance": "How many patients arrived by ambulance per quarter, as a bar chart",
+  "entities_detected": {
+    "metric": [
+      "ARRIVAL_MODE"
+    ],
+    "chart_type": [
+      "BAR"
+    ],
+    "group_by": [
+      "QUARTER"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "BAR",
+        "metrics": [
+          {
+            "metric": "ARRIVAL_MODE",
+            "categories": [
+              "ems_from_home_scene",
+              "ems_from_gp"
+            ]
+          }
+        ],
+        "semantics": {
+          "intent": "TREND",
+          "measure": {
+            "type": "COUNT"
+          },
+          "time": {
+            "grain": "QUARTER"
+          },
+          "x_axis": {
+            "role": "TIME",
+            "grain": "QUARTER"
+          },
+          "y_axis": {
+            "role": "AGGREGATE_VALUE",
+            "metric": "ARRIVAL_MODE",
+            "aggregation": "COUNT"
+          }
+        }
+      }
+    ]
+  }
+}

@@ -1219,24 +1219,8 @@ def _risk_factor_filter_terms() -> Dict[str, str]:
         label = core.replace("_", " ").strip()
         if label and len(label) >= 3:
             terms.setdefault(label.lower(), label)
-        for synonym in _flatten_synonym_block(entry.get("synonyms")):
-            cleaned = synonym.strip().lower()
-            for prefix in ("risk ", "history of "):
-                if cleaned.startswith(prefix):
-                    cleaned = cleaned[len(prefix) :]
-            if cleaned and len(cleaned) >= 3:
-                terms.setdefault(cleaned, label or cleaned)
 
     return terms
-
-
-def _flatten_synonym_block(value: Any) -> List[str]:
-    out: List[str] = []
-    if isinstance(value, dict):
-        for localized in cast(Dict[str, Any], value).values():
-            if isinstance(localized, list):
-                out.extend(str(item) for item in cast(List[Any], localized) if isinstance(item, str) and item.strip())
-    return out
 
 
 def _requested_metric_text_spans(question: str, entities: Dict[str, Any]) -> List[tuple[int, int]]:

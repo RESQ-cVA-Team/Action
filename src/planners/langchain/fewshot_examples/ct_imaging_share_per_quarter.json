@@ -1,0 +1,46 @@
+{
+  "user_utterance": "Show the share of my patients with CT imaging per quarter",
+  "entities_detected": {
+    "metric": [
+      "IMAGING_TYPE"
+    ],
+    "group_by": [
+      "QUARTER"
+    ]
+  },
+  "assistant": {
+    "charts": [
+      {
+        "chart_type": "LINE",
+        "metrics": [
+          {
+            "metric": "IMAGING_TYPE",
+            "categories": [
+              "ct",
+              "ct_cta",
+              "ct_cta_perfusion"
+            ]
+          }
+        ],
+        "semantics": {
+          "intent": "TREND",
+          "measure": {
+            "type": "RATE"
+          },
+          "time": {
+            "grain": "QUARTER"
+          },
+          "x_axis": {
+            "role": "TIME",
+            "grain": "QUARTER"
+          },
+          "y_axis": {
+            "role": "AGGREGATE_VALUE",
+            "metric": "IMAGING_TYPE",
+            "aggregation": "RATE"
+          }
+        }
+      }
+    ]
+  }
+}

@@ -14,7 +14,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from src.planners.langchain.llm_errors import is_llm_service_error
 from src.planners.langchain.llm_factory import create_chat_llm
 from src.planners.langchain.prompt_loader import load_prompt_text
-from src.shared.ssot_loader import get_metric_description, get_metric_name
+from src.shared.ssot_loader import get_enum_option_label, get_metric_description, get_metric_name
 from src.util.llm_usage import record_llm_call
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,12 @@ _BANDS_NOTE = {
     "en": "coloured bands mark the Angels Awards gold, platinum and diamond thresholds",
     "cs": "barevné pásy označují prahy Angels Awards pro zlato, platinu a diamant",
     "el": "οι χρωματιστές ζώνες δείχνουν τα όρια χρυσού, πλατίνας και διαμαντιού των Angels Awards",
+}
+
+_COUNTED_TOGETHER_NOTE = {
+    "en": "{options} are counted together as one group",
+    "cs": "{options} se počítají dohromady jako jedna skupina",
+    "el": "{options} μετρώνται μαζί ως μία ομάδα",
 }
 
 _PROMPT = ChatPromptTemplate.from_messages(  # type: ignore[attr-defined]
@@ -69,6 +75,19 @@ def _names(names: List[Any]) -> Any:
     return names if len(names) <= _MAX_NAMED else {"count": len(names)}
 
 
+def _metric_facts(metric: Any, language: str, with_meaning: bool) -> Dict[str, Any]:
+    facts: Dict[str, Any] = {"name": get_metric_name(metric.metric, language)}
+    if with_meaning:
+        facts["meaning"] = get_metric_description(metric.metric, language)
+    if len(metric.categories) == 1:
+        facts["option_counted"] = _option_names(metric, language)[0]
+    return facts
+
+
+def _option_names(metric: Any, language: str) -> List[str]:
+    return [get_enum_option_label(metric.metric, key, language) or key for key in metric.categories]
+
+
 def chart_facts(chart: Any, language: str) -> Dict[str, Any]:
     """How a finished chart is built, without any of its values."""
     metadata = chart.metadata
@@ -81,14 +100,18 @@ def chart_facts(chart: Any, language: str) -> Dict[str, Any]:
         "title": metadata.title,
         "x_axis": metadata.x_axis.label if metadata.x_axis else None,
         "y_axis": metadata.y_axis.label if metadata.y_axis else None,
-        "metrics": [
-            {"name": get_metric_name(code, language), **({"meaning": get_metric_description(code, language)} if with_meaning else {})}
-            for code in metadata.metrics
-        ],
+        "metrics": [_metric_facts(metric, language, with_meaning) for metric in metadata.metrics],
         "statistic": statistic.get(language) or statistic.get("en"),
     }
+    notes = [
+        (_COUNTED_TOGETHER_NOTE.get(language) or _COUNTED_TOGETHER_NOTE["en"]).format(options=", ".join(_option_names(metric, language)))
+        for metric in metadata.metrics
+        if len(metric.categories) > 1
+    ]
     if metadata.angels_awards:
-        facts["notes"] = [_BANDS_NOTE.get(language) or _BANDS_NOTE["en"]]
+        notes.append(_BANDS_NOTE.get(language) or _BANDS_NOTE["en"])
+    if notes:
+        facts["notes"] = notes
     if getattr(chart, "series", None) is not None:
         facts["series"] = _names([series.name for series in chart.series])
         facts["x_values"] = _x_values(chart)

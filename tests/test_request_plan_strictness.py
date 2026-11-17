@@ -1,5 +1,7 @@
+import pytest
+
 from src.domain.graphql.request import DataOrigin, MetricRequest, MetricType
-from src.executors.planning.request_plan import build_primary_request_specs
+from src.executors.planning.request_plan import CategoryView, build_primary_request_specs
 
 
 def _metric_request() -> MetricRequest:
@@ -61,10 +63,10 @@ def test_build_primary_request_specs_keeps_category_detail_out_of_graphql_reques
         group_by_field=None,
         data_origin=DataOrigin(providerGroupId=[99]),
         include_general_stats=True,
-        category_detail_metric_codes=["AA_DTN_LE60"],
+        category_views=[CategoryView(include_no=True)],
     )
 
-    assert specs[0].category_detail_metric_codes == ["AA_DTN_LE60"]
+    assert specs[0].category_views == {"AA_DTN_LE60": CategoryView(include_no=True)}
     assert "categoryDetail" not in specs[0].req.to_graphql_string()
 
 
@@ -125,7 +127,26 @@ def test_build_primary_request_specs_keeps_category_detail_per_metric_origin() -
         include_metric_alias=False,
         group_by_field=None,
         include_general_stats=False,
-        category_detail_metric_flags=[True, False],
+        category_views=[CategoryView(include_no=True), CategoryView()],
     )
 
-    assert [spec.category_detail_metric_codes for spec in specs] == [["AA_DTN_LE60"], []]
+    assert [spec.category_views for spec in specs] == [{"AA_DTN_LE60": CategoryView(include_no=True)}, {}]
+
+
+def test_build_primary_request_specs_rejects_one_metric_plotted_two_ways_in_one_request() -> None:
+    request = MetricRequest(metricType=MetricType.IMAGING_TYPE).with_stats().with_categorical()
+    with pytest.raises(ValueError, match="two ways"):
+        build_primary_request_specs(
+            metric_requests=[request, request],
+            metric_data_origins=None,
+            chart_filter=None,
+            filter_dims=[],
+            combos_list=[tuple()],
+            batched_time_enabled=False,
+            batched_time_periods=[],
+            include_metric_alias=False,
+            group_by_field=None,
+            data_origin=DataOrigin(providerGroupId=[99]),
+            include_general_stats=True,
+            category_views=[CategoryView(combined=("ct",)), CategoryView(combined=("mr_dwi_flair",))],
+        )

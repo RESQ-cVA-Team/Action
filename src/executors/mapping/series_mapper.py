@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import calendar
 from datetime import datetime
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, Sequence, cast
 
 from src.domain.dto.charts.types import ChartPoint, ChartSeries
 from src.domain.graphql.request import TimePeriod
+from src.executors.planning.request_plan import CategoryView
 from src.executors.planning.ssot_metric_defaults import (
     build_distribution_bin_ranges,
     format_distribution_point_label,
@@ -14,7 +15,7 @@ from src.executors.planning.ssot_metric_defaults import (
     is_angels_awards_metric,
     is_enum_metric,
 )
-from src.shared.ssot_loader import get_enum_option_label, get_metric_display_name
+from src.shared.ssot_loader import get_enum_option_label, get_enum_options, get_metric_display_name
 
 
 def _metric_code_from_alias(metric_alias: str) -> str:
@@ -185,25 +186,45 @@ def _first_percent(kpi1: Any) -> Optional[float]:
 
 
 def _is_yes_no_metric(metric_code: str) -> bool:
-    keys = {get_enum_option_key(metric_code, label) for label in get_enum_labels(metric_code) or []}
-    return {"yes", "no"} <= keys
+    return {"yes", "no"} <= set(get_enum_options(metric_code))
 
 
 def _category_indices(
     metric_code: str,
     labels: List[str],
-    include_category_detail: bool,
+    include_no: bool,
 ) -> List[tuple[int, str]]:
     """Categories a grouped row of an Enum metric plots: the yes of a yes/no
     metric (and its no when asked for), every category of any other."""
     if not _is_yes_no_metric(metric_code):
         return [(index, str(label)) for index, label in enumerate(labels)]
-    desired_keys = {"yes", "no"} if include_category_detail else {"yes"}
+    desired_keys = {"yes", "no"} if include_no else {"yes"}
     found: List[tuple[int, str, Optional[str]]] = [(index, str(label), get_enum_option_key(metric_code, str(label))) for index, label in enumerate(labels)]
     missing_keys = desired_keys - {key for _, _, key in found}
     if missing_keys:
         raise ValueError(f"Enum metric {metric_code} is missing recognized category labels: {sorted(missing_keys)}")
     return [(index, label) for index, label, key in found if key in desired_keys]
+
+
+def _combine_options(
+    metric_code: str,
+    labels: List[str],
+    case_counts: List[Any],
+    cohort_size: Any,
+    combined: Sequence[str],
+) -> tuple[List[str], List[Any]]:
+    """The combined options as one category and every other option as a
+    second: the first counts their cases together, the second the rest of the
+    cohort, so a share of the combined options is out of all cases."""
+    keys = [get_enum_option_key(metric_code, label) for label in labels]
+    missing = [key for key in combined if key not in keys]
+    if missing:
+        raise ValueError(f"Enum KPI payload for {metric_code} is missing the options {missing}.")
+    chosen = sum(float(count) for key, count in zip(keys, case_counts) if key in combined and isinstance(count, (int, float)))
+    known = [float(count) for count in case_counts if isinstance(count, (int, float))]
+    total = float(cohort_size) if isinstance(cohort_size, (int, float)) else sum(known)
+    name = ", ".join(get_enum_option_label(metric_code, key) or key for key in combined)
+    return [name, "other"], [chosen, max(0.0, total - chosen)]
 
 
 def _category_value(
@@ -267,10 +288,10 @@ def map_metrics_payload_to_series(
     batched_time_periods: Optional[List[Any]] = None,
     is_filter_grouped: bool = False,
     value_mode: str = "median",
-    category_detail_metric_codes: Optional[List[str]] = None,
+    category_views: Optional[Dict[str, CategoryView]] = None,
 ) -> List[ChartSeries]:
     series: List[ChartSeries] = []
-    category_detail_codes = {code.strip().upper() for code in category_detail_metric_codes or []}
+    views = {code.strip().upper(): view for code, view in (category_views or {}).items()}
 
     for metric_name, metric in metrics_payload.items():
         for kpi_index, kpi in enumerate(metric.kpi_group):
@@ -279,7 +300,7 @@ def map_metrics_payload_to_series(
 
             metric_code = _metric_code_from_alias(metric_name)
             is_enum = is_enum_metric(metric_code)
-            include_category_detail = metric_code in category_detail_codes
+            view = views.get(metric_code) or CategoryView()
             metric_labels = getattr(metric, "labels", None)
             case_counts = kpi.kpi1.case_count or []
             derived_complement = False
@@ -290,7 +311,14 @@ def map_metrics_payload_to_series(
                     case_counts = [case_counts[0], kpi.kpi1.cohort_size - case_counts[0]]
                     derived_complement = True
 
-            categories = _category_indices(metric_code, cast(List[str], metric_labels), include_category_detail) if is_enum and metric_labels else []
+            if is_enum and metric_labels and view.combined:
+                metric_labels, case_counts = _combine_options(metric_code, cast(List[str], metric_labels), case_counts, kpi.kpi1.cohort_size, view.combined)
+                derived_complement = True
+                categories = [(0, metric_labels[0])]
+            elif is_enum and metric_labels:
+                categories = _category_indices(metric_code, cast(List[str], metric_labels), view.include_no)
+            else:
+                categories = []
 
             server_label = kpi.grouped_by.group_item_name if kpi.grouped_by else None
             origin_label = _origin_label_from_kpi_group(kpi)
@@ -351,7 +379,7 @@ def map_metrics_payload_to_series(
                             name_parts.append(scope_label)
                         if not name_parts:
                             name_parts.append(metric_label_from_alias(metric_name))
-                        if len(categories) > 1:
+                        if len(categories) > 1 or view.combined:
                             name_parts.append(category_label)
                         series.append(
                             ChartSeries(
