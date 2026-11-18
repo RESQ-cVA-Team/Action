@@ -16,7 +16,9 @@
       "internal_error_guided": "Error generating guided visualization: {error}",
       "next_metric_payload": "Update visualization to use {metric}",
       "next_metric_button": "Show {metric}",
-      "next_metric_suggestion": "Would you like to see the same visualization for {metric}?"
+      "next_metric_suggestion": "Would you like to see the same visualization for {metric}?",
+      "show_answer_as_chart": "Show over time",
+      "no_answer_to_chart": "There is no number answer in this conversation to show as a chart."
     },
     "errors": {
       "visualization_timeout": "Visualization generation timed out. Please try again after a few minutes.",

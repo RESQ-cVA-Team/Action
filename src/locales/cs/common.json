@@ -13,7 +13,9 @@
       "non_visualization_intent": "Mohu pomoci s požadavky na vizualizaci. Zkuste požádat o vytvoření grafu nebo o aktualizaci aktuálního grafu.",
       "internal_error_routing": "Chyba při směrování požadavku na vizualizaci: {error}",
       "internal_error_generating": "Chyba při generování vizualizace: {error}",
-      "internal_error_guided": "Chyba při generování řízené vizualizace: {error}"
+      "internal_error_guided": "Chyba při generování řízené vizualizace: {error}",
+      "show_answer_as_chart": "Zobrazit v čase",
+      "no_answer_to_chart": "V této konverzaci není žádná číselná odpověď, kterou by šlo zobrazit jako graf."
     },
     "errors": {
       "visualization_timeout": "Generování vizualizace vypršelo. Zkuste to prosím znovu.",
