@@ -203,6 +203,25 @@ def _assert_no_redundant_date_encoding(plan: AnalysisPlan) -> None:
             )
 
 
+def _assert_value_dates_are_stated(plan: AnalysisPlan, question: str) -> None:
+    """A value's dates come from the question. The planner does not know
+    today's date, so dates it works out for "last year" land in a year of its
+    own (2022 for a question asked in 2026); that period is a TimeWindow."""
+    from src.domain.langchain.schema import TimeRange
+
+    stated = set(re.findall(r"\b(?:19|20)\d{2}\b", question or ""))
+    for idx, value in enumerate(plan.values or []):
+        period = value.period
+        if not isinstance(period, TimeRange):
+            continue
+        years = {period.start_date[:4], period.end_date[:4]}
+        if not years <= stated:
+            raise ValueError(
+                f"Invalid AnalysisPlan: values[{idx}].period uses {', '.join(sorted(years - stated))}, a year the question does not name. "
+                "A relative period ('last year', 'the last 6 months') is a TimeWindow: 'last year' is last_n 1 unit YEAR."
+            )
+
+
 def get_schema_description(model: Type[Any]) -> str:
     """
     Recursively extract field names/types from a Pydantic model as a readable schema spec (Pydantic v2 compatible).
@@ -483,6 +502,7 @@ def _plain_plan_mismatch(entities: Dict[str, Any], plan: AnalysisPlan) -> Option
     requested = _entity_values((entities or {}).get("metric"))
     charts = plan.charts or []
     planned = {str(m.metric).strip().upper() for chart in charts for m in chart.metrics}
+    planned |= {str(value.metric).strip().upper() for value in plan.values or []}
     issues: List[str] = []
     if requested - planned:
         issues.append(f"the plan leaves out the requested metric(s) {', '.join(sorted(requested - planned))}")
@@ -491,6 +511,8 @@ def _plain_plan_mismatch(entities: Dict[str, Any], plan: AnalysisPlan) -> Option
     chart_types = _entity_values((entities or {}).get("chart_type"))
     if chart_types and any(str(chart.chart_type).strip().upper() not in chart_types for chart in charts):
         issues.append(f"the plan's chart type is not the requested {', '.join(sorted(chart_types))}")
+    if chart_types and plan.values:
+        issues.append(f"a {', '.join(sorted(chart_types))} chart was asked for, not a value")
     if plan.statistical_tests:
         issues.append("the plan adds a statistical test that was not requested")
     return "; ".join(issues) or None
@@ -629,10 +651,13 @@ def generate_analysis_plan(
                 result = _coerce_analysis_plan(raw_result)
                 _assert_required_semantics(result)
                 _assert_no_redundant_date_encoding(result)
+                _assert_value_dates_are_stated(result, question)
                 # The critique pass is an LLM call that often objects to defaults the user never
-                # asked about; a plain request is checked deterministically instead.
-                plain = _is_plain_request(question, entities)
-                critique_issues = _plain_plan_mismatch(entities, result) if plain else _critique_plan(question, entities, result)
+                # asked about; a plain request is checked deterministically instead, and so is a
+                # value plan, whose dates are checked above ("last year" was overruled as the
+                # previous calendar year in every run).
+                deterministic = bool(result.values) or _is_plain_request(question, entities)
+                critique_issues = _plain_plan_mismatch(entities, result) if deterministic else _critique_plan(question, entities, result)
                 if critique_issues:
                     raise ValueError(f"Plan does not faithfully match the request: {critique_issues}")
                 break

@@ -27,6 +27,7 @@ from src.domain.langchain import schema as lang_schema
 from src.executors import execute_plan_async
 from src.executors.orchestration.plan_executor import VisualizationExecutionError
 from src.planners.langchain.chart_describer import describe_charts
+from src.planners.langchain.value_answer import answer_values
 from src.planners.langchain.llm_errors import LLM_UNAVAILABLE
 from src.planners.langchain.request_orchestrator import (
     _PLANNER_MAX_RETRIES,
@@ -785,9 +786,7 @@ def _is_missing_temporal_bounds_error(exc: Exception) -> bool:
 
 
 def _build_empty_plan_clarification(plan_obj: lang_schema.AnalysisPlan, language: str) -> Optional[str]:
-    charts = list(plan_obj.charts or [])
-    tests = list(plan_obj.statistical_tests or [])
-    if charts or tests:
+    if plan_obj.charts or plan_obj.statistical_tests or plan_obj.values:
         return None
 
     return translate(
@@ -1175,7 +1174,9 @@ class ActionOneShotGenerateVisualization(LongAction):
                     timeout=_EXECUTE_PLAN_TIMEOUT_SECONDS,
                 )
                 visualization_payload = visualization.model_dump(mode="json")
-                ctx.say(json_message=visualization_payload)
+                # A values-only answer is chat text: an empty response would clear the chart on screen.
+                if visualization.charts or visualization.stats:
+                    ctx.say(json_message=visualization_payload)
 
                 warnings_any = visualization_payload.get("warnings")
                 if isinstance(warnings_any, list):
@@ -1186,6 +1187,8 @@ class ActionOneShotGenerateVisualization(LongAction):
                 completed_successfully = True
                 for description in await describe_charts(visualization.charts, language):
                     ctx.say(text=description)
+                for sentence in await answer_values(visualization.values, language):
+                    ctx.say(text=sentence)
             except asyncio.TimeoutError:
                 timeout_message = "The visualization execution took too long and timed out. Please try again, narrow the scope, or shorten the date range."
                 logger.warning(

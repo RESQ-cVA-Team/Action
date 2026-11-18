@@ -26,6 +26,7 @@ from src.domain.langchain.schema import (
     SplitSpec,
     StatisticalTestSpec,
     TimeSemanticsSpec,
+    ValueSpec,
 )
 from src.planners.langchain.llm_errors import LLM_UNAVAILABLE, is_llm_service_error
 from src.planners.langchain.llm_factory import create_chat_llm
@@ -1021,24 +1022,22 @@ def _drop_hospital_scopes_from_metric_words(plan: AnalysisPlan, entities: Dict[s
     either pages through every accessible provider and times out, or fails
     with "could not match that provider group". A named scope is kept
     whenever NLU saw a hospital or group name for it, and only dropped when
-    its text is a fragment of one of the chart's own metric synonyms.
+    its text is a fragment of one of the chart's (or value's) own metric synonyms.
     """
     named = [ssot_loader.normalize_metric_text_key(value) for key in ("hospital_name", "provider_name", "provider_group_name") for value in _extract_string_list(entities.get(key))]
     named = [token for token in named if token]
-    plan_changed = False
-    charts: List[ChartSpec] = []
-    for chart in plan.charts or []:
-        codes = [metric.metric for metric in chart.metrics if isinstance(metric.metric, str)]
+
+    def without_metric_word_scopes(metrics: List[MetricSpec]) -> List[MetricSpec]:
+        codes = [metric.metric for metric in metrics if isinstance(metric.metric, str)]
         synonyms: Optional[List[str]] = None
-        chart_changed = False
-        metrics: List[MetricSpec] = []
-        for metric in chart.metrics:
+        out: List[MetricSpec] = []
+        for metric in metrics:
             scope = metric.origin_scope
             value_norm = ""
             if scope is not None and scope.scope_type in _NAMED_SCOPE_TYPES:
                 value_norm = ssot_loader.normalize_metric_text_key(str(scope.value or scope.label or ""))
             if not value_norm or any(value_norm in token or token in value_norm for token in named):
-                metrics.append(metric)
+                out.append(metric)
                 continue
             if synonyms is None:
                 synonyms = _metric_synonym_texts(codes)
@@ -1047,18 +1046,16 @@ def _drop_hospital_scopes_from_metric_words(plan: AnalysisPlan, entities: Dict[s
                     "Dropping named scope that is part of the metric name",
                     extra={"scope_type": scope.scope_type if scope is not None else None, "scope_value": scope.value if scope is not None else None, "metrics": codes},
                 )
-                metrics.append(metric.model_copy(update={"origin_scope": None}))
-                chart_changed = True
+                out.append(metric.model_copy(update={"origin_scope": None}))
             else:
-                metrics.append(metric)
-        if chart_changed:
-            plan_changed = True
-            charts.append(chart.model_copy(update={"metrics": metrics}))
-        else:
-            charts.append(chart)
-    if not plan_changed:
+                out.append(metric)
+        return out
+
+    charts = [chart.model_copy(update={"metrics": without_metric_word_scopes(list(chart.metrics))}) for chart in plan.charts or []]
+    values = [cast(ValueSpec, without_metric_word_scopes([value])[0]) for value in plan.values or []]
+    if charts == list(plan.charts or []) and values == list(plan.values or []):
         return plan
-    return plan.model_copy(update={"charts": charts})
+    return plan.model_copy(update={"charts": charts or None, "values": values or None})
 
 
 _PERIOD_MENTION = re.compile(

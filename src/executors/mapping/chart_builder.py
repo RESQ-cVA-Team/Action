@@ -224,7 +224,7 @@ def _format_operator(value: str) -> str:
     return get_operator_symbol(value)
 
 
-def _format_filter_text(filter_node: Optional[Any], include_date: bool = True) -> str:
+def format_filter_text(filter_node: Optional[Any], include_date: bool = True) -> str:
     if filter_node is None:
         return "all patients"
 
@@ -592,7 +592,7 @@ def _derive_title(
     sampled_period = None if explicit_periods else (sampled_period_override or _sample_period(filters_node))
     if sampled_period:
         parts.append(sampled_period)
-    filters_part = _format_filter_text(filters_node, include_date=sampled_period is None and not explicit_periods)
+    filters_part = format_filter_text(filters_node, include_date=sampled_period is None and not explicit_periods)
     if filters_part and filters_part != "all patients":
         parts.append(f"filtered by {filters_part}")
     return ", ".join(parts)

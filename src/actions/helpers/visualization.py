@@ -747,6 +747,19 @@ def serialize_plan_for_frontend(plan: Any) -> Dict[str, Any]:
 
         return out
 
+    def _value_preview(value_any: Any) -> Dict[str, Any]:
+        value = _mapping_to_dict(value_any)
+        out = _metric_preview(value)
+        if not out:
+            return {}
+        measure_type = _mapping_to_dict(value.get("measure")).get("type")
+        if isinstance(measure_type, str) and measure_type.strip():
+            out["measure"] = {"type": measure_type.strip().upper()}
+        period = {key: item for key, item in _mapping_to_dict(value.get("period")).items() if key in ("start_date", "end_date", "last_n", "unit")}
+        out["period"] = period or None
+        out["filters"] = _filter_preview(value.get("filters")) or None
+        return out
+
     charts_any = payload_dict.get("charts")
     charts: List[Dict[str, Any]] = []
     if isinstance(charts_any, list):
@@ -763,11 +776,15 @@ def serialize_plan_for_frontend(plan: Any) -> Dict[str, Any]:
             if preview:
                 tests.append(preview)
 
+    values = [preview for preview in (_value_preview(item) for item in cast(List[Any], payload_dict.get("values") or [])) if preview]
+
     out_payload: Dict[str, Any] = {}
     if charts:
         out_payload["charts"] = charts
     if tests:
         out_payload["statistical_tests"] = tests
+    if values:
+        out_payload["values"] = values
 
     return out_payload
 
@@ -777,8 +794,8 @@ def format_execution_summary(
     language: Optional[str] = None,
 ) -> str:
     """The closing line for statistical tests: that they are ready, and any
-    that were skipped or failed. Charts are described on their own, so a reply
-    with charts and no tests gets nothing here; callers skip an empty string."""
+    that were skipped or failed. Charts and values are described on their own,
+    so a reply without tests gets nothing here; callers skip an empty string."""
 
     def t(key: str, default: str, params: Optional[Dict[str, Any]] = None) -> str:
         return translate(key, language=language, params=params, default=default)
@@ -789,12 +806,10 @@ def format_execution_summary(
     if summary_dict is None:
         return ""
 
-    chart_count = summary_dict.get("chart_count")
     stats_count = summary_dict.get("stats_count")
     stats_skipped = summary_dict.get("stats_skipped")
     stats_errors = summary_dict.get("stats_errors")
 
-    has_charts = isinstance(chart_count, int) and chart_count > 0
     has_stats = isinstance(stats_count, int) and stats_count > 0
 
     lines: List[str] = []
@@ -803,8 +818,6 @@ def format_execution_summary(
             lines.append(t("action.summary.complete_stat_one", "Here's your statistical comparison."))
         else:
             lines.append(t("action.summary.complete_stat_many", "Here are your {stats_count} statistical comparisons.", {"stats_count": stats_count}))
-    elif not has_charts:
-        lines.append(t("action.summary.complete_fallback", "Done!"))
 
     if isinstance(stats_errors, int) and stats_errors > 0:
         if stats_errors == 1:

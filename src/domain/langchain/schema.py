@@ -21,7 +21,7 @@ from src.domain.graphql.ssot_enums import (
 from src.domain.graphql.ssot_enums import (
     Operator as OperatorType,
 )
-from src.shared.ssot_loader import get_enum_options, resolve_metric
+from src.shared.ssot_loader import get_enum_options, get_metric_data_type, resolve_metric
 
 
 def _deep_freeze(value: Any) -> Any:
@@ -991,6 +991,63 @@ class StatisticalTestSpec(BaseModel):
         return self
 
 
+_VALUE_MEASURES = {"Enum": ("COUNT", "RATE"), "Numeric": ("MEDIAN", "MEAN", "COUNT")}
+
+
+def _has_date_filter(node: Any) -> bool:
+    if isinstance(node, DateFilter):
+        return True
+    if isinstance(node, AndFilter):
+        return any(_has_date_filter(child) for child in node.and_)
+    if isinstance(node, OrFilter):
+        return any(_has_date_filter(child) for child in node.or_)
+    if isinstance(node, NotFilter):
+        return _has_date_filter(node.not_)
+    return False
+
+
+class ValueSpec(MetricSpec):
+    """One number that answers the question: a statistic of one metric (its
+    options and scope as on a chart's metric entry) over one period, answered
+    in a sentence instead of a chart."""
+
+    measure: MeasureSemanticsSpec = Field(
+        description="MEDIAN or MEAN of a Numeric metric, COUNT of its cases; COUNT or RATE (share of cases) of an Enum metric's options."
+    )
+    period: Optional[Union[TimeRange, TimeWindow]] = Field(
+        default=None,
+        description="The period the number covers: a TimeRange, or a TimeWindow such as the last 12 months. None means the default range.",
+    )
+    filters: Optional[FilterNode] = None
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    @field_validator("filters", mode="before")
+    def normalize_filters(cls, v: Any) -> Any:
+        return _normalize_filter_node(v)
+
+    @model_validator(mode="after")
+    def validate_value(self) -> "ValueSpec":
+        data_type = get_metric_data_type(self.metric)
+        allowed = _VALUE_MEASURES.get(data_type or "", ())
+        if self.measure.type not in allowed:
+            raise ValueError(f"A value of {self.metric} ({data_type}) is measured as one of {list(allowed)}, not {self.measure.type}.")
+        options = get_enum_options(self.metric)
+        if data_type == "Enum" and not self.categories and not {"yes", "no"} <= set(options):
+            raise ValueError(f"A value of {self.metric} counts chosen options: set categories to the option keys asked about.")
+        if self.include_category_detail:
+            raise ValueError("A value counts one group of options; includeCategoryDetail does not apply.")
+        if _has_date_filter(self.filters):
+            raise ValueError("A value's dates go in period, not in a DateFilter.")
+        if isinstance(self.period, TimeRange) and self.period.start_date > self.period.end_date:
+            raise ValueError(f"period starts after it ends: {self.period.start_date} > {self.period.end_date}")
+        return self
+
+    def metric_spec(self) -> MetricSpec:
+        """The value's metric entry, as a chart lists it."""
+        return MetricSpec.model_validate(self.model_dump(include=set(MetricSpec.model_fields)))
+
+
 class AnalysisPlan(BaseModel):
     """
     The top-level plan object returned by the planner.
@@ -998,7 +1055,18 @@ class AnalysisPlan(BaseModel):
     Attributes:
         charts: List of chart specifications to generate.
         statistical_tests: List of statistical test specifications to perform.
+        values: Numbers answered in a sentence, for a question asking for one
+            number; a plan has either values or charts and tests.
     """
 
     charts: Optional[List[ChartSpec]] = None
     statistical_tests: Optional[List[StatisticalTestSpec]] = None
+    values: Optional[List[ValueSpec]] = None
+
+    @model_validator(mode="after")
+    def validate_values_stand_alone(self) -> "AnalysisPlan":
+        if self.values and (self.charts or self.statistical_tests):
+            raise ValueError("A plan answers either with values or with charts and statistical tests, not both.")
+        if self.values is not None and not self.values:
+            self.values = None
+        return self

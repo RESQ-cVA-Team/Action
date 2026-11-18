@@ -63,7 +63,6 @@
     "summary": {
       "complete_stat_one": "Ορίστε τη στατιστική σας σύγκριση.",
       "complete_stat_many": "Ορίστε τις {stats_count} στατιστικές συγκρίσεις σας.",
-      "complete_fallback": "Ολοκληρώθηκε!",
       "stats_skipped_one": "Μία στατιστική δοκιμή παραλείφθηκε.",
       "stats_skipped_many": "{stats_skipped} στατιστικές δοκιμές παραλείφθηκαν.",
       "stats_errors_one": "Μία στατιστική δοκιμή δεν ολοκληρώθηκε.",

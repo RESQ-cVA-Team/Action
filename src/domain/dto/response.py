@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from .analytics import StatisticalTestResult
 from .charts.union import ChartDTO
+from .value import ValueResult
 
 
 class VisualizationResponse(BaseModel):
@@ -15,5 +16,6 @@ class VisualizationResponse(BaseModel):
     trace_id: Optional[str] = None
     charts: List[ChartDTO] = []
     stats: List[StatisticalTestResult] = []
+    values: List[ValueResult] = []
     warnings: List[str] = []
     timestamp: Optional[datetime] = None

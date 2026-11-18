@@ -811,10 +811,5 @@ def estimate_query_count_for_chart(chart: S.ChartSpec) -> int:
 
 
 def estimate_query_count_for_plan(plan: S.AnalysisPlan) -> int:
-    plan_charts = coalesce(plan.charts, [])
-    if not plan_charts:
-        return 0
-    total = 0
-    for c in plan_charts:
-        total += estimate_query_count_for_chart(c)
-    return total
+    """One request per value, each chart's own count."""
+    return sum(estimate_query_count_for_chart(c) for c in coalesce(plan.charts, [])) + len(plan.values or [])

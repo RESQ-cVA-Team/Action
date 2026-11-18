@@ -1026,7 +1026,7 @@ def _plan_needs_country_inference(plan: S.AnalysisPlan) -> bool:
             if _metric_needs_country_inference(metric):
                 return True
 
-    return False
+    return any(_metric_needs_country_inference(value) for value in plan.values or [])
 
 
 def resolve_plan_metric_origins(plan: S.AnalysisPlan, user_sub: str, job_id: Optional[str], trace_id: str) -> S.AnalysisPlan:
@@ -1069,4 +1069,17 @@ def resolve_plan_metric_origins(plan: S.AnalysisPlan, user_sub: str, job_id: Opt
 
         resolved_tests.append(test.model_copy(update={"metrics": resolved_test_metrics}))
 
-    return plan.model_copy(update={"charts": resolved_charts or None, "statistical_tests": resolved_tests or None})
+    resolved_values = [
+        _resolve_metric_origin(
+            value,
+            default_scope=default_scope,
+            user_sub=user_sub,
+            job_id=job_id,
+            trace_id=trace_id,
+            fail_open_for_default_scope=_FAIL_OPEN,
+            inferred_country_code=inferred_country_code,
+        )
+        for value in plan.values or []
+    ]
+
+    return plan.model_copy(update={"charts": resolved_charts or None, "statistical_tests": resolved_tests or None, "values": resolved_values or None})
