@@ -86,6 +86,14 @@ class PeriodReferenceRejectionGuardTests(unittest.TestCase):
                 outcome = _decision_stage(question=question, entities=entities, language="en")
             self.assertEqual(outcome.decision, "proceed", question)
 
+    def test_a_question_without_a_date_is_not_rejected_for_one(self) -> None:
+        with patch(
+            "src.planners.langchain.request_orchestrator._invoke_chain",
+            return_value={"decision": "reject", "reason": "invalid_date_format", "missing_fields": None, "message": "The metric 'SEX' cannot be used to calculate a percentage."},
+        ):
+            outcome = _decision_stage(question="Percentage of female patients per quarter", entities={"metric": "SEX", "group_by": "QUARTER"}, language="en")
+        self.assertEqual(outcome.decision, "proceed")
+
     def test_a_genuinely_impossible_date_is_still_rejected(self) -> None:
         with patch(
             "src.planners.langchain.request_orchestrator._invoke_chain",

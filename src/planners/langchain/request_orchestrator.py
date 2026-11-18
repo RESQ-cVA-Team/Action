@@ -1982,9 +1982,11 @@ def _apply_decision_safeguards(
     # Deterministic safeguard: a quarter, month or year reference ("Q1 2023",
     # "March 2025", "2024") is a valid period, not a malformed date. Read from
     # the question, since the date entities can miss the year or hold other words.
+    # A question with a metric and no date at all has no date to be invalid.
     if outcome.decision == "reject" and "invalid_date_format" in outcome.reason.strip().lower().replace(" ", "_"):
         date_tokens = _DATE_LIKE_TOKEN.findall(question or "")
-        if date_tokens and all(_looks_like_period_reference(token) for token in date_tokens):
+        no_date = not date_tokens and _entity_present(entities, "metric")
+        if no_date or (date_tokens and all(_looks_like_period_reference(token) for token in date_tokens)):
             return VisualizationRequestOutcome(
                 decision="proceed",
                 reason="all_required_fields_present",
