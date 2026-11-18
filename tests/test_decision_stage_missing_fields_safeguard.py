@@ -156,6 +156,18 @@ class DecisionStageSafeguardTests(unittest.TestCase):
 
 
 class DecisionStageOutOfScopeSafeguardTests(unittest.TestCase):
+    def test_a_request_with_a_metric_is_never_rejected_for_too_little_information(self) -> None:
+        reject = {"decision": "reject", "reason": "insufficient_information", "missing_fields": [], "message": "Please specify the metric more clearly."}
+        with patch("src.planners.langchain.request_orchestrator._invoke_chain", return_value=reject):
+            outcome = _decision_stage(question="What share of my patients had imaging type CT in 2025?", entities={"metric": "IMAGING_TYPE"}, language="en")
+        self.assertEqual((outcome.decision, outcome.missing_fields), ("proceed", []))
+        with patch("src.planners.langchain.request_orchestrator._invoke_chain", return_value=reject):
+            outcome = _decision_stage(question="Percentage of female patients per quarter", entities={"sex": "FEMALE", "group_by": "QUARTER"}, language="en")
+        self.assertEqual((outcome.decision, outcome.missing_fields), ("clarify", ["metric"]))
+        with patch("src.planners.langchain.request_orchestrator._invoke_chain", return_value=reject):
+            outcome = _decision_stage(question="same as before but different", entities={}, language="en")
+        self.assertEqual(outcome.decision, "reject")
+
     def test_reclassifies_out_of_scope_reject_with_missing_chart_type_as_proceed(self) -> None:
         """Regression test for a reported CVaLab failure: 'Make a graph for
         dtn for male ischemic patients from 2025 to 2026' -- a well-formed
