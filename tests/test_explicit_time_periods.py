@@ -73,12 +73,31 @@ class PeriodReferenceRejectionGuardTests(unittest.TestCase):
             )
         self.assertEqual(outcome.decision, "proceed")
 
+    def test_a_year_in_the_question_is_a_period_whatever_the_date_entities_hold(self) -> None:
+        cases = [
+            ("How many patients received thrombolysis in 2025?", {"metric": "THROMBOLYSIS"}),
+            ("DTN for female patients over 60 per month in 2025", {"metric": "DTN", "sex": "FEMALE", "date": ["60", "per month", "IN", "2025"]}),
+        ]
+        for question, entities in cases:
+            with patch(
+                "src.planners.langchain.request_orchestrator._invoke_chain",
+                return_value={"decision": "reject", "reason": "invalid_date_format", "missing_fields": None, "message": "The date format is invalid."},
+            ):
+                outcome = _decision_stage(question=question, entities=entities, language="en")
+            self.assertEqual(outcome.decision, "proceed", question)
+
     def test_a_genuinely_impossible_date_is_still_rejected(self) -> None:
         with patch(
             "src.planners.langchain.request_orchestrator._invoke_chain",
             return_value={"decision": "reject", "reason": "invalid_date_format", "missing_fields": None, "message": "The date format is invalid."},
         ):
             outcome = _decision_stage(question="dtn for 2024-13-01", entities={"metric": "DTN", "date": ["2024-13-01"]}, language="en")
+        self.assertEqual(outcome.decision, "reject")
+        with patch(
+            "src.planners.langchain.request_orchestrator._invoke_chain",
+            return_value={"decision": "reject", "reason": "invalid_date_format", "missing_fields": None, "message": "The date format is invalid."},
+        ):
+            outcome = _decision_stage(question="Show me a line graph of DTN from 2023-13-01 to 2023-13-40", entities={"metric": "DTN"}, language="en")
         self.assertEqual(outcome.decision, "reject")
 
 

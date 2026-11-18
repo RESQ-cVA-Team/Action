@@ -456,6 +456,18 @@ _PERIOD_REFERENCE_PATTERNS = (
 )
 
 
+# Anything in a question written like a date, valid or not: ISO-like dates
+# first, so a malformed one is not read as its year alone.
+_DATE_LIKE_TOKEN = re.compile(
+    r"\b\d{4}-\d{1,2}(?:-\d{1,2})?\b"
+    r"|\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b"
+    r"|\bq[1-4]\s*\d{4}\b|\b\d{4}\s*q[1-4]\b"
+    r"|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{4}\b"
+    r"|\b(?:19|20)\d{2}\b",
+    re.IGNORECASE,
+)
+
+
 def _looks_like_period_reference(value: str) -> bool:
     token = (value or "").strip()
     return bool(token) and any(pattern.match(token) for pattern in _PERIOD_REFERENCE_PATTERNS)
@@ -1939,12 +1951,11 @@ def _apply_decision_safeguards(
             )
 
     # Deterministic safeguard: a quarter, month or year reference ("Q1 2023",
-    # "March 2025", "2024") is a valid period, not a malformed date. Observed
-    # live: the same three-quarter request was accepted twice and rejected as
-    # invalid_date_format the third time.
+    # "March 2025", "2024") is a valid period, not a malformed date. Read from
+    # the question, since the date entities can miss the year or hold other words.
     if outcome.decision == "reject" and "invalid_date_format" in outcome.reason.strip().lower().replace(" ", "_"):
-        date_values = _extract_string_list(entities.get("date"))
-        if date_values and all(_looks_like_period_reference(value) for value in date_values):
+        date_tokens = _DATE_LIKE_TOKEN.findall(question or "")
+        if date_tokens and all(_looks_like_period_reference(token) for token in date_tokens):
             return VisualizationRequestOutcome(
                 decision="proceed",
                 reason="all_required_fields_present",
