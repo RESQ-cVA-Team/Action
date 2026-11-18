@@ -661,8 +661,8 @@ def _metric_from_option_words(question: str, entities: Dict[str, Any], language:
 
 def _validate_option_words_name_one_metric(question: str, entities: Dict[str, Any], language: Optional[str]) -> Optional[VisualizationRequestOutcome]:
     """Options of several metrics named and no metric ("another hospital" is
-    an option of the arrival mode, the admission pathway and the discharge
-    destination): ask which metric is meant."""
+    an option of the arrival mode and the discharge destination): ask which
+    metric is meant."""
     if _entity_present(entities, "metric"):
         return None
     metrics, named = _names_in_question(question, language)

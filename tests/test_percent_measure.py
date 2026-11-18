@@ -61,7 +61,7 @@ class PercentSeriesMappingTests(unittest.TestCase):
     def test_grouped_yes_no_row_plots_yes_by_label_not_order(self) -> None:
         kpi = _kpi(case_count=[30, 70], percents=[30.0, 70.0], cohort_size=100)
         kpi.time_period = SimpleNamespace(start_date="2026-01-01", end_date="2026-03-31")
-        payload = {"metric_ANTICOAGULANT_REVERSAL_GIVEN": SimpleNamespace(kpi_group=[kpi], labels=["no", "yes"])}
+        payload = {"metric_THROMBOLYSIS": SimpleNamespace(kpi_group=[kpi], labels=["no", "yes"])}
         series = _map(payload, "percent", add_time_period_labels=True)
         self.assertEqual(len(series), 1)
         self.assertEqual(series[0].data[0].y, 70.0)

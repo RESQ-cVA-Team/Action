@@ -98,7 +98,7 @@ class FilterListNormalizationTests(unittest.TestCase):
                     {
                         "chart_type": "LINE",
                         "semantics": {"intent": "TREND", "measure": {"type": "MEAN"}},
-                        "metrics": [{"metric": "DTN"}, {"metric": "DTG"}],
+                        "metrics": [{"metric": "DTN"}, {"metric": "DIDO"}],
                     }
                 ]
             }
@@ -107,7 +107,7 @@ class FilterListNormalizationTests(unittest.TestCase):
         split_plan = _split_mixed_unit_charts(plan)
 
         self.assertEqual(len(split_plan.charts), 1)
-        self.assertEqual([m.metric for m in split_plan.charts[0].metrics], ["DTN", "DTG"])
+        self.assertEqual([m.metric for m in split_plan.charts[0].metrics], ["DTN", "DIDO"])
 
     def test_mixed_unit_multi_metric_chart_splits_into_separate_charts(self) -> None:
         plan = AnalysisPlan.model_validate(

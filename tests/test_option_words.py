@@ -40,7 +40,7 @@ class OptionWordsTests(unittest.TestCase):
         outcome = _validate_option_words_name_one_metric(question, {}, None)
         assert outcome is not None
         self.assertEqual((outcome.decision, outcome.clarification_type), ("clarify", "metric"))
-        self.assertEqual(outcome.clarification_options, ["ADMISSION_PATHWAY", "ARRIVAL_MODE", "DISCHARGE_DESTINATION"])
+        self.assertEqual(outcome.clarification_options, ["ARRIVAL_MODE", "DISCHARGE_DESTINATION"])
         self.assertIsNone(_validate_option_words_name_one_metric(question, {"metric": "ARRIVAL_MODE"}, None))
 
 
