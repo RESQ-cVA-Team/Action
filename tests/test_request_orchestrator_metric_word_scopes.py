@@ -24,6 +24,12 @@ class DropHospitalScopesFromMetricWordsTests(unittest.TestCase):
         plan = _drop_hospital_scopes_from_metric_words(_plan("AA_IMAGING", "first hospital", "provider_group_name"), {"metric": "AA_IMAGING"})
         self.assertIsNone(plan.charts[0].metrics[0].origin_scope)
 
+    def test_a_scope_named_like_one_of_the_metrics_options_is_that_option(self) -> None:
+        # "patients from another hospital", ARRIVAL_MODE: the planner read the option as a provider group.
+        plan = _drop_hospital_scopes_from_metric_words(_plan("ARRIVAL_MODE", "another hospital", "provider_group_name"), {"metric": "ARRIVAL_MODE"})
+        metric = plan.charts[0].metrics[0]
+        self.assertEqual((metric.origin_scope, metric.categories), (None, ["another_hospital"]))
+
     def test_scope_is_kept_when_nlu_saw_a_hospital_name(self) -> None:
         plan = _drop_hospital_scopes_from_metric_words(
             _plan("AA_IMAGING", "First Hospital"),

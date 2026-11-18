@@ -1112,6 +1112,16 @@ def _metric_synonym_texts(metric_codes: List[str]) -> List[str]:
 _NAMED_SCOPE_TYPES = {"provider_name", "provider_group_name"}
 
 
+def _option_key_named(metric_code: str, text: str) -> Optional[str]:
+    """The key of the metric's option one of whose names, in any language, is `text`."""
+    options = cast(Dict[str, Any], (ssot_loader.get_metric_metadata().get(metric_code) or {}).get("enum_options") or {})
+    for key, entry in options.items():
+        for names in cast(Dict[str, List[str]], entry["names"]).values():
+            if any(ssot_loader.normalize_metric_text_key(name) == text for name in names):
+                return key
+    return None
+
+
 def _drop_hospital_scopes_from_metric_words(plan: AnalysisPlan, entities: Dict[str, Any]) -> AnalysisPlan:
     """Drop hospital/group name scopes the planner read out of the metric's own name.
 
@@ -1120,7 +1130,9 @@ def _drop_hospital_scopes_from_metric_words(plan: AnalysisPlan, entities: Dict[s
     either pages through every accessible provider and times out, or fails
     with "could not match that provider group". A named scope is kept
     whenever NLU saw a hospital or group name for it, and only dropped when
-    its text is a fragment of one of the chart's (or value's) own metric synonyms.
+    its text is a fragment of one of the chart's (or value's) own metric
+    synonyms, or is the name of one of the metric's options ("another
+    hospital" of ARRIVAL_MODE), which then becomes the entry's categories.
     """
     named = [ssot_loader.normalize_metric_text_key(value) for key in ("hospital_name", "provider_name", "provider_group_name") for value in _extract_string_list(entities.get(key))]
     named = [token for token in named if token]
@@ -1136,6 +1148,11 @@ def _drop_hospital_scopes_from_metric_words(plan: AnalysisPlan, entities: Dict[s
                 value_norm = ssot_loader.normalize_metric_text_key(str(scope.value or scope.label or ""))
             if not value_norm or any(value_norm in token or token in value_norm for token in named):
                 out.append(metric)
+                continue
+            option = _option_key_named(metric.metric, value_norm)
+            if option is not None and not metric.categories:
+                logger.info("Reading a named scope as the metric's option", extra={"scope_value": scope.value if scope is not None else None, "metric": metric.metric, "option": option})
+                out.append(metric.model_copy(update={"origin_scope": None, "categories": [option]}))
                 continue
             if synonyms is None:
                 synonyms = _metric_synonym_texts(codes)
