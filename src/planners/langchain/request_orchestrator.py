@@ -573,23 +573,109 @@ def _extract_metric_code(entities: Dict[str, Any]) -> Optional[str]:
 # grouping). The orchestrator only ever sees chart requests, so drop them.
 _PAGINATION_ENTITY_KEYS = {"limit", "offset", "sort"}
 
-_STROKE_SHARE_WORDING = re.compile(r"\b(percent(age)?|share|proportion|rate)\b.{0,40}\bstrokes?\b", re.IGNORECASE)
+# Option names that do not say which metric is meant.
+_GENERIC_OPTION_NAMES = {"yes", "no", "other", "none", "unknown", "unknown or other", "not done", "not applicable", "not required", "not available"}
+# The filter entity that names an option of these metrics: counting that
+# option, it is not a filter, or its share would be 100 percent.
+_OPTION_FILTER_ENTITY = {"SEX": "sex", "STROKE_TYPE": "stroke_type"}
 
 
-def _infer_stroke_type_share_metric(question: str, entities: Dict[str, Any]) -> Dict[str, Any]:
-    """ "Percentage of ischemic strokes" names no metric that NLU can see: the
-    word it tags is the stroke type. The share of a stroke type among all
-    strokes is the STROKE_TYPE metric plotted as a rate, so fill that in
-    rather than asking which metric was meant. The stroke type is then the
-    category whose share is asked, not a filter on the cases, so it is
-    dropped: filtering on it would make its share 100 percent."""
-    if _entity_present(entities, "metric") or not _entity_present(entities, "stroke_type"):
+@lru_cache(maxsize=8)
+def _names(language: Optional[str]) -> List[tuple[re.Pattern[str], str, Dict[str, List[str]]]]:
+    """Every SSOT metric name, and every option name of a multi-option Enum
+    metric in English and the request's language, longest first: a pattern,
+    "metric" or "option", and the metrics (with option keys) it names. Other
+    languages' option names are left out: Czech "ambulance" is an outpatient
+    clinic."""
+    languages = {"en", (language or "en").lower()}
+    by_name: Dict[tuple[str, str], Dict[str, List[str]]] = {}
+    for text, entry in ssot_loader.get_metric_text_lookup().items():
+        by_name.setdefault((text, "metric"), {}).setdefault(str(entry["canonical"]).upper(), [])
+    for code, meta in ssot_loader.get_metric_metadata().items():
+        options = cast(Dict[str, Any], meta.get("enum_options") or {})
+        if set(options) <= {"yes", "no"}:
+            continue
+        for key, entry in options.items():
+            for lang, names in cast(Dict[str, List[str]], entry["names"]).items():
+                if lang not in languages:
+                    continue
+                for name in names:
+                    text = ssot_loader.normalize_metric_text_key(name)
+                    if text in _GENERIC_OPTION_NAMES or not re.search(r"[^\W\d_]{2}", text):
+                        continue
+                    keys = by_name.setdefault((text, "option"), {}).setdefault(code, [])
+                    if key not in keys:
+                        keys.append(key)
+    ordered = sorted(by_name.items(), key=lambda item: (-len(item[0][0]), item[0][1]))
+    return [(re.compile(r"(?<!\w)" + re.escape(text) + r"s?(?!\w)"), kind, metrics) for (text, kind), metrics in ordered]
+
+
+def _user_words(question: str) -> str:
+    """The user's own words in a planner question: not the previous plan an
+    edit is shown with, nor what the assistant asked in a clarification."""
+    text = (question or "").split("User's newest instruction:")[-1]
+    return "\n".join(line for line in text.splitlines() if not line.startswith("The assistant asked:"))
+
+
+def _names_in_question(question: str, language: Optional[str]) -> tuple[List[str], Dict[str, List[str]]]:
+    """The metrics the user names by name, and those whose options the user
+    names ("CT", "female patients", "ischemic strokes") with the option keys.
+    A name inside a longer name that matched is not read again, so "stroke
+    unit or intensive care" is the metric, not its "stroke unit" option."""
+    words = ssot_loader.normalize_metric_text_key(_user_words(question))
+    taken: List[tuple[int, int]] = []
+    metrics: List[str] = []
+    options: Dict[str, List[str]] = {}
+    for pattern, kind, named in _names(language):
+        for match in pattern.finditer(words):
+            if any(match.start() < end and start < match.end() for start, end in taken):
+                continue
+            taken.append(match.span())
+            for code, keys in named.items():
+                if kind == "metric":
+                    metrics += [code] if code not in metrics else []
+                    continue
+                options.setdefault(code, [])
+                options[code] += [key for key in keys if key not in options[code]]
+    return metrics, options
+
+
+def _metric_from_option_words(question: str, entities: Dict[str, Any], language: Optional[str]) -> Dict[str, Any]:
+    """A request with no metric entity that names one metric ("Show me a bar
+    chart of stroke unit or intensive care", which NLU missed), or names
+    options of one metric and no metric ("How many of my patients had CT
+    imaging?"), is about that metric. For options, a filter entity naming the
+    option is dropped, since the option is what is counted."""
+    if _entity_present(entities, "metric"):
         return entities
-    if not _STROKE_SHARE_WORDING.search(question or ""):
+    metrics, options = _names_in_question(question, language)
+    if metrics:
+        return {**entities, "metric": metrics[0]} if len(metrics) == 1 else entities
+    if len(options) != 1:
         return entities
-    out = {key: value for key, value in entities.items() if key != "stroke_type"}
-    out["metric"] = "STROKE_TYPE"
+    (code,) = options
+    out = {key: value for key, value in entities.items() if key != _OPTION_FILTER_ENTITY.get(code)}
+    out["metric"] = code
     return out
+
+
+def _validate_option_words_name_one_metric(question: str, entities: Dict[str, Any], language: Optional[str]) -> Optional[VisualizationRequestOutcome]:
+    """Options of several metrics named and no metric ("another hospital" is
+    an option of the arrival mode, the admission pathway and the discharge
+    destination): ask which metric is meant."""
+    if _entity_present(entities, "metric"):
+        return None
+    metrics, named = _names_in_question(question, language)
+    if metrics or len(named) < 2:
+        return None
+    return VisualizationRequestOutcome(
+        decision="clarify",
+        reason="ambiguous_request",
+        message=None,
+        clarification_type="metric",
+        clarification_options=sorted(named),
+        missing_fields=["metric"],
+    )
 
 
 _NLU_ONLY_ENTITY_KEYS = {"kpi"}
@@ -2058,6 +2144,11 @@ def _triage(
     edit_entities: Optional[Dict[str, Any]],
 ) -> VisualizationRequestOutcome:
     """The deterministic validators, then the decision stage: proceed, clarify or reject."""
+    option_words_validation = _validate_option_words_name_one_metric(question, normalized_entities, language)
+    if option_words_validation is not None:
+        logger.info("Orchestrator clarification: options of several metrics named")
+        return option_words_validation
+
     stat_test_support_validation = _validate_statistical_test_support(question)
     if stat_test_support_validation is not None:
         logger.info(
@@ -2129,7 +2220,7 @@ def orchestrate_visualization_request(
     previous chart. The decision stage judges the message on `entities`; its
     safeguards use these once it judges the message an edit."""
     with log_context(trace_id=trace_id or "", orchestrator_include_plan=include_plan):
-        normalized_entities = _infer_stroke_type_share_metric(question, _normalize_entities_for_question(question, entities))
+        normalized_entities = _metric_from_option_words(question, _normalize_entities_for_question(question, entities), language)
         if not _ORCHESTRATOR_ENABLED:
             if not include_plan:
                 return VisualizationRequestOutcome(decision="proceed", reason="orchestrator_disabled")
@@ -2156,7 +2247,7 @@ def orchestrate_visualization_request(
                 stage1 = VisualizationRequestOutcome(decision="proceed", reason=decided_proceed)
             else:
                 normalized_edit_entities = (
-                    _infer_stroke_type_share_metric(question, _normalize_entities_for_question(question, edit_entities)) if edit_entities is not None else None
+                    _metric_from_option_words(question, _normalize_entities_for_question(question, edit_entities), language) if edit_entities is not None else None
                 )
                 stage1 = _triage(question, normalized_entities, language, conversation_history, pending_clarification, normalized_edit_entities)
             logger.info(
