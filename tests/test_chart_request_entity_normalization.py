@@ -14,6 +14,13 @@ class ChartRequestEntityNormalizationTests(unittest.TestCase):
         entities = {"metric": ["DTN"], "age": ["30", "60"], "age_lower": "30", "age_upper": "60", "hospital_name": "X"}
         self.assertEqual(_normalize_entities_for_question("q", entities), entities)
 
+    def test_a_year_read_as_an_nihss_or_age_bound_is_dropped(self) -> None:
+        thrombolysis = {"metric": "THROMBOLYSIS", "nihss": "2025", "nihss_lower": "2025"}
+        self.assertEqual(_normalize_entities_for_question("How many patients received thrombolysis in 2025?", thrombolysis), {"metric": "THROMBOLYSIS"})
+        ages = {"metric": "AGE", "age": ["2023", "65"]}
+        self.assertEqual(_normalize_entities_for_question("q", ages), {"metric": "AGE", "age": ["65"]})
+        self.assertEqual(_normalize_entities_for_question("q", {"nihss": "42", "age_upper": "120"}), {"nihss": "42", "age_upper": "120"})
+
     def test_returns_a_copy(self) -> None:
         entities = {"metric": "DTN"}
         self.assertIsNot(_normalize_entities_for_question("q", entities), entities)
