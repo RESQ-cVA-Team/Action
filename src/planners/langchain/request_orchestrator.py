@@ -682,13 +682,42 @@ _NLU_ONLY_ENTITY_KEYS = {"kpi"}
 _GROUP_BY_PREFIX_WORDS = re.compile(r"^(?:(?:grouped|split|broken down|divided)\s+)?(?:per|by|for each|each|every|the|an?)\s+", re.IGNORECASE)
 
 
+# The SSOT metric whose range bounds an age or NIHSS entity.
+_BOUND_RANGE_METRICS = {"age": "AGE", "nihss": "ADMISSION_NIHSS"}
+
+
+def _drop_impossible_bounds(entities: Dict[str, Any]) -> Dict[str, Any]:
+    """An age or NIHSS value outside its SSOT range is a misread number, most
+    often the year: "thrombolysis in 2025" arrives with nihss 2025, which the
+    decision stage rejects as an invalid date."""
+    out = dict(entities)
+    for base, metric in _BOUND_RANGE_METRICS.items():
+        numeric = cast(Dict[str, Any], ssot_loader.get_metric_metadata()[metric]["numeric"])
+        low, high = numeric["range_min"], numeric["range_max"]
+        for key in (base, f"{base}_lower", f"{base}_upper"):
+            if key not in out:
+                continue
+            values = _extract_string_list(out[key])
+            kept = [value for value in values if (number := _number_or_none(value)) is None or low <= number <= high]
+            if kept == values:
+                continue
+            logger.info("Dropping %s values no patient can have", key, extra={"dropped": [value for value in values if value not in kept]})
+            if kept:
+                out[key] = kept[0] if isinstance(out[key], str) else kept
+            else:
+                del out[key]
+    return out
+
+
 def _normalize_entities_for_question(question: str, entities: Dict[str, Any]) -> Dict[str, Any]:
     """Drop training-data annotations that are not fields of a request and
-    put group_by values in canonical form. "kpi": "percent" read to the
-    decision stage as a second metric ("PERCENT_ISCHEMIC_STROKES") to choose
-    between; "per quarter" was refused as a grouping nothing supports."""
+    age or NIHSS values no patient can have, and put group_by values in
+    canonical form. "kpi": "percent" read to the decision stage as a second
+    metric ("PERCENT_ISCHEMIC_STROKES") to choose between; "per quarter" was
+    refused as a grouping nothing supports."""
     _ = question
     out = {key: value for key, value in (entities or {}).items() if key not in _PAGINATION_ENTITY_KEYS and key not in _NLU_ONLY_ENTITY_KEYS}
+    out = _drop_impossible_bounds(out)
     raw_group_by = out.get("group_by")
     values = _extract_string_list(raw_group_by)
     if values:
