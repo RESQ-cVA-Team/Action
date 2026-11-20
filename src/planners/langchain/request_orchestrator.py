@@ -2085,9 +2085,11 @@ def _apply_decision_safeguards(
     # Deterministic safeguard: a quarter, month or year reference ("Q1 2023",
     # "March 2025", "2024") is a valid period, not a malformed date. Read from
     # the question, since the date entities can miss the year or hold other words.
+    # A question with a metric and no date at all has no date to be invalid.
     if outcome.decision == "reject" and "invalid_date_format" in outcome.reason.strip().lower().replace(" ", "_"):
         date_tokens = _DATE_LIKE_TOKEN.findall(question or "")
-        if date_tokens and all(_looks_like_period_reference(token) for token in date_tokens):
+        no_date = not date_tokens and _entity_present(entities, "metric")
+        if no_date or (date_tokens and all(_looks_like_period_reference(token) for token in date_tokens)):
             return VisualizationRequestOutcome(
                 decision="proceed",
                 reason="all_required_fields_present",
@@ -2111,7 +2113,15 @@ def _apply_decision_safeguards(
     # waved through just because a metric happens to be present too -- that
     # was a real regression caught via CVaLab's webapp_negative_invalid_time_period
     # scenario during this fix's own testing.
-    if outcome.decision == "reject" and "out_of_scope" in outcome.reason.strip().lower().replace(" ", "_") and any(_entity_present(entities, key) for key in _SCOPE_PROVING_ENTITY_KEYS):
+    # "insufficient_information" gets the same treatment: a request with a
+    # metric is enough to plan ("What share of my patients had imaging type CT
+    # in 2025?" was rejected as unclear), and one with other request fields
+    # needs only the metric.
+    if (
+        outcome.decision == "reject"
+        and outcome.reason.strip().lower().replace(" ", "_") in {"out_of_scope", "insufficient_information"}
+        and any(_entity_present(entities, key) for key in _SCOPE_PROVING_ENTITY_KEYS)
+    ):
         # chart_type is not required any more (a missing one means a default
         # chart), so the only gap that still needs the user is the metric.
         still_missing = [field for field in ("metric",) if not _entity_present(entities, field)]
