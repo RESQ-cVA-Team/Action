@@ -30,8 +30,11 @@ class OptionWordsTests(unittest.TestCase):
         self.assertEqual(_metric_from_option_words(exchange, {}, None), {})
 
     def test_names_are_read_in_english_and_the_users_language(self) -> None:
-        # Czech "ambulance" is an outpatient clinic.
-        self.assertEqual(_metric_from_option_words("How many patients arrived by ambulance?", {}, None), {})
+        # Czech "ambulance" is an outpatient clinic: only a Czech request reads it as one.
+        self.assertEqual(_metric_from_option_words("How many patients arrived by ambulance?", {}, None), {"metric": "ARRIVAL_MODE"})
+        clarification = _validate_option_words_name_one_metric("How many patients arrived by ambulance?", {}, "cs")
+        assert clarification is not None
+        self.assertEqual(clarification.clarification_options, ["ARRIVAL_MODE", "FIRST_CONTACT_PLACE"])
         self.assertEqual(_metric_from_option_words("Kolik pacientů mělo ischemický iktus?", {}, "cs"), {"metric": "STROKE_TYPE"})
 
     def test_options_of_several_metrics_ask_which_metric(self) -> None:
