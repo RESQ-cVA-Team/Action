@@ -33,6 +33,7 @@ from src.planners.langchain.llm_factory import create_chat_llm
 from src.planners.langchain.pipeline import (
     _PLANNER_REQUEST_TIMEOUT_SECONDS,
     _STAT_TEST_KEYWORDS,
+    PlanUnresolvedError,
     entities_json,
     generate_analysis_plan,
 )
@@ -46,6 +47,10 @@ logger = logging.getLogger(__name__)
 
 
 OutcomeDecision = Literal["proceed", "clarify", "reject"]
+
+# Reasons for a reject that is not about the request itself.
+PLANNING_TIMED_OUT = "planning_timed_out"
+PLAN_UNRESOLVED = "plan_unresolved"
 
 
 @dataclass
@@ -303,18 +308,14 @@ def _generate_plan_with_timeout(
     """Wrap generate_analysis_plan with timeout protection to prevent indefinite hangs."""
 
     def _call_plan_gen() -> AnalysisPlan:
-        result = generate_analysis_plan(
+        return generate_analysis_plan(
             question=question,
             entities=entities,
             language=language,
             max_retries=max_retries,
-            debug=False,
             trace_id=trace_id,
             progress_cb=progress_cb,
         )
-        if not isinstance(result, AnalysisPlan):
-            raise RuntimeError(f"Expected AnalysisPlan but got {type(result).__name__}")
-        return cast(AnalysisPlan, result)
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(bind_current_context(_call_plan_gen))
@@ -2332,14 +2333,21 @@ def orchestrate_visualization_request(
                 )
 
             logger.info("Plan generation starting via timeout wrapper")
-            plan = _generate_plan_with_timeout(
-                question=question,
-                entities=normalized_entities,
-                language=language,
-                max_retries=max_retries,
-                trace_id=trace_id,
-                progress_cb=progress_cb,
-            )
+            try:
+                plan = _generate_plan_with_timeout(
+                    question=question,
+                    entities=normalized_entities,
+                    language=language,
+                    max_retries=max_retries,
+                    trace_id=trace_id,
+                    progress_cb=progress_cb,
+                )
+            except TimeoutError as exc:
+                logger.warning("Planning timed out: %s", exc)
+                return VisualizationRequestOutcome(decision="reject", reason=PLANNING_TIMED_OUT)
+            except PlanUnresolvedError as exc:
+                logger.warning("Planning failed: %s", exc)
+                return VisualizationRequestOutcome(decision="reject", reason=PLAN_UNRESOLVED)
             plan = _normalize_generated_plan(plan, question, normalized_entities)
             logger.info("Plan generation completed successfully", extra={"plan_type": type(plan).__name__})
 

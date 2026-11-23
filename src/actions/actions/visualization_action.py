@@ -32,6 +32,8 @@ from src.planners.langchain.value_answer import answer_values
 from src.planners.langchain.llm_errors import LLM_UNAVAILABLE
 from src.planners.langchain.request_orchestrator import (
     _PLANNER_MAX_RETRIES,
+    PLAN_UNRESOLVED,
+    PLANNING_TIMED_OUT,
     VisualizationRequestOutcome,
     orchestrate_visualization_request,
 )
@@ -440,11 +442,19 @@ def _hand_over_plan(ctx: LongActionContext, trace_id: str, plan: lang_schema.Ana
     return PreworkResult(events=[SlotSet("awaiting_visualization_clarification", False)], proceed=True)
 
 
+_REASON_TEXT_KEYS = {
+    LLM_UNAVAILABLE: "action.visualization.llm_unavailable",
+    PLANNING_TIMED_OUT: "action.visualization.planning_timed_out",
+    PLAN_UNRESOLVED: "action.visualization.plan_unresolved",
+}
+
+
 def _decision_text(outcome: VisualizationRequestOutcome, language: str, default_key: str, message: Optional[str] = None) -> str:
-    """What the user reads for a clarify or reject. An unreachable LLM says so
-    instead of asking for detail the request does not lack."""
-    if outcome.reason == LLM_UNAVAILABLE:
-        return translate("action.visualization.llm_unavailable", language=language)
+    """What the user reads for a clarify or reject. A failure that is not about
+    the request says so instead of asking for detail the request does not lack."""
+    reason_key = _REASON_TEXT_KEYS.get(outcome.reason)
+    if reason_key:
+        return translate(reason_key, language=language)
     return message or outcome.message or translate(default_key, language=language)
 
 
