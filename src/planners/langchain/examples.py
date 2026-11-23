@@ -43,7 +43,7 @@ def get_few_shot_examples() -> List[FewShotExample]:
             {
                 "name": path.stem,
                 "user": user,
-                "assistant": plan.model_dump_json(indent=2),
+                "assistant": plan.model_dump_json(indent=2, exclude_none=True),
                 "entities": data["entities_detected"],
                 "answer": plan.answer,
             }
