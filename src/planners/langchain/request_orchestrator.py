@@ -9,7 +9,7 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from functools import lru_cache
 from threading import Lock
-from typing import Any, Callable, Dict, List, Literal, Optional, cast
+from typing import Any, Callable, Dict, List, Literal, Optional, cast, get_args
 
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -17,6 +17,7 @@ from src.domain.langchain.schema import (
     TIME_INTERVALS,
     AnalysisPlan,
     AndFilter,
+    AnswerForm,
     ChartSpec,
     ChartType,
     DataOriginSpec,
@@ -65,6 +66,8 @@ class VisualizationRequestOutcome:
     # Whether the message edits the previous chart rather than asking for a
     # new one; None when there is no previous chart to edit.
     edits_previous_plan: Optional[bool] = None
+    # How the request is answered: with values, charts or statistical tests.
+    answer: Optional[AnswerForm] = None
 
 
 _ORCHESTRATOR_ENABLED = env_util.env_flag("ACTIONS_LLM_REQUEST_ORCHESTRATOR_ENABLED", default=True)
@@ -304,6 +307,7 @@ def _generate_plan_with_timeout(
     max_retries: int = 2,
     trace_id: Optional[str] = None,
     progress_cb: Optional[Callable[[str], None]] = None,
+    answer: AnswerForm = "chart",
 ) -> AnalysisPlan:
     """Wrap generate_analysis_plan with timeout protection to prevent indefinite hangs."""
 
@@ -315,6 +319,7 @@ def _generate_plan_with_timeout(
             max_retries=max_retries,
             trace_id=trace_id,
             progress_cb=progress_cb,
+            answer=answer,
         )
 
     with ThreadPoolExecutor(max_workers=1) as executor:
@@ -499,6 +504,11 @@ def _has_statistical_test_signal(question: str, entities: Dict[str, Any]) -> boo
     if not question_norm:
         return False
     return any(keyword in question_norm for keyword in _STAT_TEST_KEYWORDS)
+
+
+def _answer_without_decision(question: str, entities: Dict[str, Any]) -> AnswerForm:
+    """The answer form when planning runs without the decision stage."""
+    return "test" if _has_statistical_test_signal(question, entities) else "chart"
 
 
 def _extract_string_list(value: Any) -> List[str]:
@@ -1868,10 +1878,11 @@ def _decision_stage(
     pending_clarification: Optional[Dict[str, Any]] = None,
     edit_entities: Optional[Dict[str, Any]] = None,
 ) -> VisualizationRequestOutcome:
-    outcome, edits_previous_plan = _ask_decision_model(question, entities, language, conversation_history)
-    safeguard_entities = edit_entities if edits_previous_plan and edit_entities is not None else entities
-    outcome = _apply_decision_safeguards(outcome, question, safeguard_entities, pending_clarification)
-    outcome.edits_previous_plan = edits_previous_plan
+    asked = _ask_decision_model(question, entities, language, conversation_history)
+    safeguard_entities = edit_entities if asked.edits_previous_plan and edit_entities is not None else entities
+    outcome = _apply_decision_safeguards(asked, question, safeguard_entities, pending_clarification)
+    outcome.edits_previous_plan = asked.edits_previous_plan
+    outcome.answer = asked.answer
     return outcome
 
 
@@ -1880,7 +1891,7 @@ def _ask_decision_model(
     entities: Dict[str, Any],
     language: Optional[str],
     conversation_history: Optional[List[str]],
-) -> tuple[VisualizationRequestOutcome, Optional[bool]]:
+) -> VisualizationRequestOutcome:
     llm = _get_llm()
     if llm is None:
         raise RuntimeError("LLM unavailable")
@@ -1927,16 +1938,18 @@ def _ask_decision_model(
     llm_message_raw = parsed.get("message")
     llm_message = llm_message_raw.strip() if isinstance(llm_message_raw, str) and llm_message_raw.strip() else None
 
-    outcome = VisualizationRequestOutcome(
+    edits_raw = parsed.get("edits_previous_plan")
+    answer_raw = parsed.get("answer_form")
+    return VisualizationRequestOutcome(
         decision=cast(OutcomeDecision, decision_raw),
         reason=reason,
         message=llm_message,
         clarification_type=clarification_type.strip() if isinstance(clarification_type, str) and clarification_type.strip() else None,
         clarification_options=clarification_options,
         missing_fields=missing_fields,
+        edits_previous_plan=edits_raw if isinstance(edits_raw, bool) else None,
+        answer=answer_raw if answer_raw in get_args(AnswerForm) else None,
     )
-    edits_raw = parsed.get("edits_previous_plan")
-    return outcome, edits_raw if isinstance(edits_raw, bool) else None
 
 
 def _apply_decision_safeguards(
@@ -2251,12 +2264,12 @@ def orchestrate_visualization_request(
     conversation_history: Optional[List[str]] = None,
     progress_cb: Optional[Callable[[str], None]] = None,
     pending_clarification: Optional[Dict[str, Any]] = None,
-    decided_proceed: Optional[str] = None,
+    decided: Optional[VisualizationRequestOutcome] = None,
     edit_entities: Optional[Dict[str, Any]] = None,
 ) -> VisualizationRequestOutcome:
-    """decided_proceed: the reason of a proceed decision already taken for this
-    same message (the triage ran in action_clarify_visualization_request);
-    the validators and the decision stage are then skipped.
+    """decided: a proceed decision already taken for this same message (the
+    triage ran in action_clarify_visualization_request); the validators and
+    the decision stage are then skipped.
 
     edit_entities: the entities the request has if the message edits the
     previous chart. The decision stage judges the message on `entities`; its
@@ -2273,6 +2286,7 @@ def orchestrate_visualization_request(
                 max_retries=max_retries,
                 trace_id=trace_id,
                 progress_cb=progress_cb,
+                answer=_answer_without_decision(question, normalized_entities),
             )
             return VisualizationRequestOutcome(decision="proceed", reason="orchestrator_disabled", plan=plan)
 
@@ -2284,9 +2298,9 @@ def orchestrate_visualization_request(
             report("Analyzing request intent and feasibility")
             logger.info("Orchestrator input - question: %s, entities: %s", question, normalized_entities)
 
-            if decided_proceed is not None:
-                logger.info("Orchestrator decision taken earlier for this message: proceed (%s)", decided_proceed)
-                stage1 = VisualizationRequestOutcome(decision="proceed", reason=decided_proceed)
+            if decided is not None:
+                logger.info("Orchestrator decision taken earlier for this message: proceed (%s, answer %s)", decided.reason, decided.answer)
+                stage1 = decided
             else:
                 normalized_edit_entities = (
                     _metric_from_option_words(question, _normalize_entities_for_question(question, edit_entities), language) if edit_entities is not None else None
@@ -2312,6 +2326,7 @@ def orchestrate_visualization_request(
                     decision="proceed",
                     reason=stage1.reason or "sufficient_information",
                     edits_previous_plan=stage1.edits_previous_plan,
+                    answer=stage1.answer,
                 )
 
             report("Generating visualization plan")
@@ -2341,6 +2356,7 @@ def orchestrate_visualization_request(
                     max_retries=max_retries,
                     trace_id=trace_id,
                     progress_cb=progress_cb,
+                    answer=stage1.answer or "chart",
                 )
             except TimeoutError as exc:
                 logger.warning("Planning timed out: %s", exc)
@@ -2400,6 +2416,7 @@ def orchestrate_visualization_request(
                         max_retries=max_retries,
                         trace_id=trace_id,
                         progress_cb=progress_cb,
+                        answer=_answer_without_decision(question, entities),
                     )
                     plan = _normalize_generated_plan(plan, question, entities)
                     return VisualizationRequestOutcome(

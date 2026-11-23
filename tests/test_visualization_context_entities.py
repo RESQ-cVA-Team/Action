@@ -12,8 +12,8 @@ def _latest(text: str, entities: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {"text": text, "intent": {"name": "generate_visualization"}, "entities": entities}
 
 
-def _decision(decision: str, message: Optional[str] = None, edits: Optional[bool] = None) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {"type": "visualization_query_decision", "decision": decision, "reason": "x", "message": message}
+def _decision(decision: str, message: Optional[str] = None, edits: Optional[bool] = None, answer: Optional[str] = None) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"type": "visualization_query_decision", "decision": decision, "reason": "x", "message": message, "answer": answer}
     if edits is not None:
         payload["edits_previous_plan"] = edits
     return {"event": "bot", "custom": payload}
@@ -169,7 +169,8 @@ def test_no_exchange_after_a_completed_request() -> None:
 
 def test_a_proceed_decision_sent_for_the_current_message_is_found() -> None:
     message = _user_event("show me a line graph of dtn", [])
-    assert va._proceed_decided_for_latest_message([message, _decision("proceed")]) == "x"
+    decided = va._proceed_decided_for_latest_message([message, _decision("proceed", answer="number")])
+    assert decided is not None and (decided.reason, decided.answer) == ("x", "number")
     assert va._proceed_decided_for_latest_message([message, _decision("clarify")]) is None
     # A decision before the current message belongs to an earlier one.
     assert va._proceed_decided_for_latest_message([_decision("proceed"), message]) is None

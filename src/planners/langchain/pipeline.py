@@ -17,7 +17,7 @@ from typing import (
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.domain.langchain.schema import AnalysisPlan
+from src.domain.langchain.schema import AnalysisPlan, AnswerForm
 from src.planners.langchain.llm_errors import is_llm_service_error
 from src.planners.langchain.examples import FewShotExample, get_few_shot_examples
 from src.planners.langchain.llm_factory import create_chat_llm, get_llm_provider
@@ -380,18 +380,20 @@ def _match_score(question: str, entities: Dict[str, Any], example: FewShotExampl
     }
 
 
-def _select_few_shot_examples(question: str, entities: Dict[str, Any], max_items: int) -> List[FewShotExample]:
+def _select_few_shot_examples(question: str, entities: Dict[str, Any], max_items: int, answer: AnswerForm = "chart") -> List[FewShotExample]:
     if not few_shot_examples:
         return []
 
     capped = max(1, min(max_items, len(few_shot_examples)))
     scored = [(_match_score(question, entities, ex)["total"], idx, ex) for idx, ex in enumerate(few_shot_examples)]
     scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
-
-    selected = [item[2] for item in scored[:capped]]
     # If all scores are zero, preserve deterministic default ordering from examples.py.
-    if scored and scored[0][0] <= 0:
-        return few_shot_examples[:capped]
+    ranked = few_shot_examples if scored[0][0] <= 0 else [item[2] for item in scored]
+
+    selected = ranked[:capped]
+    # At least one example answers in the form asked.
+    if not any(ex["answer"] == answer for ex in selected):
+        selected += [ex for ex in ranked if ex["answer"] == answer][:1]
     return selected
 
 
@@ -441,7 +443,7 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
             "system",
             "REASONING (English internal reasoning shown below can differ from output language):\n{reasoning}",
         ),
-        ("user", "USER_UTTERANCE:\n{question}\n\nENTITIES_DETECTED(JSON):\n{entities}\n\nMETRIC_DATA_TYPES(JSON):\n{metric_data_types}\n\nMETRIC_OPTIONS(JSON):\n{metric_options}"),
+        ("user", "USER_UTTERANCE:\n{question}\n\nANSWER:\n{answer}\n\nENTITIES_DETECTED(JSON):\n{entities}\n\nMETRIC_DATA_TYPES(JSON):\n{metric_data_types}\n\nMETRIC_OPTIONS(JSON):\n{metric_options}"),
     ]
 )
 
@@ -509,8 +511,10 @@ def generate_analysis_plan(
     max_retries: int = 2,
     trace_id: Optional[str] = None,
     progress_cb: Optional[ProgressCallback] = None,
+    answer: AnswerForm = "chart",
 ) -> AnalysisPlan:
-    """A plan that passes every check, retrying with the failure fed back.
+    """A plan that passes every check and answers in the form asked, retrying
+    with the failure fed back.
     Raises PlanUnresolvedError when no attempt passes, and PlannerTimeoutError
     when a planner call times out."""
     import json
@@ -531,6 +535,7 @@ def generate_analysis_plan(
                 question=question,
                 entities=entities,
                 max_items=_MAX_FEW_SHOTS,
+                answer=answer,
             )
         few_shots_text = _build_few_shots_text(selected_examples)
 
@@ -546,6 +551,7 @@ def generate_analysis_plan(
 
         plan_inputs: Dict[str, Any] = {
             "question": question,
+            "answer": answer,
             "entities": entities_json(entities),
             "metric_data_types": metric_data_types_json(question, entities),
             "metric_options": metric_options_json(question, entities),
@@ -563,6 +569,8 @@ def generate_analysis_plan(
             try:
                 raw_result: Any = _invoke_with_timeout(plan_chain, plan_inputs, label=f"plan_chain_attempt_{attempt}")
                 plan = _coerce_analysis_plan(raw_result)
+                if (plan.answer == "number") != (answer == "number"):
+                    raise ValueError(f"ANSWER is {answer}: " + ("give values, not charts." if answer == "number" else "give no values."))
                 _assert_required_semantics(plan)
                 _assert_no_redundant_date_encoding(plan)
                 _assert_value_dates_are_stated(plan, question)

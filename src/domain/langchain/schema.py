@@ -1056,6 +1056,10 @@ class ValueSpec(MetricSpec):
         return MetricSpec.model_validate(self.model_dump(include=set(MetricSpec.model_fields)))
 
 
+# How a request is answered: "number" with values, "chart" with charts, "test" with statistical tests.
+AnswerForm = Literal["number", "chart", "test"]
+
+
 class AnalysisPlan(BaseModel):
     """
     The top-level plan object returned by the planner.
@@ -1078,3 +1082,7 @@ class AnalysisPlan(BaseModel):
         if self.values is not None and not self.values:
             self.values = None
         return self
+
+    @property
+    def answer(self) -> AnswerForm:
+        return "number" if self.values else "test" if self.statistical_tests else "chart"
