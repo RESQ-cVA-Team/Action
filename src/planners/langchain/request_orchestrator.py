@@ -83,29 +83,15 @@ _ORCHESTRATOR_TIMEOUT_SECONDS = _orchestrator_timeout_value
 # survive them lived.
 _PLANNER_MAX_RETRIES = 2
 
-# Plan generation involves a reasoning step and can legitimately take longer than the
-# fast triage/decision call above. generate_analysis_plan (pipeline.py) retries up to
-# _PLANNER_MAX_RETRIES times, each bounded by its own _PLANNER_REQUEST_TIMEOUT_SECONDS
-# budget -- so this outer timeout must cover the full retry loop's worst case
-# (attempts * per-attempt budget), not just one attempt. It used to only account for
-# one, so on anything slow enough to need a retry, this outer wrapper killed the call
-# before generate_analysis_plan's own retry ever got a chance to run.
-#
-# Since the plan-critique pass (pipeline.py's _critique_plan), each attempt can make
-# TWO LLM calls -- the plan generation itself, then the critique review of it -- each
-# independently bounded by _PLANNER_REQUEST_TIMEOUT_SECONDS. This formula previously
-# still budgeted for one call per attempt, so a scenario whose plan legitimately needs
-# every retry (critique keeps finding real, distinct issues -- observed live for the
-# "10 line graphs" case) could exhaust this outer timeout entirely before the inner
-# loop's own attempts ran out, turning a slow-but-eventually-correct plan into a hard
-# failure instead.
+# Covers every attempt of generate_analysis_plan (pipeline.py), one planner
+# call each, so the outer timeout never cuts off a retry.
 _PLAN_GENERATION_TIMEOUT_RAW = env_util.get_env("ACTIONS_LLM_PLAN_GENERATION_TIMEOUT_SECONDS", default="") or ""
 try:
     _plan_generation_timeout_value = max(1.0, float(_PLAN_GENERATION_TIMEOUT_RAW))
 except Exception:
     _plan_generation_timeout_value = max(
         _ORCHESTRATOR_TIMEOUT_SECONDS,
-        _PLANNER_REQUEST_TIMEOUT_SECONDS * (_PLANNER_MAX_RETRIES + 1) * 2 + 10.0,
+        _PLANNER_REQUEST_TIMEOUT_SECONDS * (_PLANNER_MAX_RETRIES + 1) + 10.0,
     )
 _PLAN_GENERATION_TIMEOUT_SECONDS = _plan_generation_timeout_value
 # Longest a request can spend on its decision and plan, both of which run
@@ -1526,11 +1512,10 @@ def _country_cohorts_named(entities: Dict[str, Any]) -> bool:
 
 
 def _validate_scope_grouping_cohorts(question: str, entities: Dict[str, Any]) -> Optional[VisualizationRequestOutcome]:
-    # Without named cohorts there is no plan the planner can build for a
-    # per-hospital/per-country chart: the critique pass rejects every attempt
-    # and the degraded fallback either drops the grouping silently or folds
-    # every accessible provider into one query. Ask instead. Statistical
-    # tests define their cohorts through their own validators.
+    # Without named cohorts no plan can express a per-hospital/per-country
+    # chart: the planner either drops the grouping silently or folds every
+    # accessible provider into one query. Ask instead. Statistical tests
+    # define their cohorts through their own validators.
     has_chart_type = bool(_extract_string_list(entities.get("chart_type")))
     if not has_chart_type and _has_statistical_test_signal(question, entities):
         return None
