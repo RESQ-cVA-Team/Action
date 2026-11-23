@@ -70,6 +70,11 @@ def _enum_allowed_values(enum_cls: Any) -> Set[str]:
     return allowed_values
 
 
+def _allowed(values: Any, **kwargs: Any) -> Any:
+    """A field whose validator accepts only `values`; the JSON schema lists them."""
+    return Field(json_schema_extra={"enum": sorted(values)}, **kwargs)
+
+
 def _metric_code(value: str) -> str:
     """The MetricType code for a metric given as its code or as an SSOT synonym."""
     allowed_values = _enum_allowed_values(MetricType)
@@ -120,7 +125,7 @@ class DateFilter(BaseModel):
         value: The date value to compare, as an ISO 8601 string.
     """
 
-    operator: str
+    operator: str = _allowed(_enum_allowed_values(OperatorType))
     type: Literal["DateFilter"] = "DateFilter"
     value: str  # ISO 8601 date string
 
@@ -150,7 +155,7 @@ class AgeFilter(BaseModel):
         value: The age value to compare (float).
     """
 
-    operator: str
+    operator: str = _allowed(_enum_allowed_values(OperatorType))
     type: Literal["AgeFilter"] = "AgeFilter"
     value: float
 
@@ -172,7 +177,7 @@ class NIHSSFilter(BaseModel):
         value: The NIHSS score to compare (float).
     """
 
-    operator: str
+    operator: str = _allowed(_enum_allowed_values(OperatorType))
     type: Literal["NIHSSFilter"] = "NIHSSFilter"
     value: float
 
@@ -230,7 +235,7 @@ class SexFilter(BaseModel):
     """
 
     type: Literal["SexFilter"] = "SexFilter"
-    value: str  # Should be a value from SexType
+    value: str = _allowed(_enum_allowed_values(SexType))
 
     @field_validator("value")
     def validate_sex_type(cls, v: str) -> str:
@@ -250,7 +255,7 @@ class StrokeFilter(BaseModel):
     """
 
     type: Literal["StrokeFilter"] = "StrokeFilter"
-    value: str  # Should be a value from StrokeType
+    value: str = _allowed(_enum_allowed_values(StrokeType))
 
     @field_validator("value")
     def validate_stroke_type(cls, v: str) -> str:
@@ -271,7 +276,7 @@ class BooleanFilter(BaseModel):
     """
 
     type: Literal["BooleanFilter"] = "BooleanFilter"
-    boolean_type: str  # Should be a value from BooleanType
+    boolean_type: str = _allowed(_enum_allowed_values(BooleanType))
     value: bool
 
     @field_validator("boolean_type")
@@ -416,7 +421,7 @@ class TimeWindow(BaseModel):
     """
 
     last_n: int = Field(gt=0, description="Positive count for the relative window.")
-    unit: str = Field(description="Time unit for the window. One of DAY, WEEK, BIWEEK, MONTH, QUARTER, YEAR.")
+    unit: str = _allowed(TIME_INTERVALS, description="Time unit for the window.")
 
     @field_validator("unit")
     def validate_unit(cls, v: str) -> str:
@@ -460,7 +465,7 @@ class GroupByTime(HashableBaseModel):
         include_partial: Whether to include the current, incomplete bucket.
     """
 
-    grain: str = Field(description="Time aggregation grain.")
+    grain: str = _allowed(TIME_INTERVALS, description="Time aggregation grain.")
     window: Optional[Union[TimeWindow, TimeRange]] = Field(default=None, description="Optional relative or absolute time window.")
     periods: Optional[List[TimeRange]] = Field(default=None, description="Explicit, possibly non-adjacent periods, one bucket each. Takes precedence over window.")
     include_partial: Optional[bool] = Field(default=None, description="Whether to include the current, incomplete bucket.")
@@ -482,7 +487,7 @@ class GroupByBoolean(HashableBaseModel):
         values: List of boolean values to group by. None = all.
     """
 
-    boolean_type: str = Field(description="The boolean field to group by. Should be a value from BooleanType.")
+    boolean_type: str = _allowed(_enum_allowed_values(BooleanType), description="The boolean field to group by.")
     values: Optional[List[bool]] = Field(default=None, description="Boolean values to group by. None = all.")
 
     @field_validator("boolean_type")
@@ -503,7 +508,7 @@ class GroupByCanonicalField(HashableBaseModel):
         values: List of values to group by. None = all.
     """
 
-    field: str = Field(description="Canonical field name, should be a value from CanonicalGroupByField.")
+    field: str = _allowed(_enum_allowed_values(CanonicalGroupByField), description="Canonical field name.")
     values: Optional[List[str]] = Field(default=None, description="Values to group by. None = all.")
 
     @field_validator("field")
@@ -582,7 +587,7 @@ AxisRoleType = [
 class MeasureSemanticsSpec(BaseModel):
     """Semantic description of what value should be computed for chart output."""
 
-    type: str
+    type: str = _allowed(MeasureType)
     percentile: Optional[float] = None
 
     @field_validator("type")
@@ -608,7 +613,7 @@ class MeasureSemanticsSpec(BaseModel):
 class TimeSemanticsSpec(BaseModel):
     """Semantic time context for analysis, independent of backend retrieval strategy."""
 
-    grain: Optional[str] = None
+    grain: Optional[str] = _allowed(TIME_INTERVALS, default=None)
     window: Optional[Union[TimeWindow, TimeRange]] = None
     include_partial: Optional[bool] = None
     # Several specific, possibly non-adjacent periods ("Q1 2023, Q3 2025 and
@@ -643,7 +648,7 @@ class SplitSpec(BaseModel):
     retrieval compilation and must not leak here.
     """
 
-    kind: str
+    kind: str = _allowed(SplitKindType)
     field: Optional[str] = None
     categories: Optional[List[str]] = None
     buckets: Optional[List[Bucket]] = Field(
@@ -681,12 +686,12 @@ class SplitSpec(BaseModel):
 class AxisSemanticsSpec(BaseModel):
     """Optional advanced axis override for planner output semantics."""
 
-    role: str
+    role: str = _allowed(AxisRoleType)
     metric: Optional[str] = None
     label: Optional[str] = None
     unit: Optional[str] = None
-    aggregation: Optional[str] = None
-    grain: Optional[str] = None
+    aggregation: Optional[str] = _allowed(MeasureType, default=None)
+    grain: Optional[str] = _allowed(TIME_INTERVALS, default=None)
 
     @field_validator("role")
     def validate_role(cls, v: str) -> str:
@@ -721,7 +726,7 @@ class AxisSemanticsSpec(BaseModel):
 class AnalysisSemanticsSpec(BaseModel):
     """Planner-facing semantic analysis contract for a chart request."""
 
-    intent: str
+    intent: str = _allowed(AnalysisIntentType)
     measure: Optional[MeasureSemanticsSpec] = None
     splits: Optional[List[SplitSpec]] = None
     time: Optional[TimeSemanticsSpec] = None
@@ -769,6 +774,18 @@ class DataOriginSpec(BaseModel):
         return self
 
 
+_ORIGIN_SCOPE_TYPES = {
+    "mine",
+    "provider_id",
+    "provider_name",
+    "provider_group_id",
+    "provider_group_name",
+    "country_code",
+    "country_average",
+    "all_accessible",
+}
+
+
 class OriginScopeSpec(BaseModel):
     """Semantic data-origin reference resolved at execution time.
 
@@ -778,7 +795,7 @@ class OriginScopeSpec(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    scope_type: str = Field(alias="scopeType")
+    scope_type: str = _allowed(_ORIGIN_SCOPE_TYPES, alias="scopeType")
     value: Optional[Any] = None
     label: Optional[str] = None
     country_code: Optional[str] = Field(default=None, alias="countryCode")
@@ -795,18 +812,8 @@ class OriginScopeSpec(BaseModel):
             "all": "all_accessible",
         }
         normalized = aliases.get(raw, raw)
-        allowed = {
-            "mine",
-            "provider_id",
-            "provider_name",
-            "provider_group_id",
-            "provider_group_name",
-            "country_code",
-            "country_average",
-            "all_accessible",
-        }
-        if normalized not in allowed:
-            raise ValueError(f"{v} is not a valid OriginScopeSpec.scopeType. Allowed: {sorted(allowed)}")
+        if normalized not in _ORIGIN_SCOPE_TYPES:
+            raise ValueError(f"{v} is not a valid OriginScopeSpec.scopeType. Allowed: {sorted(_ORIGIN_SCOPE_TYPES)}")
         return normalized
 
     @field_validator("country_code")
@@ -839,6 +846,7 @@ class MetricSpec(BaseModel):
     )
     categories: Optional[List[str]] = Field(
         default=None,
+        json_schema_extra={"x-planner-type": "[METRIC_OPTIONS key]"},
         description="For an Enum metric, the option keys counted together when the user asks about some of its options "
         "(CT imaging: ct, ct_cta, ct_cta_perfusion). None shows every option on its own.",
     )
@@ -927,7 +935,7 @@ class ChartSpec(BaseModel):
         metrics: List of metrics to include in the chart.
     """
 
-    chart_type: str  # Should be a value from ChartType
+    chart_type: str = _allowed(ChartType)
     semantics: Optional[AnalysisSemanticsSpec] = None
     filters: Optional[FilterNode] = None
     metrics: List[MetricSpec]
@@ -964,7 +972,7 @@ class StatisticalTestSpec(BaseModel):
         metrics: List of metrics to include in the test.
     """
 
-    test_type: str  # Should be a value from StatisticalTestType
+    test_type: str = _allowed(StatisticalTestType)
     metrics: List[MetricSpec]
     group_by: Optional[List[GroupBySpec]] = None
     filters: Optional[FilterNode] = None

@@ -213,31 +213,64 @@ def _assert_value_dates_are_stated(plan: AnalysisPlan, question: str) -> None:
             )
 
 
-def get_schema_description(model: Type[Any]) -> str:
-    """
-    Recursively extract field names/types from a Pydantic model as a readable schema spec (Pydantic v2 compatible).
-    """
-    from typing import get_args, get_origin
+def planner_schema(model: Type[Any]) -> str:
+    """The plan's JSON schema, one line per object: fields in nesting order,
+    `?` on optional ones, allowed values as A|B, a field's x-planner-type in
+    place of its type. The filter union is named Filter."""
+    from typing import get_args
 
-    def describe(model: Type[Any], indent: int = 0) -> str:
-        lines: List[str] = []
-        if hasattr(model, "model_fields"):
-            for name, field in model.model_fields.items():
-                typ = str(field.annotation)
-                lines.append(" " * indent + f"- {name} ({typ})")
-                # Recurse for nested models
-                outer = get_origin(field.annotation)
-                inner = get_args(field.annotation)
-                if outer in (list, List) and inner and hasattr(inner[0], "model_fields"):
-                    lines.append(describe(inner[0], indent + 2))
-                elif hasattr(field.annotation, "model_fields"):
-                    lines.append(describe(field.annotation, indent + 2))
-        return "\n".join(lines)
+    from src.domain.langchain.schema import FilterNode
 
-    return f"AnalysisPlan schema:\n{describe(model)}"
+    schema = model.model_json_schema(by_alias=False)
+    defs: Dict[str, Any] = schema.get("$defs", {})
+    filter_refs = {cls.__name__ for cls in get_args(FilterNode)}
+
+    def ref_name(node: Dict[str, Any]) -> Optional[str]:
+        ref = node.get("$ref")
+        return ref.rsplit("/", 1)[-1] if isinstance(ref, str) else None
+
+    def type_of(node: Dict[str, Any], seen: List[str]) -> str:
+        if "x-planner-type" in node:
+            return str(node["x-planner-type"])
+        if "enum" in node:
+            return "|".join(str(value) for value in node["enum"])
+        if "const" in node:
+            return json.dumps(node["const"])
+        name = ref_name(node)
+        if name:
+            if name not in seen:
+                seen.append(name)
+            return name
+        options = [option for option in node.get("anyOf", node.get("oneOf", [])) if option.get("type") != "null"]
+        if options:
+            if {ref_name(option) for option in options} == filter_refs:
+                if "Filter" not in seen:
+                    seen.append("Filter")
+                return "Filter"
+            return " | ".join(type_of(option, seen) for option in options)
+        if node.get("type") == "array":
+            return f"[{type_of(node.get('items', {}), seen)}]"
+        return str(node.get("type", "any"))
+
+    lines: List[str] = ["`?` marks an optional field; A|B lists the allowed values."]
+    seen: List[str] = [model.__name__]
+    for name in seen:
+        if name == "Filter":
+            members = sorted(filter_refs)
+            lines.append(f"Filter: one of {' | '.join(members)}")
+            seen.extend(member for member in members if member not in seen)
+            continue
+        node = schema if name == model.__name__ else defs[name]
+        required = set(node.get("required", []))
+        fields = []
+        for field, spec in node.get("properties", {}).items():
+            optional = field not in required and "const" not in spec
+            fields.append(f"{field}{'?' if optional else ''}: {type_of(spec, seen)}")
+        lines.append(f"{name} {{ {'; '.join(fields)} }}")
+    return "\n".join(lines)
 
 
-SCHEMA_DESCRIPTION: str = get_schema_description(AnalysisPlan)
+SCHEMA_DESCRIPTION: str = planner_schema(AnalysisPlan)
 
 few_shot_examples = get_few_shot_examples()
 
@@ -401,7 +434,7 @@ def _build_few_shots_text(examples: List[FewShotExample]) -> str:
 plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ignore
     [
         ("system", load_prompt_text("plan_system", expected_variables=frozenset({"language"}))),
-        ("system", "SCHEMA:\n" + SCHEMA_DESCRIPTION),
+        ("system", "SCHEMA:\n{schema}"),
         ("system", "FEW_SHOT_EXAMPLES:\n{few_shots}"),
         ("system", "SUPPORTED_STAT_TESTS_JSON:\n{supported_stat_tests}"),
         (
@@ -412,6 +445,7 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
     ]
 )
 
+plan_prompt = plan_prompt.partial(schema=SCHEMA_DESCRIPTION)
 plan_chain: Any = plan_prompt | llm
 
 
