@@ -32,7 +32,6 @@ from src.util.logging_utils import bind_current_context, log_context
 
 logger = logging.getLogger(__name__)
 _ENABLE_DYNAMIC_FEW_SHOTS = True
-_ENABLE_PLAN_CRITIQUE = True
 
 _FEWSHOT_TOKEN_WEIGHT = 1.0
 _FEWSHOT_ENTITY_KEY_WEIGHT = 6.0
@@ -64,11 +63,6 @@ _INTENT_KEYWORDS: Dict[str, List[str]] = {
 
 _SUPPORTED_STAT_TESTS = ["MANN_WHITNEY_U_TEST"]
 
-# 30s was tighter than observed real-world LLM latency for this call (plan
-# generation and, since the critique pass, plan critique too both routinely
-# take 20-45s), causing a per-attempt PlannerTimeoutError on otherwise-normal
-# requests. Env-configurable to match its sibling timeouts in
-# request_orchestrator.py rather than requiring a code change to retune.
 _PLANNER_REQUEST_TIMEOUT_RAW = env.get_env("ACTIONS_LLM_PLANNER_REQUEST_TIMEOUT_SECONDS", default="") or ""
 try:
     _PLANNER_REQUEST_TIMEOUT_SECONDS = max(1.0, float(_PLANNER_REQUEST_TIMEOUT_RAW))
@@ -179,11 +173,7 @@ def _assert_no_redundant_date_encoding(plan: AnalysisPlan) -> None:
     """plan_system.txt explicitly instructs the planner to use
     semantics.time.window (TimeRange) for an explicit absolute date range and
     NOT also add a redundant DateFilter for that same range -- but this is
-    occasionally violated live (the same bounds encoded both ways). This is a
-    purely mechanical, unambiguous structural rule, so it's enforced
-    deterministically here rather than left to the critique pass's fuzzier,
-    request-faithfulness judgment (which is scoped to whether the plan
-    matches the request, not whether it duplicates itself).
+    occasionally violated live (the same bounds encoded both ways).
     """
     from src.domain.langchain.schema import TimeRange
 
@@ -252,7 +242,6 @@ few_shot_examples = get_few_shot_examples()
 
 
 def _invoke_with_timeout(chain: Any, inputs: Dict[str, Any], label: str) -> Any:
-    step = "critique" if label == "plan_critique" else "plan"
     started_at = time.monotonic()
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(bind_current_context(chain.invoke), inputs)
@@ -260,9 +249,9 @@ def _invoke_with_timeout(chain: Any, inputs: Dict[str, Any], label: str) -> Any:
             response = future.result(timeout=_PLANNER_REQUEST_TIMEOUT_SECONDS)
         except FuturesTimeoutError as exc:
             future.cancel()
-            record_llm_call(step, started_at)
+            record_llm_call("plan", started_at)
             raise PlannerTimeoutError(f"{label} timed out after {_PLANNER_REQUEST_TIMEOUT_SECONDS:.1f}s") from exc
-    record_llm_call(step, started_at, response)
+    record_llm_call("plan", started_at, response)
     return response
 
 
@@ -424,55 +413,6 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
 
 plan_chain: Any = plan_prompt | llm
 
-critic_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ignore
-    [
-        ("system", load_prompt_text("critic_system")),
-        (
-            "user",
-            "USER_UTTERANCE:\n{question}\n\nENTITIES_DETECTED(JSON):\n{entities}\n\nCANDIDATE_PLAN_JSON:\n{candidate_plan}",
-        ),
-    ]
-)
-
-critic_chain: Any = critic_prompt | llm
-
-
-def _critique_plan(question: str, entities: Dict[str, Any], plan: AnalysisPlan) -> Optional[str]:
-    """Ask an independent LLM pass whether `plan` faithfully implements
-    `question`/`entities`, rather than hand-coding a comparator per failure
-    mode (chart count, date fidelity, dropped update fields, ...). Returns a
-    human-readable issue summary on mismatch, None when the plan checks out.
-
-    This is a holistic judgment call, not a deterministic guarantee -- it
-    complements (does not replace) schema-level validation, which stays
-    fully deterministic. Any exception here is treated as "no complaint"
-    rather than blocking planning on the critic itself being unavailable.
-    """
-    if not _ENABLE_PLAN_CRITIQUE:
-        return None
-    try:
-        raw_result: Any = _invoke_with_timeout(
-            critic_chain,
-            {
-                "question": question,
-                "entities": entities_json(entities),
-                "candidate_plan": plan.model_dump_json(indent=2),
-            },
-            label="plan_critique",
-        )
-        verdict = json.loads(_extract_json_block(_extract_text(raw_result)))
-    except Exception:
-        logger.exception("[Planner] Plan critique pass failed; proceeding without it")
-        return None
-
-    if not isinstance(verdict, dict) or verdict.get("ok") is True:
-        return None
-
-    issues = verdict.get("issues")
-    if isinstance(issues, list) and issues:
-        return "; ".join(str(issue) for issue in issues)
-    return "Plan does not faithfully match the request."
-
 
 _TIME_GRAINS = {"DAY", "WEEK", "MONTH", "QUARTER", "YEAR"}
 _PLAIN_REQUEST_ENTITY_KEYS = {"metric", "chart_type", "group_by"}
@@ -481,9 +421,8 @@ _COUNT_WORDS = re.compile(r"\b(two|three|four|five|six|seven|eight|nine|ten|seve
 
 def _is_plain_request(question: str, entities: Dict[str, Any]) -> bool:
     """A request that names metrics, at most one chart type and at most a time
-    grain, and nothing the critique pass exists for: no dates, periods or
-    counts (no digits or count words), no cohorts, filters or scopes, no edit
-    of a previous plan. Its plan is checked deterministically instead."""
+    grain, and nothing else: no dates, periods or counts (no digits or count
+    words), no cohorts, filters or scopes, no edit of a previous plan."""
     text = question or ""
     if text.lstrip().startswith("Previous chart plan") or re.search(r"\d", text) or _COUNT_WORDS.search(text):
         return False
@@ -497,8 +436,8 @@ def _is_plain_request(question: str, entities: Dict[str, Any]) -> bool:
 
 
 def _plain_plan_mismatch(entities: Dict[str, Any], plan: AnalysisPlan) -> Optional[str]:
-    """What the critique pass would check for a plain request: the requested
-    metrics and chart type, and nothing added that was not asked for."""
+    """A plain request's plan has the requested metrics and chart type, and
+    nothing added that was not asked for."""
     requested = _entity_values((entities or {}).get("metric"))
     charts = plan.charts or []
     planned = {str(m.metric).strip().upper() for chart in charts for m in chart.metrics}
@@ -652,14 +591,10 @@ def generate_analysis_plan(
                 _assert_required_semantics(result)
                 _assert_no_redundant_date_encoding(result)
                 _assert_value_dates_are_stated(result, question)
-                # The critique pass is an LLM call that often objects to defaults the user never
-                # asked about; a plain request is checked deterministically instead, and so is a
-                # value plan, whose dates are checked above ("last year" was overruled as the
-                # previous calendar year in every run).
-                deterministic = bool(result.values) or _is_plain_request(question, entities)
-                critique_issues = _plain_plan_mismatch(entities, result) if deterministic else _critique_plan(question, entities, result)
-                if critique_issues:
-                    raise ValueError(f"Plan does not faithfully match the request: {critique_issues}")
+                if result.values or _is_plain_request(question, entities):
+                    mismatch = _plain_plan_mismatch(entities, result)
+                    if mismatch:
+                        raise ValueError(f"Plan does not match the request: {mismatch}")
                 break
             except Exception as exc:
                 if is_llm_service_error(exc):
@@ -674,7 +609,7 @@ def generate_analysis_plan(
                 )
                 if attempt >= total_attempts:
                     logger.warning(
-                        "[Planner] Exhausted retries with an unresolved validation/critique issue; "
+                        "[Planner] Exhausted retries with an unresolved validation issue; "
                         "returning last attempt as-is: %s",
                         exc,
                     )

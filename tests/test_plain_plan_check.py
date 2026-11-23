@@ -28,7 +28,7 @@ def test_plain_requests() -> None:
     assert _is_plain_request("can u plott door to needle time in a bar chart??", {"metric": "DTN", "chart_type": "BAR", "limit": None})
 
 
-def test_requests_the_critique_pass_is_for() -> None:
+def test_requests_that_are_not_plain() -> None:
     entities = {"metric": "DTN", "chart_type": "LINE"}
     assert not _is_plain_request("DTN in 2025", entities)
     assert not _is_plain_request("DTN for the last 6 months", entities)
@@ -54,16 +54,26 @@ def _plan_json(chart_type: str, metric: str) -> str:
     return _plan([{"chart_type": chart_type, "metrics": [metric]}]).model_dump_json()
 
 
-def test_a_plain_request_skips_the_critique_call_and_still_retries_a_mismatch() -> None:
-    responses = iter([_plan_json("BAR", "DTN"), _plan_json("LINE", "DTN")])
+def _planner_calls(responses: List[str], question: str, entities: Dict[str, Any]) -> tuple[AnalysisPlan, List[str]]:
+    replies = iter(responses)
     labels: List[str] = []
 
     def fake_invoke(_chain: Any, _inputs: Any, label: str = "") -> str:
         labels.append(label)
-        return next(responses)
+        return next(replies)
 
     with patch.object(pipeline, "_invoke_with_timeout", side_effect=fake_invoke):
-        plan = pipeline.generate_analysis_plan("Show me a line graph of DTN", {"metric": "DTN", "chart_type": "LINE"}, "en", max_retries=2)
+        plan = pipeline.generate_analysis_plan(question, entities, "en", max_retries=2)
+    return plan, labels
 
+
+def test_a_plain_request_retries_a_mismatch() -> None:
+    plan, labels = _planner_calls([_plan_json("BAR", "DTN"), _plan_json("LINE", "DTN")], "Show me a line graph of DTN", {"metric": "DTN", "chart_type": "LINE"})
     assert plan.charts is not None and plan.charts[0].chart_type == "LINE"
     assert labels == ["plan_chain_attempt_1", "plan_chain_attempt_2"]
+
+
+def test_a_request_that_is_not_plain_is_planned_in_one_call() -> None:
+    plan, labels = _planner_calls([_plan_json("LINE", "DTN")], "Show DTN per quarter for female patients over 60", {"metric": "DTN", "sex": "FEMALE", "age_lower": 60})
+    assert plan.charts is not None and plan.charts[0].metrics[0].metric == "DTN"
+    assert labels == ["plan_chain_attempt_1"]

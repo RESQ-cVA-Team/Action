@@ -39,14 +39,14 @@ def test_calls_are_counted_by_step_with_their_tokens() -> None:
         start_llm_usage()
         record_llm_call("decision", time.monotonic(), _response("{}", 100, 20))
         record_llm_call("plan", time.monotonic(), _response("{}", 1000, 300))
-        record_llm_call("critique", time.monotonic())  # failed: no tokens
+        record_llm_call("describe", time.monotonic())  # failed: no tokens
         return llm_usage_field()["llm_usage"]
 
     usage = _in_fresh_request(body)
     assert usage["calls"] == 3
     assert usage["input_tokens"] == 1100
     assert usage["output_tokens"] == 320
-    assert usage["steps"] == {"decision": 1, "plan": 1, "critique": 1}
+    assert usage["steps"] == {"decision": 1, "plan": 1, "describe": 1}
     assert usage["seconds"] >= 0
 
 
@@ -55,13 +55,12 @@ def test_both_call_helpers_record_their_calls_from_the_worker_thread() -> None:
         start_llm_usage()
         request_orchestrator._invoke_chain(_Chain(_response('{"decision": "proceed"}', 50, 10)), {})
         pipeline._invoke_with_timeout(_Chain(_response("{}", 500, 100)), {}, label="plan_chain_attempt_1")
-        pipeline._invoke_with_timeout(_Chain(_response('{"ok": true}', 400, 5)), {}, label="plan_critique")
         return llm_usage_field()["llm_usage"]
 
     usage = _in_fresh_request(body)
-    assert usage["steps"] == {"decision": 1, "plan": 1, "critique": 1}
-    assert usage["input_tokens"] == 950
-    assert usage["output_tokens"] == 115
+    assert usage["steps"] == {"decision": 1, "plan": 1}
+    assert usage["input_tokens"] == 550
+    assert usage["output_tokens"] == 110
 
 
 def test_plan_generation_in_its_own_thread_is_counted() -> None:
