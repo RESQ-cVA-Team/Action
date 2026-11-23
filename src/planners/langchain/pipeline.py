@@ -436,15 +436,22 @@ def _is_plain_request(question: str, entities: Dict[str, Any]) -> bool:
 
 
 def _plain_plan_mismatch(entities: Dict[str, Any], plan: AnalysisPlan) -> Optional[str]:
-    """A plain request's plan has the requested metrics and chart type, and
-    nothing added that was not asked for."""
+    """A plain request's plan has the requested metrics, charted or grouped by,
+    and the requested chart type, and nothing added that was not asked for."""
     requested = _entity_values((entities or {}).get("metric"))
     charts = plan.charts or []
     planned = {str(m.metric).strip().upper() for chart in charts for m in chart.metrics}
     planned |= {str(value.metric).strip().upper() for value in plan.values or []}
+    grouped = {
+        name.strip().upper()
+        for chart in charts
+        for split in (chart.semantics.splits if chart.semantics else None) or []
+        for name in (split.kind, split.field)
+        if name
+    }
     issues: List[str] = []
-    if requested - planned:
-        issues.append(f"the plan leaves out the requested metric(s) {', '.join(sorted(requested - planned))}")
+    if requested - planned - grouped:
+        issues.append(f"the plan leaves out the requested metric(s) {', '.join(sorted(requested - planned - grouped))}")
     if planned - requested:
         issues.append(f"the plan adds metric(s) that were not requested: {', '.join(sorted(planned - requested))}")
     chart_types = _entity_values((entities or {}).get("chart_type"))

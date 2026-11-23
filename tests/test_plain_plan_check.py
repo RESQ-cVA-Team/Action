@@ -46,6 +46,10 @@ def test_plain_plan_check() -> None:
     assert "leaves out" in (_plain_plan_mismatch(entities, _plan([{"chart_type": "LINE", "metrics": ["DIDO"]}])) or "")
     assert "adds metric" in (_plain_plan_mismatch(entities, _plan([{"chart_type": "LINE", "metrics": ["DTN", "DIDO"]}])) or "")
     assert "chart type" in (_plain_plan_mismatch(entities, _plan([{"chart_type": "BAR", "metrics": ["DTN"]}])) or "")
+    grouped = AnalysisPlan.model_validate(
+        {"charts": [{"chart_type": "LINE", "metrics": [{"metric": "DTN"}], "semantics": {"intent": "COMPARISON", "measure": {"type": "MEDIAN"}, "splits": [{"kind": "CANONICAL", "field": "INR_MODE"}]}}]}
+    )
+    assert _plain_plan_mismatch({"metric": ["INR_MODE", "DTN"], "chart_type": "LINE"}, grouped) is None
     with_test = _plan([{"chart_type": "LINE", "metrics": ["DTN"]}], [{"test_type": "MANN_WHITNEY_U_TEST", "metrics": [{"metric": "DTN"}]}])
     assert "statistical test" in (_plain_plan_mismatch(entities, with_test) or "")
 
