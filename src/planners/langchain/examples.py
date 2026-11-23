@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, TypedDict
 
-from src.domain.langchain.schema import AnalysisPlan
+from src.domain.langchain.schema import AnalysisPlan, AnswerForm
 from src.planners.langchain.metric_data_types import metric_data_types_json, metric_options_json
 
 _EXAMPLES_DIR = Path(__file__).resolve().parent / "fewshot_examples"
@@ -13,6 +13,7 @@ class FewShotExample(TypedDict):
     user: str
     assistant: str
     entities: Dict[str, Any]
+    answer: AnswerForm
 
 
 def get_few_shot_examples() -> List[FewShotExample]:
@@ -33,6 +34,7 @@ def get_few_shot_examples() -> List[FewShotExample]:
         plan = AnalysisPlan.model_validate(data["assistant"])
         user = (
             f"USER_UTTERANCE:\n{data['user_utterance']}\n\n"
+            f"ANSWER:\n{plan.answer}\n\n"
             f"ENTITIES_DETECTED(JSON):\n{json.dumps(data['entities_detected'])}\n\n"
             f"METRIC_DATA_TYPES(JSON):\n{metric_data_types_json(data['user_utterance'], data['entities_detected'])}\n\n"
             f"METRIC_OPTIONS(JSON):\n{metric_options_json(data['user_utterance'], data['entities_detected'])}"
@@ -43,6 +45,7 @@ def get_few_shot_examples() -> List[FewShotExample]:
                 "user": user,
                 "assistant": plan.model_dump_json(indent=2),
                 "entities": data["entities_detected"],
+                "answer": plan.answer,
             }
         )
     return examples

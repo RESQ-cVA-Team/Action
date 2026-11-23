@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional, Protocol, Tuple, cast
+from typing import Any, Dict, List, Optional, Protocol, Tuple, cast, get_args
 from uuid import uuid4
 
 from rasa_sdk import Action  # type: ignore
@@ -281,14 +281,19 @@ def _decision_for_latest_message(events: List[Dict[str, Any]]) -> Optional[Dict[
     return None
 
 
-def _proceed_decided_for_latest_message(events: List[Dict[str, Any]]) -> Optional[str]:
-    """The reason of a proceed decision already taken for the user's current
-    message; None when there is none. The one-shot action then plans without
-    asking the decision stage the same question again."""
+def _proceed_decided_for_latest_message(events: List[Dict[str, Any]]) -> Optional[VisualizationRequestOutcome]:
+    """A proceed decision already taken for the user's current message; None
+    when there is none. The one-shot action then plans without asking the
+    decision stage the same question again."""
     decision = _decision_for_latest_message(events)
     if decision is None or decision.get("decision") != "proceed":
         return None
-    return str(decision.get("reason") or "sufficient_information")
+    answer = decision.get("answer")
+    return VisualizationRequestOutcome(
+        decision="proceed",
+        reason=str(decision.get("reason") or "sufficient_information"),
+        answer=answer if answer in get_args(lang_schema.AnswerForm) else None,
+    )
 
 
 def _user_turns(events: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]]:
@@ -614,6 +619,7 @@ class ActionClarifyVisualizationRequest(Action):  # pyright: ignore
                         "message": outcome.message,
                         "missing_fields": outcome.missing_fields,
                         "edits_previous_plan": edits_previous_plan,
+                        "answer": outcome.answer,
                     }
                 )
 
@@ -733,7 +739,7 @@ def _extract_request_context(ctx: LongActionContext) -> Dict[str, Any]:
         "conversation_history": conversation_history,
         "latest_plan_summary": latest_plan_summary,
         "pending_clarification": pending_clarification,
-        "decided_proceed": _proceed_decided_for_latest_message(events),
+        "decided": _proceed_decided_for_latest_message(events),
     }
 
 
@@ -892,7 +898,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                     conversation_history=cast(List[str], request_ctx.get("conversation_history") or []),
                     progress_cb=None,
                     pending_clarification=cast(Optional[Dict[str, Any]], request_ctx.get("pending_clarification")),
-                    decided_proceed=cast(Optional[str], request_ctx.get("decided_proceed")),
+                    decided=cast(Optional[VisualizationRequestOutcome], request_ctx.get("decided")),
                 )
                 decision_name = str(outcome.decision or "").strip().lower()
                 language = cast(str, request_ctx.get("language") or "en")
@@ -1107,7 +1113,7 @@ class ActionOneShotGenerateVisualization(LongAction):
                         conversation_history=conversation_history,
                         progress_cb=progress,
                         pending_clarification=pending_clarification,
-                        decided_proceed=cast(Optional[str], request_ctx.get("decided_proceed")),
+                        decided=cast(Optional[VisualizationRequestOutcome], request_ctx.get("decided")),
                     )
 
                     decision_name = str(outcome.decision or "").strip().lower()

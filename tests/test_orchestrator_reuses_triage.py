@@ -19,6 +19,7 @@ def _plan() -> AnalysisPlan:
 
 
 def test_a_decision_taken_earlier_for_the_message_skips_the_decision_stage() -> None:
+    decided = request_orchestrator.VisualizationRequestOutcome(decision="proceed", reason="all_required_fields_present", answer="number")
     with (
         patch.object(request_orchestrator, "_decision_stage") as decision_stage,
         patch.object(request_orchestrator, "_generate_plan_with_timeout", return_value=_plan()) as generate,
@@ -26,11 +27,12 @@ def test_a_decision_taken_earlier_for_the_message_skips_the_decision_stage() -> 
         outcome = request_orchestrator.orchestrate_visualization_request(
             question="Show me a line graph of DTN",
             entities={"metric": "DTN", "chart_type": "LINE"},
-            decided_proceed="all_required_fields_present",
+            decided=decided,
         )
 
     decision_stage.assert_not_called()
     generate.assert_called_once()
+    assert generate.call_args.kwargs["answer"] == "number"
     assert outcome.decision == "proceed"
     assert outcome.plan is not None
 

@@ -51,7 +51,7 @@ def _orchestrate(failure: Exception, question: str) -> tuple[VisualizationReques
         raise failure
 
     with patch.object(request_orchestrator, "generate_analysis_plan", side_effect=failing):
-        outcome = request_orchestrator.orchestrate_visualization_request(question, {"metric": "DTN"}, decided_proceed="all_required_fields_present")
+        outcome = request_orchestrator.orchestrate_visualization_request(question, {"metric": "DTN"}, decided=VisualizationRequestOutcome(decision="proceed", reason="all_required_fields_present"))
     return outcome, len(calls)
 
 
