@@ -10,6 +10,8 @@
       "metric_choice_clarify": "Kterou metriku jste myslel(a): {options}?",
       "reject_default": "Tento požadavek je mimo tok vizualizace.",
       "llm_unavailable": "Momentálně se nemohu spojit s jazykovým modelem, který používám, takže na to nemohu odpovědět. Zkuste to prosím za pár minut znovu.",
+      "planning_timed_out": "Naplánování tohoto požadavku trvalo příliš dlouho. Může pomoci požádat o méně grafů najednou.",
+      "plan_unresolved": "Nepodařilo se mi sestavit plán, který by odpovídal tomuto požadavku. Zkuste ho prosím formulovat jinak.",
       "non_visualization_intent": "Mohu pomoci s požadavky na vizualizaci. Zkuste požádat o vytvoření grafu nebo o aktualizaci aktuálního grafu.",
       "internal_error_routing": "Chyba při směrování požadavku na vizualizaci: {error}",
       "internal_error_generating": "Chyba při generování vizualizace: {error}",

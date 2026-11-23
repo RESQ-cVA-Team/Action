@@ -9,13 +9,10 @@ from typing import (
     Callable,
     Dict,
     List,
-    Literal,
     Optional,
     Type,
     TypedDict,
-    Union,
     cast,
-    overload,
 )
 
 from langchain_core.prompts import ChatPromptTemplate
@@ -78,6 +75,10 @@ logger.debug("[Planner] Initialized LLM provider=%s model=%s", LLM_PROVIDER, _LL
 
 class PlannerTimeoutError(TimeoutError):
     pass
+
+
+class PlanUnresolvedError(ValueError):
+    """No attempt produced a plan that passed every check."""
 
 
 def _extract_text(response: Any) -> str:
@@ -464,52 +465,7 @@ def _plain_plan_mismatch(entities: Dict[str, Any], plan: AnalysisPlan) -> Option
     return "; ".join(issues) or None
 
 
-class GeneratePlanDebug(TypedDict):
-    """Typed structure for debug output of generate_analysis_plan."""
-
-    reasoning: Any
-    steps: List[Any]
-    attempts: List[Any]
-    final_output: Optional[AnalysisPlan]
-
-
 ProgressCallback = Callable[[str], None]
-
-
-@overload
-def generate_analysis_plan(
-    question: str,
-    entities: Dict[str, Any],
-    language: Optional[str],
-    max_retries: int,
-    debug: Literal[True],
-    trace_id: Optional[str] = None,
-    progress_cb: Optional[ProgressCallback] = None,
-) -> GeneratePlanDebug: ...
-
-
-@overload
-def generate_analysis_plan(
-    question: str,
-    entities: Dict[str, Any],
-    language: Optional[str],
-    max_retries: int,
-    debug: Literal[False],
-    trace_id: Optional[str] = None,
-    progress_cb: Optional[ProgressCallback] = None,
-) -> AnalysisPlan: ...
-
-
-@overload
-def generate_analysis_plan(
-    question: str,
-    entities: Dict[str, Any],
-    language: Optional[str],
-    max_retries: int,
-    debug: bool,
-    trace_id: Optional[str] = None,
-    progress_cb: Optional[ProgressCallback] = None,
-) -> Union[AnalysisPlan, GeneratePlanDebug]: ...
 
 
 def generate_analysis_plan(
@@ -517,20 +473,12 @@ def generate_analysis_plan(
     entities: Dict[str, Any],
     language: str | None = None,
     max_retries: int = 2,
-    debug: bool = False,
     trace_id: Optional[str] = None,
     progress_cb: Optional[ProgressCallback] = None,
-) -> Union[AnalysisPlan, GeneratePlanDebug]:
-    """
-    Generate a validated AnalysisPlan from user input, retrying with validation feedback on failure.
-
-    Returns:
-    - AnalysisPlan when debug is False (default).
-    - GeneratePlanDebug when debug is True, including reasoning, steps, attempts, and final_output
-      (which will be an AnalysisPlan or None on failure).
-
-    Always includes 'reasoning' in the debug output, even if an error occurs.
-    """
+) -> AnalysisPlan:
+    """A plan that passes every check, retrying with the failure fed back.
+    Raises PlanUnresolvedError when no attempt passes, and PlannerTimeoutError
+    when a planner call times out."""
     import json
     import logging
 
@@ -562,9 +510,6 @@ def generate_analysis_plan(
             },
         )
 
-        steps: List[Any] = []
-        attempts: List[Any] = []
-
         plan_inputs: Dict[str, Any] = {
             "question": question,
             "entities": entities_json(entities),
@@ -576,67 +521,35 @@ def generate_analysis_plan(
             "supported_stat_tests": json.dumps(_SUPPORTED_STAT_TESTS),
         }
 
-        retries = max(0, max_retries)
-        total_attempts = retries + 1
-        result: Optional[AnalysisPlan] = None
-        last_error: Optional[Exception] = None
-
+        total_attempts = max(0, max_retries) + 1
         for attempt in range(1, total_attempts + 1):
             if progress_cb is not None:
                 progress_cb(f"Thinking about a plan (attempt {attempt}/{total_attempts}).")
 
             try:
                 raw_result: Any = _invoke_with_timeout(plan_chain, plan_inputs, label=f"plan_chain_attempt_{attempt}")
-                steps.append(
-                    {
-                        "step": f"plan_attempt_{attempt}",
-                        "prompt": "(prompt logging disabled)",
-                        "response": raw_result,
-                    }
-                )
-                result = _coerce_analysis_plan(raw_result)
-                _assert_required_semantics(result)
-                _assert_no_redundant_date_encoding(result)
-                _assert_value_dates_are_stated(result, question)
-                if result.values or _is_plain_request(question, entities):
-                    mismatch = _plain_plan_mismatch(entities, result)
+                plan = _coerce_analysis_plan(raw_result)
+                _assert_required_semantics(plan)
+                _assert_no_redundant_date_encoding(plan)
+                _assert_value_dates_are_stated(plan, question)
+                if plan.values or _is_plain_request(question, entities):
+                    mismatch = _plain_plan_mismatch(entities, plan)
                     if mismatch:
                         raise ValueError(f"Plan does not match the request: {mismatch}")
-                break
+            except PlannerTimeoutError:
+                # The same request takes as long again.
+                raise
             except Exception as exc:
                 if is_llm_service_error(exc):
                     raise
-                last_error = exc
-                attempts.append(
-                    {
-                        "attempt": attempt,
-                        "ok": False,
-                        "error": str(exc),
-                    }
-                )
                 if attempt >= total_attempts:
-                    logger.warning(
-                        "[Planner] Exhausted retries with an unresolved validation issue; "
-                        "returning last attempt as-is: %s",
-                        exc,
-                    )
-                    break
+                    raise PlanUnresolvedError(f"No plan passed every check in {total_attempts} attempts; the last failed with: {exc}") from exc
+                logger.info("[Planner] Attempt %d rejected: %s", attempt, exc)
                 plan_inputs["reasoning"] = f"Previous output was rejected: {exc}. Return ONLY a corrected, valid AnalysisPlan JSON object."
+                continue
 
-        if result is None:
-            raise ValueError(f"Planner failed to produce a valid AnalysisPlan after {total_attempts} attempts") from last_error
-
-        if debug:
-            debug_payload: GeneratePlanDebug = {
-                "reasoning": "",
-                "steps": steps,
-                "attempts": attempts,
-                "final_output": result,
-            }
             if progress_cb is not None:
                 progress_cb("Finished thinking about a plan.")
-            return debug_payload
+            return plan
 
-        if progress_cb is not None:
-            progress_cb("Finished thinking about a plan.")
-        return result
+        raise AssertionError("unreachable: every attempt returns or raises")
