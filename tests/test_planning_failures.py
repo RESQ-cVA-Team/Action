@@ -70,3 +70,20 @@ def test_each_planning_failure_tells_the_user_what_happened() -> None:
     unresolved = _decision_text(VisualizationRequestOutcome(decision="reject", reason=PLAN_UNRESOLVED), "cs", "action.visualization.reject_default")
     assert "fewer charts" in timed_out
     assert unresolved.startswith("Nepodařilo se mi sestavit plán")
+
+
+def test_a_retry_shows_the_rejected_plan_and_why() -> None:
+    corrections: List[Any] = []
+
+    def invoke(_chain: Any, inputs: Any, label: str = "") -> str:
+        corrections.append(inputs.get("correction"))
+        return _bar_plan()
+
+    with patch.object(pipeline, "_invoke_with_timeout", side_effect=invoke), pytest.raises(PlanUnresolvedError):
+        pipeline.generate_analysis_plan(*_LINE_REQUEST, "en", max_retries=1)
+    assert corrections[0] is None
+    rejected, why = corrections[1]
+    assert (rejected.type, rejected.content) == ("ai", _bar_plan())
+    assert why.type == "human" and "chart type" in why.content
+    messages = pipeline.plan_prompt.format_messages(**{name: "" for name in pipeline.plan_prompt.input_variables}, correction=corrections[1])
+    assert messages[-2:] == corrections[1]

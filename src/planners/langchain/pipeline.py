@@ -15,7 +15,8 @@ from typing import (
     cast,
 )
 
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from src.domain.langchain.schema import AnalysisPlan, AnswerForm
 from src.planners.langchain.llm_errors import is_llm_service_error
@@ -415,6 +416,12 @@ def score_few_shot_examples(question: str, entities: Dict[str, Any]) -> List[Dic
     return scored
 
 
+def _correction(rejected: str, error: Exception) -> List[BaseMessage]:
+    """The rejected plan as the planner's own reply, then why it was rejected."""
+    reply: List[BaseMessage] = [AIMessage(content=rejected)] if rejected.strip() else []
+    return reply + [HumanMessage(content=f"That plan was rejected: {error}\nReturn the corrected AnalysisPlan JSON only.")]
+
+
 def _build_few_shots_text(examples: List[FewShotExample]) -> str:
     parts: List[str] = []
     for idx, ex in enumerate(examples, start=1):
@@ -439,11 +446,8 @@ plan_prompt: ChatPromptTemplate = ChatPromptTemplate.from_messages(  # type: ign
         ("system", "SCHEMA:\n{schema}"),
         ("system", "FEW_SHOT_EXAMPLES:\n{few_shots}"),
         ("system", "SUPPORTED_STAT_TESTS_JSON:\n{supported_stat_tests}"),
-        (
-            "system",
-            "REASONING (English internal reasoning shown below can differ from output language):\n{reasoning}",
-        ),
         ("user", "USER_UTTERANCE:\n{question}\n\nANSWER:\n{answer}\n\nENTITIES_DETECTED(JSON):\n{entities}\n\nMETRIC_DATA_TYPES(JSON):\n{metric_data_types}\n\nMETRIC_OPTIONS(JSON):\n{metric_options}"),
+        MessagesPlaceholder("correction", optional=True),
     ]
 )
 
@@ -555,7 +559,6 @@ def generate_analysis_plan(
             "entities": entities_json(entities),
             "metric_data_types": metric_data_types_json(question, entities),
             "metric_options": metric_options_json(question, entities),
-            "reasoning": "",
             "few_shots": few_shots_text,
             "language": language,
             "supported_stat_tests": json.dumps(_SUPPORTED_STAT_TESTS),
@@ -566,8 +569,10 @@ def generate_analysis_plan(
             if progress_cb is not None:
                 progress_cb(f"Thinking about a plan (attempt {attempt}/{total_attempts}).")
 
+            raw_text = ""
             try:
                 raw_result: Any = _invoke_with_timeout(plan_chain, plan_inputs, label=f"plan_chain_attempt_{attempt}")
+                raw_text = _extract_text(raw_result)
                 plan = _coerce_analysis_plan(raw_result)
                 if (plan.answer == "number") != (answer == "number"):
                     raise ValueError(f"ANSWER is {answer}: " + ("give values, not charts." if answer == "number" else "give no values."))
@@ -587,7 +592,7 @@ def generate_analysis_plan(
                 if attempt >= total_attempts:
                     raise PlanUnresolvedError(f"No plan passed every check in {total_attempts} attempts; the last failed with: {exc}") from exc
                 logger.info("[Planner] Attempt %d rejected: %s", attempt, exc)
-                plan_inputs["reasoning"] = f"Previous output was rejected: {exc}. Return ONLY a corrected, valid AnalysisPlan JSON object."
+                plan_inputs["correction"] = _correction(raw_text, exc)
                 continue
 
             if progress_cb is not None:

@@ -17,7 +17,7 @@ def _planned(replies: List[dict], answer: Any) -> tuple[AnalysisPlan, List[str]]
 
     def invoke(_chain: Any, inputs: Any, label: str = "") -> str:
         assert inputs["answer"] == answer
-        feedback.append(inputs["reasoning"])
+        feedback.append("\n".join(str(message.content) for message in inputs.get("correction", [])))
         return AnalysisPlan.model_validate(next(sent)).model_dump_json()
 
     with patch.object(pipeline, "_invoke_with_timeout", side_effect=invoke):
