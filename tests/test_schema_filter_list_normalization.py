@@ -38,9 +38,10 @@ class FilterListNormalizationTests(unittest.TestCase):
         self.assertEqual(chart.filters.type, "AndFilter")
         self.assertEqual(len(chart.filters.and_), 2)
 
-    def test_empty_list_normalizes_to_none(self) -> None:
-        chart = ChartSpec.model_validate({"chart_type": "LINE", "filters": [], "metrics": [{"metric": "DTN"}]})
-        self.assertIsNone(chart.filters)
+    def test_empty_list_or_object_normalizes_to_none(self) -> None:
+        for empty in ([], {}):
+            chart = ChartSpec.model_validate({"chart_type": "LINE", "filters": empty, "metrics": [{"metric": "DTN"}]})
+            self.assertIsNone(chart.filters)
 
     def test_bare_object_is_unaffected(self) -> None:
         chart = ChartSpec.model_validate(
