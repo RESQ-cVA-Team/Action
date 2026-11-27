@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from src.domain.langchain.schema import AnalysisPlan
 from src.planners.langchain.examples import get_few_shot_examples
 from src.planners.langchain.pipeline import _select_few_shot_examples, entities_json
 
@@ -21,3 +22,10 @@ def test_selection_matches_examples_on_their_entities() -> None:
 def test_prompt_entities_are_lists_like_the_examples() -> None:
     assert json.loads(entities_json({"metric": "SEX", "chart_type": ["BAR"], "date": None})) == {"metric": ["SEX"], "chart_type": ["BAR"]}
     assert all(isinstance(value, list) for example in get_few_shot_examples() for value in example["entities"].values())
+
+
+def test_example_plans_leave_out_unset_fields() -> None:
+    for example in get_few_shot_examples():
+        data = json.loads((_EXAMPLES_DIR / f"{example['name']}.json").read_text(encoding="utf-8"))
+        assert "null" not in example["assistant"], example["name"]
+        assert AnalysisPlan.model_validate_json(example["assistant"]) == AnalysisPlan.model_validate(data["assistant"]), example["name"]

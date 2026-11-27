@@ -302,18 +302,9 @@ FilterNode = Union[
 
 
 def _normalize_filter_node(value: Any) -> Any:
-    """Accept a bare JSON list of filters as an equivalent, unambiguous
-    alternate encoding of a single FilterNode.
-
-    The planner LLM sometimes emits "filters": [{"type": "SexFilter", ...}]
-    instead of wrapping multiple filters in an explicit AndFilter (or just
-    the bare object for a single filter) -- a reasonable, lossless way to
-    write "these filters" that FilterNode's schema doesn't accept as-is,
-    which previously caused a validation error (and downstream "I need a bit
-    more detail" clarify) for a plan the LLM had already correctly decided.
-    This reshapes the same, unmodified filter content into the schema's
-    canonical envelope; it never invents or drops a filter the LLM specified.
-    """
+    """A list of filters is their AndFilter; an empty list or object is no filter."""
+    if value == {}:
+        return None
     if not isinstance(value, list):
         return value
     items = cast(List[Any], value)

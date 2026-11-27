@@ -1,0 +1,30 @@
+{
+  "user_utterance": "How many patients had an MRI last year?",
+  "entities_detected": {
+    "metric": [
+      "IMAGING_TYPE"
+    ],
+    "date": [
+      "last year"
+    ]
+  },
+  "assistant": {
+    "values": [
+      {
+        "metric": "IMAGING_TYPE",
+        "categories": [
+          "mr_dwi_flair",
+          "mr_dwi_flair_mra",
+          "mr_dwi_flair_mra_perfusion"
+        ],
+        "measure": {
+          "type": "COUNT"
+        },
+        "period": {
+          "last_n": 1,
+          "unit": "YEAR"
+        }
+      }
+    ]
+  }
+}
